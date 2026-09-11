@@ -375,11 +375,14 @@ Parameters:
       - zh-CN
       - hi-IN
       - th-TH
+      - bs-BA
+      - hr-HR
+      - sr-RS
 
   TranscribeLanguageOptions:
     Type: String
     Default: "en-US, es-US"
-    AllowedPattern: '^(?:\s*(?:en-US|es-US|en-GB|fr-CA|fr-FR|en-AU|it-IT|de-DE|pt-BR|ja-JP|ko-KR|zh-CN|hi-IN|th-TH)\s*(?:,\s*(?:en-US|es-US|en-GB|fr-CA|fr-FR|en-AU|it-IT|de-DE|pt-BR|ja-JP|ko-KR|zh-CN|hi-IN|th-TH)\s*)*)?$'
+    AllowedPattern: '^(?:\s*(?:en-US|es-US|en-GB|fr-CA|fr-FR|en-AU|it-IT|de-DE|pt-BR|ja-JP|ko-KR|zh-CN|hi-IN|th-TH|bs-BA|hr-HR|sr-RS)\s*(?:,\s*(?:en-US|es-US|en-GB|fr-CA|fr-FR|en-AU|it-IT|de-DE|pt-BR|ja-JP|ko-KR|zh-CN|hi-IN|th-TH|bs-BA|hr-HR|sr-RS)\s*)*)?$'
     ConstraintDescription: >-
       Unsupported language code. Allowed values are: en-US, es-US, en-GB, fr-CA, fr-FR, en-AU, it-IT, de-DE, pt-BR, ja-JP, ko-KR, zh-CN, hi-IN, th-TH
     Description: >-
@@ -387,7 +390,7 @@ Parameters:
       specify two or more comma separated language codes, e.g. "en-US,es-US" that represent the languages you 
       think may be used in your meeting. Including more than five is not recommended. 
       You can select only one language dialect per language per stream - i.e. you cannot select both en-US and en-AU as language options.
-      Allowed values are: en-US, es-US, en-GB, fr-CA, fr-FR, en-AU, it-IT, de-DE, pt-BR, ja-JP, ko-KR, zh-CN, hi-IN, th-TH
+      Allowed values are: en-US, es-US, en-GB, fr-CA, fr-FR, en-AU, it-IT, de-DE, pt-BR, ja-JP, ko-KR, zh-CN, hi-IN, th-TH, bs-BA, hr-HR, sr-RS
 
   TranscribePreferredLanguage:
     Type: String
@@ -411,6 +414,9 @@ Parameters:
       - zh-CN
       - hi-IN
       - th-TH
+      - bs-BA
+      - hr-HR
+      - sr-RS
 
   CustomVocabularyName:
     Type: String

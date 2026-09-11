@@ -256,11 +256,14 @@ Parameters:
       - zh-CN
       - hi-IN
       - th-TH
+      - bs-BA
+      - hr-HR
+      - sr-RS
 
   TranscribeLanguageOptions:
     Type: String
     Default: "en-US, es-US"
-    AllowedPattern: '^(?:\s*(?:en-US|es-US|en-GB|fr-CA|fr-FR|en-AU|it-IT|de-DE|pt-BR|ja-JP|ko-KR|zh-CN|hi-IN|th-TH)\s*(?:,\s*(?:en-US|es-US|en-GB|fr-CA|fr-FR|en-AU|it-IT|de-DE|pt-BR|ja-JP|ko-KR|zh-CN|hi-IN|th-TH)\s*)*)?$'
+    AllowedPattern: '^(?:\s*(?:en-US|es-US|en-GB|fr-CA|fr-FR|en-AU|it-IT|de-DE|pt-BR|ja-JP|ko-KR|zh-CN|hi-IN|th-TH|bs-BA|hr-HR|sr-RS)\s*(?:,\s*(?:en-US|es-US|en-GB|fr-CA|fr-FR|en-AU|it-IT|de-DE|pt-BR|ja-JP|ko-KR|zh-CN|hi-IN|th-TH|bs-BA|hr-HR|sr-RS)\s*)*)?$'
     ConstraintDescription: >-
       Unsupported language code or invalid syntax. Allowed values are: en-US, es-US,
       en-GB, fr-CA, fr-FR, en-AU, it-IT, de-DE, pt-BR, ja-JP, ko-KR, zh-CN, hi-IN,
@@ -271,7 +274,7 @@ Parameters:
       Including more than five is not recommended.  Enter only one language dialect
       per language - e.g. 'en-US, en-AU' is not allowed.
       Allowed values are: en-US, es-US, en-GB, fr-CA, fr-FR, en-AU, it-IT, de-DE,
-      pt-BR, ja-JP, ko-KR, zh-CN, hi-IN, th-TH
+      pt-BR, ja-JP, ko-KR, zh-CN, hi-IN, th-TH, bs-BA, hr-HR, sr-RS
       NOTE: The identify-language feature has not yet been applied to the virtual participant. 
       If selected, the virtual participant will use the value of TranscribePreferredLanguage (if set) or 'en-US' (by default).
 
@@ -297,6 +300,9 @@ Parameters:
       - zh-CN
       - hi-IN
       - th-TH
+      - bs-BA
+      - hr-HR
+      - sr-RS
 
   ShowSpeakerLabel:
     Type: String
@@ -422,6 +428,8 @@ Parameters:
       - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
       - "global.anthropic.claude-sonnet-4-6"
       - "global.anthropic.claude-opus-4-6-v1"
+      - "global.openai.gpt-5.6-luna"
+      - "global.openai.gpt-5.6-terra"
     Description: >
       If EndOfCallTranscriptSummary is BEDROCK, then choose a model ID from the list
       of supported models. Includes Nova models (cost-effective) and Claude 4+ (cutting-edge).
