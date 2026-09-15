@@ -38,12 +38,13 @@ const PLATFORM_DIALOG_SELECTORS: Record<string, string[]> = {
     TEAMS: ['[data-tid="modal"]', '.fui-Dialog__surface'],
     WEBEX: ['.md-modal', '[role="dialog"][aria-modal="true"]'],
     CHIME: ['[data-test-id*="modal"]'],
+    GOOGLE_MEET: ['[role="dialog"][aria-modal="true"]', 'div[jsname][role="dialog"]'],
 };
 
 const AUTOCLICK_TYPES = new Set(['CONSENT', 'RECORDING_NOTICE']);
 
 interface WatchdogOpts {
-    platform: 'ZOOM' | 'TEAMS' | 'WEBEX' | 'CHIME';
+    platform: 'ZOOM' | 'TEAMS' | 'WEBEX' | 'CHIME' | 'GOOGLE_MEET';
     checkIntervalMs?: number;
     /** Slow cadence used once the page has been quiet (no new dialogs) for a
      *  while. Defaults to 4× the fast interval. The watchdog snaps back to the

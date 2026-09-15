@@ -24,6 +24,10 @@ BEDROCK_MODEL_ID = os.environ["BEDROCK_MODEL_ID"]
 FETCH_TRANSCRIPT_LAMBDA_ARN = os.environ["FETCH_TRANSCRIPT_LAMBDA_ARN"]
 PROCESS_TRANSCRIPT = os.getenv("PROCESS_TRANSCRIPT", "False") == "True"
 TOKEN_COUNT = int(os.getenv("TOKEN_COUNT", "0"))  # default 0 - do not truncate.
+# Max output tokens per summary section (thinking tokens count against this when enabled).
+SUMMARY_MAX_TOKENS = int(os.getenv("SUMMARY_MAX_TOKENS", "4096"))
+# Adaptive-thinking effort for Anthropic models: off | low | medium | high | max.
+SUMMARY_EFFORT = os.getenv("SUMMARY_EFFORT", "medium").strip().lower()
 S3_BUCKET_NAME = os.environ["S3_BUCKET_NAME"]
 S3_PREFIX = os.environ["S3_PREFIX"]
 
@@ -125,7 +129,40 @@ def get_transcripts(callId):
 
 
 def get_generated_text(response):
-    return response["output"]["message"]["content"][0]["text"]
+    # With thinking enabled the first block is reasoningContent; return the first text block.
+    for block in response["output"]["message"]["content"]:
+        if "text" in block:
+            return block["text"]
+    raise ValueError("No text block in Bedrock response")
+
+
+def build_inference_args(modelId):
+    """inferenceConfig plus provider-specific reasoning/effort fields.
+
+    SUMMARY_EFFORT: off | low | medium | high | max (max is Anthropic-only).
+    Verified live per provider on 2026-09-15:
+      Anthropic: thinking.type=adaptive + output_config.effort, temperature must be 1
+      OpenAI:    reasoning_effort (low|medium|high)
+      Nova 2:    reasoningConfig.type=enabled + maxReasoningEffort (low|medium|high), temperature must be 0
+    """
+    args = {"inferenceConfig": {"maxTokens": SUMMARY_MAX_TOKENS, "temperature": 0}}
+    effort = SUMMARY_EFFORT
+    if effort in ("", "off", "none", "0"):
+        return args
+    if "anthropic" in modelId:
+        args["inferenceConfig"]["temperature"] = 1
+        args["additionalModelRequestFields"] = {
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": effort},
+        }
+    elif "openai" in modelId:
+        args["additionalModelRequestFields"] = {"reasoning_effort": "high" if effort == "max" else effort}
+    elif "nova-2" in modelId:
+        args["additionalModelRequestFields"] = {
+            "reasoningConfig": {"type": "enabled", "maxReasoningEffort": "high" if effort == "max" else effort}
+        }
+    # other models (Nova 1.x etc.): no reasoning support, plain call
+    return args
 
 
 def call_bedrock(prompt_data):
@@ -133,8 +170,13 @@ def call_bedrock(prompt_data):
     print("Bedrock request - ModelId", modelId)
     message = {"role": "user", "content": [{"text": prompt_data}]}
 
-    response = bedrock.converse(
-        modelId=modelId, messages=[message], inferenceConfig={"maxTokens": 512, "temperature": 0}
+    args = build_inference_args(modelId)
+    print("Bedrock inference args:", json.dumps(args))
+    response = bedrock.converse(modelId=modelId, messages=[message], **args)
+    usage = response.get("usage", {})
+    print(
+        f"Bedrock usage - input: {usage.get('inputTokens')} output: {usage.get('outputTokens')} "
+        f"stopReason: {response.get('stopReason')}"
     )
     generated_text = get_generated_text(response)
     print("Bedrock response: ", json.dumps(generated_text))

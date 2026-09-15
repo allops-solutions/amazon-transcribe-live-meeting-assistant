@@ -723,7 +723,7 @@ const VirtualParticipantList = () => {
     { label: 'Chime', value: 'CHIME', disabled: false },
     { label: 'Teams', value: 'TEAMS', disabled: false },
     { label: 'WebEx', value: 'WEBEX', disabled: false },
-    { label: 'Google Meet', value: 'GOOGLE_MEET', disabled: true },
+    { label: 'Google Meet', value: 'GOOGLE_MEET', disabled: false },
   ];
 
   /* eslint-disable react/jsx-props-no-spreading */

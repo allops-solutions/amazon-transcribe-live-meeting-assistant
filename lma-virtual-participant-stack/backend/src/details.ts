@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 export interface MeetingInvite {
   meetingId: string;
   meetingPassword?: string;
-  meetingPlatform: 'Chime' | 'Zoom' | 'Teams' | 'Webex' | 'CHIME' | 'ZOOM' | 'TEAMS' | 'WEBEX';
+  meetingPlatform: 'Chime' | 'Zoom' | 'Teams' | 'Webex' | 'CHIME' | 'ZOOM' | 'TEAMS' | 'WEBEX' | 'GOOGLE_MEET';
   meetingName: string;
   meetingTime: number;
   scheduledFor?: string;
@@ -96,7 +96,7 @@ class DetailsManager {
 
   constructor() {
     // Initialize from environment variables
-    const meetingPlatform = (process.env.MEETING_PLATFORM as 'Chime' | 'Zoom' | 'Teams' | 'Webex' | 'CHIME' | 'ZOOM' | 'TEAMS' | 'WEBEX') || 'Chime';
+    const meetingPlatform = (process.env.MEETING_PLATFORM as 'Chime' | 'Zoom' | 'Teams' | 'Webex' | 'CHIME' | 'ZOOM' | 'TEAMS' | 'WEBEX' | 'GOOGLE_MEET') || 'Chime';
     const meetingId = process.env.MEETING_ID || '';
     const meetingPassword = process.env.MEETING_PASSWORD || '';
     const meetingName = process.env.MEETING_NAME || 'LMA Meeting';

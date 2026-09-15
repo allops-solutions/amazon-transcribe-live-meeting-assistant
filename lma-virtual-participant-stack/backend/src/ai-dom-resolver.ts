@@ -12,7 +12,7 @@ import {
 } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 
-export type Platform = 'ZOOM' | 'TEAMS' | 'WEBEX' | 'CHIME';
+export type Platform = 'ZOOM' | 'TEAMS' | 'WEBEX' | 'CHIME' | 'GOOGLE_MEET';
 
 export interface ResolveOptions {
   intent: string;
