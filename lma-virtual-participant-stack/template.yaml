@@ -287,6 +287,13 @@ Parameters:
       (Optional) DynamoDB table name for Nova Sonic configuration.
       When provided, enables customizable prompts for Nova voice assistant.
 
+  DomResolverModelId:
+    Type: String
+    Default: "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+    Description: >-
+      Anthropic Claude model ID (vision-capable) used by the AI DOM-selector
+      fallback and dialog watchdog. Must be an Anthropic model.
+
   NovaModelId:
     Type: String
     Default: "amazon.nova-2-sonic-v1:0"
@@ -1253,9 +1260,9 @@ Resources:
                   - "bedrock:InvokeModelWithBidirectionalStream"
                 Resource:
                   - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.nova-*"
-                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-haiku-4-5*"
-                  - !Sub "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-4-5*"
-                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*claude-haiku-4-5*"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-*"
+                  - !Sub "arn:aws:bedrock:*::foundation-model/anthropic.claude-*"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*anthropic.claude-*"
         - PolicyName: NovaSonicConfigAccess
           PolicyDocument:
             Version: 2012-10-17
@@ -2221,7 +2228,7 @@ Resources:
             - Name: DOM_SELECTOR_CACHE_TABLE_NAME
               Value: !Ref DomSelectorCacheTableName
             - Name: BEDROCK_DOM_RESOLVER_MODEL_ID
-              Value: "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+              Value: !Ref DomResolverModelId
             - Name: VP_PROFILES_BUCKET
               Value: !Ref VPProfilesBucketName
             # Overridden at task launch by Step Functions when the user opts in.

@@ -315,7 +315,11 @@ export class TranscriptionService {
                     AudioStream: this.audioStream(recordingStream),
                     MediaSampleRateHertz: this.sampleRate,
                     MediaEncoding: 'pcm',
-                    ShowSpeakerLabel: true,
+                    // No ShowSpeakerLabel: the VP attributes speech to participants from the
+                    // meeting platform's active-speaker signal, not from Transcribe diarization.
+                    // Transcribe also rejects the flag outright ("Languagecode is not available")
+                    // for languages without a diarization model (e.g. bs-BA), which would
+                    // kill transcription for any pool containing such a language.
                 };
 
                 const langCode = details.transcribeLanguageCode;
@@ -324,7 +328,8 @@ export class TranscriptionService {
                     .map((s) => s.trim())
                     .filter((s) => s.length > 0)
                     .join(',');
-                const preferredLang = (details.transcribePreferredLanguage || '').trim();
+                const preferredLangRaw = (details.transcribePreferredLanguage || '').trim();
+                const preferredLang = preferredLangRaw.toLowerCase() === 'none' ? '' : preferredLangRaw;
 
                 if (langCode === 'identify-language' || langCode === 'identify-multiple-languages') {
                     if (!langOptions) {

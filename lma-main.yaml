@@ -733,6 +733,20 @@ Parameters:
       FARGATE: Serverless, ~$2/month base, but 1-2 minute startup. Use where
       MicroVMs are unavailable and cost matters more than latency.
 
+  VPDomResolverModelId:
+    Type: String
+    Default: "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+    AllowedValues:
+      - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+      - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+      - "us.anthropic.claude-sonnet-4-6"
+      - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+      - "global.anthropic.claude-sonnet-4-6"
+    Description: >-
+      Anthropic Claude model used by the Virtual Participant's AI DOM-selector fallback
+      and dialog watchdog (vision-capable, must be an Anthropic model). Choose a model
+      your account can invoke; e.g. pick Sonnet 4.6 if Haiku is not subscribable.
+
   VPInstanceType:
     Type: String
     Default: t3.medium
@@ -803,6 +817,7 @@ Metadata:
           default: Virtual Participant Startup Optimization
         Parameters:
           - VPLaunchType
+          - VPDomResolverModelId
           - VPInstanceType
           - VPMinInstances
           - VPMaxInstances
@@ -2778,6 +2793,7 @@ Resources:
       TemplateURL: https://s3.<REGION_TOKEN>.amazonaws.com/<ARTIFACT_BUCKET_TOKEN>/<ARTIFACT_PREFIX_TOKEN>/lma-virtual-participant-stack/template.yaml
       # yamllint enable rule:line-length
       Parameters:
+        DomResolverModelId: !Ref VPDomResolverModelId
         LMAStackName: !Ref AWS::StackName
         StrandsLambdaArn: !If
           - ShouldUseAnyStrandsBedrock

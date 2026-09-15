@@ -113,7 +113,7 @@ export default class GoogleMeet {
         for (let i = 0; i < rounds; i++) {
             const clicked = await page
                 .evaluate(() => {
-                    const rx = /^(dismiss|not now|no thanks|continue without( an)? (account|signing in)|use without an account|got it|close|skip)$/i;
+                    const rx = /^(dismiss|not now|no thanks|continue without( an)? (account|signing in)|use without an account|got it|ok|okay|close|skip)$/i;
                     const cands = Array.from(document.querySelectorAll('button, [role=button]')).filter(
                         (b) => (b as HTMLElement).offsetParent !== null,
                     );
@@ -134,14 +134,74 @@ export default class GoogleMeet {
         }
     }
 
-    public async initialize(page: Page, opts: MeetingInitOptions = {}): Promise<ExitInfo> {
-        if (opts.prepareAvatar) await opts.prepareAvatar();
-        startDialogWatchdog(page, { platform: 'GOOGLE_MEET' });
+    private async waitForAdmission(page: Page): Promise<'admitted' | 'denied' | 'bounced' | 'timeout'> {
+        console.log('Waiting to be admitted.');
+        const onMeetingRoute = () => /https:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i.test(page.url());
+        return Promise.race([
+            page
+                .waitForSelector('button[aria-label="Leave call"], button[aria-label^="Leave call"], button[aria-label="Chat with everyone"]', {
+                    timeout: details.waitingTimeout,
+                })
+                .then(() => 'admitted' as const)
+                .catch(() => 'timeout' as const),
+            page
+                .waitForSelector('text=/denied your request|You can\'t join this call|Someone in the call denied|removed from the meeting/i', {
+                    timeout: details.waitingTimeout,
+                })
+                .then(() => 'denied' as const)
+                .catch(() => 'timeout' as const),
+            new Promise<'bounced' | 'timeout'>((resolve) => {
+                const started = Date.now();
+                const h = setInterval(() => {
+                    if (!onMeetingRoute()) {
+                        clearInterval(h);
+                        resolve('bounced');
+                    } else if (Date.now() - started > details.waitingTimeout) {
+                        clearInterval(h);
+                        resolve('timeout');
+                    }
+                }, 1000);
+            }),
+        ]);
+    }
 
-        const url = buildMeetUrl(details.invite.meetingId);
-        console.log(`Getting Google Meet link: ${url}`);
-        await gotoMeetingPage(page, url, MEETING_HOST_PATTERNS.meet, 'meet-join');
+    /**
+     * Park on Google sign-in and flag MANUAL_ACTION_REQUIRED so the operator can
+     * sign the bot's Google account in through the VNC live view. Resolves true
+     * once the browser is back on the meeting page (sign-in completed and Google
+     * followed the continue URL), false on timeout.
+     */
+    private async requestGoogleSignIn(page: Page, meetingUrl: string): Promise<boolean> {
+        const loginUrl = `https://accounts.google.com/ServiceLogin?hl=en&continue=${encodeURIComponent(meetingUrl)}`;
+        await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {});
+        const timeoutSec = Math.floor(details.waitingTimeout / 1000);
+        if (details.invite.virtualParticipantId) {
+            const { createStatusManager } = await import('./status-manager.js');
+            await createStatusManager(details.invite.virtualParticipantId).setManualActionRequired(
+                'GOOGLE_SIGNIN',
+                'Google Meet rejected the anonymous join. Open the VP live view and sign in with the bot\'s Google account; ' +
+                    'the session is saved for future meetings. The bot will continue joining automatically after sign-in.',
+                timeoutSec,
+            );
+        }
+        const deadline = Date.now() + details.waitingTimeout;
+        while (Date.now() < deadline) {
+            if (/https:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i.test(page.url())) {
+                if (details.invite.virtualParticipantId) {
+                    const { createStatusManager } = await import('./status-manager.js');
+                    await createStatusManager(details.invite.virtualParticipantId).clearManualAction();
+                }
+                console.log('Google sign-in completed; back on the meeting page.');
+                return true;
+            }
+            await new Promise((r) => setTimeout(r, 2000));
+        }
+        console.log('Timed out waiting for Google sign-in.');
+        return false;
+    }
 
+    /** Pre-join screen: name (guests only), mute, camera off, click join. Returns false if no join button. */
+    private async preJoin(page: Page): Promise<boolean> {
         // ---- Pre-join -------------------------------------------------------
         await this.dismissNags(page);
         console.log('Entering name.');
@@ -228,40 +288,62 @@ export default class GoogleMeet {
         );
         if (!joinRes) {
             console.log('Could not locate Google Meet join button — aborting');
-            return { reason: 'unknown', trigger: 'pre-join:no-join-button' };
+            return false;
         }
         await joinRes.element.click();
 
+        return true;
+    }
+
+    public async initialize(page: Page, opts: MeetingInitOptions = {}): Promise<ExitInfo> {
+        if (opts.prepareAvatar) await opts.prepareAvatar();
+        startDialogWatchdog(page, { platform: 'GOOGLE_MEET' });
+
+        const url = buildMeetUrl(details.invite.meetingId);
+        console.log(`Getting Google Meet link: ${url}`);
+        await gotoMeetingPage(page, url, MEETING_HOST_PATTERNS.meet, 'meet-join');
+
+        // ---- Pre-join -------------------------------------------------------
+        if (!(await this.preJoin(page))) {
+            return { reason: 'unknown', trigger: 'pre-join:no-join-button' };
+        }
+
         // ---- Admission --------------------------------------------------------
-        console.log('Waiting to be admitted.');
-        const admitted = await Promise.race([
-            page
-                .waitForSelector('button[aria-label="Leave call"], button[aria-label^="Leave call"], button[aria-label="Chat with everyone"]', {
-                    timeout: details.waitingTimeout,
-                })
-                .then(() => 'admitted' as const)
-                .catch(() => 'timeout' as const),
-            page
-                .waitForSelector('text=/denied your request|You can\'t join this call|Someone in the call denied|removed from the meeting/i', {
-                    timeout: details.waitingTimeout,
-                })
-                .then(() => 'denied' as const)
-                .catch(() => 'timeout' as const),
-        ]);
+        let admitted = await this.waitForAdmission(page);
+
+        // Meet's invisible reCAPTCHA can reject anonymous guests joining from a
+        // datacenter IP: after "Ask to join" it 403s and bounces to the Meet
+        // marketing page. Signed-in users are not gated. Park on Google sign-in,
+        // ask the operator to log the bot's Google account in once via the VNC
+        // live view (the browser profile is persisted, so it sticks), then retry.
+        if (admitted === 'bounced') {
+            console.log('Guest join was bounced by Meet (reCAPTCHA / IP reputation). Requesting one-time Google sign-in via VNC.');
+            const signedIn = await this.requestGoogleSignIn(page, url);
+            if (signedIn) {
+                await this.dismissNags(page);
+                if (!(await this.preJoin(page))) {
+                    return { reason: 'unknown', trigger: 'pre-join:no-join-button-after-signin' };
+                }
+                admitted = await this.waitForAdmission(page);
+            }
+        }
         if (admitted !== 'admitted') {
             console.log(`LMA Virtual Participant was not admitted into the meeting (${admitted}).`);
-            throw new Error('Wrong meeting password or permission denied');
+            throw new Error(
+                admitted === 'bounced'
+                    ? 'Google Meet rejected the anonymous join (reCAPTCHA / IP reputation). Sign the bot into a Google account via the VP live view and retry.'
+                    : 'Wrong meeting password or permission denied',
+            );
         }
         await new Promise((r) => setTimeout(r, 1500));
         console.log('Successfully joined Google Meet meeting');
 
-        // Dismiss the occasional first-join popups ("Got it", "Dismiss").
-        await page.$$eval('button', (btns) => {
-            for (const b of btns) {
-                const t = (b.textContent || '').trim();
-                if (t === 'Got it' || t === 'Dismiss') (b as HTMLButtonElement).click();
-            }
-        }).catch(() => {});
+        // Dismiss Meet's benign in-call popups now and periodically ("Got it",
+        // "Dismiss", "Camera not found" → OK, etc.). The container has no camera, so
+        // Meet raises a harmless dialog the AI watchdog would otherwise escalate.
+        await this.dismissNags(page);
+        const nagTimer = setInterval(() => { void this.dismissNags(page, 1); }, 10_000);
+        (this as any).__nagTimer = nagTimer;
 
         console.log('Sending introduction messages.');
         await this.sendMessages(page, details.introMessages);
@@ -437,6 +519,7 @@ export default class GoogleMeet {
         } finally {
             details.start = false;
         }
+        clearInterval((this as any).__nagTimer);
         // Best effort: leave the call so Meet doesn't keep a ghost participant.
         await page.click('button[aria-label^="Leave call"]', { timeout: 3000 }).catch(() => {});
         console.log(`Meeting ended (reason=${exitInfo.reason} trigger=${exitInfo.trigger ?? 'n/a'}).`);
