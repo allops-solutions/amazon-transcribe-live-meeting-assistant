@@ -3,12 +3,20 @@
 # See the LICENSE file in the project root for full license information.
 """Mint a short-lived MicroVM auth token for a VP's noVNC port.
 
-Authorization: allOps policy — every authenticated user (Admin or User) can
-view every meeting's live VP session, matching getVirtualParticipant's own
-resolver (no Owner/SharedWith restriction there either). The caller must
-still be authenticated: the VP id alone is not sufficient — it appears in
-URLs and logs, so treating it as a bearer token would let an unauthenticated
-request through.
+Authorization: the caller must own (or have been shared) the VP, or be an
+Admin. This is a DELIBERATE EXCEPTION to the allOps "every user sees every
+meeting" policy (see getCall.response.vtl) — that policy is about read
+access to meeting data, but a VNC session is interactive control, not a
+read. The client's viewOnly toggle (VNCViewer.jsx) is a UI convenience, not
+a security boundary: whoever holds a valid token can drive the browser,
+which is signed into the launching user's own Zoom/Teams/Webex credentials
+(profile-store.ts) or, with VPSharedGoogleMeetProfile enabled, the shared
+Google Workspace account. Restored 2026-09-16 after a security review
+caught that a broader "everyone sees everything" pass had removed this
+check along with the (correct) read-access ones.
+
+The VP id alone is not sufficient either — it appears in URLs and logs, so
+treating it as a bearer token would let an unauthenticated request through.
 """
 
 import logging
@@ -61,9 +69,29 @@ def lambda_handler(event, context):
     if not vp:
         raise Exception(f"Virtual Participant {vp_id} not found")
 
-    # allOps policy: every authenticated caller can mint a token for every
-    # VP's VNC session — no Owner/SharedWith check. See
-    # getVirtualParticipant.response.vtl for the rationale.
+    # Field names and semantics match the canonical subscription filter in
+    # source/appsync/subscription.js: Owner (capital O) equals identity.username,
+    # and SharedWith CONTAINS it. SharedWith is a comma-ish String, not a List —
+    # reading it as a List (and "owner" lowercase) made every request fail
+    # "Not authorized", because both lookups silently returned empty.
+    owner = vp.get("Owner", {}).get("S", "") or vp.get("owner", {}).get("S", "")
+    shared_raw = vp.get("SharedWith", {}).get("S", "")
+    shared = {v.strip() for v in shared_raw.split(",") if v.strip()}
+
+    groups = identity.get("groups") or claims.get("cognito:groups") or []
+    if isinstance(groups, str):
+        groups = [g.strip() for g in groups.split(",") if g.strip()]
+    is_admin = "Admin" in groups
+
+    if not is_admin and caller != owner and caller not in shared:
+        logger.warning(
+            "Caller %s is not authorized for VP %s (owner=%s shared=%s)",
+            caller,
+            vp_id,
+            owner,
+            sorted(shared),
+        )
+        raise Exception("Not authorized for this Virtual Participant")
 
     registry = dynamodb.get_item(
         TableName=os.environ["VP_TASK_REGISTRY_TABLE_NAME"],

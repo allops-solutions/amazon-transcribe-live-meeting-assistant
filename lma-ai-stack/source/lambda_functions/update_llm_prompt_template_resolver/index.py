@@ -7,20 +7,42 @@ This file is licensed under the MIT License.
 """
 
 import json
+import logging
 import os
 import re
 from typing import Any, Dict
 
 import boto3
 
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
 dynamodb = boto3.resource("dynamodb")
+ADMIN_GROUP = os.environ.get("ADMIN_GROUP", "Admin")
+
+
+def _get_caller_identity(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Mirrors user_management/index.py's identity extraction."""
+    identity = event.get("identity") or {}
+    claims = identity.get("claims") or {}
+    groups = claims.get("cognito:groups") or []
+    if isinstance(groups, str):
+        groups = [groups]
+    username = claims.get("cognito:username") or identity.get("username") or claims.get("sub") or ""
+    return {"username": username, "groups": groups, "is_admin": ADMIN_GROUP in groups}
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     AppSync Lambda resolver for updateLLMPromptTemplate
 
-    Validates and filters input to only allow prompt template fields
+    Admin-only (Transcript Summary is an admin-only page). Enforced twice:
+    the schema's @aws_cognito_user_pools(cognito_groups: ["Admin"]) directive
+    is the primary gate, and the check below is defense-in-depth in case that
+    directive is ever missed on a future field — same pattern as
+    user_management/index.py's _require_admin.
+
+    Also validates and filters input to only allow prompt template fields
     matching the N#LABEL pattern (e.g., 1#SUMMARY, 2#DETAILS).
 
     Args:
@@ -31,6 +53,15 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         Dict with LLMPromptTemplateId and Success status
     """
     try:
+        caller = _get_caller_identity(event)
+        if not caller["is_admin"]:
+            logger.warning(
+                "Non-admin caller '%s' attempted updateLLMPromptTemplate (groups=%s)",
+                caller["username"],
+                caller["groups"],
+            )
+            raise PermissionError("Only Admin users can update summary prompt templates")
+
         # Get table name from environment
         table_name = os.environ["LLM_PROMPT_TEMPLATE_TABLE_NAME"]
         table = dynamodb.Table(table_name)
