@@ -60,7 +60,20 @@ export default class GoogleMeet {
         if (!chatBtn) return false;
         const pressed = await chatBtn.element.getAttribute('aria-pressed');
         if (pressed !== 'true') {
-            await chatBtn.element.click();
+            // Meet keeps re-rendering the toolbar around join time (dialog
+            // dismissals, subframe reloads), so a handle that was visible when
+            // findElementWithFallback found it can go stale by the time we
+            // click it. Playwright then throws "failed visible check: element
+            // is not visible" — this used to escape sendMessages() and abort
+            // an otherwise-successful join (2026-09-16 standup: bot was already
+            // admitted and had started the intro when this hit). Chat is
+            // best-effort cosmetics, never worth failing the join over.
+            try {
+                await chatBtn.element.click();
+            } catch (err) {
+                console.log(`Could not click Google Meet chat button (stale/covered element) — skipping sendMessages: ${(err as Error).message}`);
+                return false;
+            }
             await new Promise((r) => setTimeout(r, 800));
         }
         return true;
@@ -86,8 +99,15 @@ export default class GoogleMeet {
             return;
         }
         for (const message of messages) {
-            await input.element.fill(message);
-            await input.element.press('Enter');
+            try {
+                await input.element.fill(message);
+                await input.element.press('Enter');
+            } catch (err) {
+                // Same stale-element risk as the chat button above — never let
+                // a flaky compose box abort the join or the meeting.
+                console.log(`Could not send Google Meet chat message (stale/covered element) — skipping: ${(err as Error).message}`);
+                return;
+            }
             await new Promise((r) => setTimeout(r, 300));
         }
     }

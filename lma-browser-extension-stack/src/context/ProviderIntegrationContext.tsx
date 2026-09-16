@@ -126,9 +126,26 @@ function IntegrationProvider({ children }: any) {
   const fetchMetadata = async () => {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (tab && tab.id) {
-      const response = await chrome.tabs.sendMessage(tab.id, { action: "FetchMetadata" });
-      console.log("Received response from Metadata query!", response);
-      updateMetadata(response);
+      // The content script injects at document_idle, which on a heavy SPA
+      // (Meet/Teams/etc.) can land after the popup has already mounted and
+      // fired this on-open query — "Could not establish connection. Receiving
+      // end does not exist." One short retry covers that race; if the content
+      // script still isn't there, fail quietly instead of an uncaught
+      // rejection in the popup console (the user can just reopen the popup).
+      try {
+        const response = await chrome.tabs.sendMessage(tab.id, { action: "FetchMetadata" });
+        console.log("Received response from Metadata query!", response);
+        updateMetadata(response);
+      } catch (exception) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        try {
+          const response = await chrome.tabs.sendMessage(tab.id, { action: "FetchMetadata" });
+          console.log("Received response from Metadata query! (after retry)", response);
+          updateMetadata(response);
+        } catch (retryException) {
+          console.log("Content script not ready yet — skipping metadata fetch for this popup open.", retryException);
+        }
+      }
     }
     return {};
   }

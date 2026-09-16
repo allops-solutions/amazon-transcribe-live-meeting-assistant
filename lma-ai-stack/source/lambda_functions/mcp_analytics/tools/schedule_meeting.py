@@ -37,8 +37,8 @@ def execute(
 
     Args:
         meeting_name: Name/title of the meeting
-        meeting_platform: Platform (Zoom, Teams, Chime, Webex)
-        meeting_id: Meeting ID (numeric ID only, not URL)
+        meeting_platform: Platform (Zoom, Teams, Chime, Webex, Google Meet)
+        meeting_id: Meeting ID (numeric ID, or Google Meet code/URL)
         scheduled_time: ISO 8601 datetime when meeting should start
         meeting_password: Optional meeting password
         user_id: User ID for access control
@@ -61,11 +61,20 @@ def execute(
     meeting_id = "".join(meeting_id.split())
 
     # Validate and normalize platform (VP code expects uppercase)
-    valid_platforms = {"zoom": "ZOOM", "teams": "TEAMS", "chime": "CHIME", "webex": "WEBEX"}
+    valid_platforms = {
+        "zoom": "ZOOM",
+        "teams": "TEAMS",
+        "chime": "CHIME",
+        "webex": "WEBEX",
+        "google_meet": "GOOGLE_MEET",
+        "googlemeet": "GOOGLE_MEET",
+        "google meet": "GOOGLE_MEET",
+        "meet": "GOOGLE_MEET",
+    }
 
     platform_lower = meeting_platform.lower()
     if platform_lower not in valid_platforms:
-        raise ValueError("Invalid platform. Must be one of: Zoom, Teams, Chime, Webex")
+        raise ValueError("Invalid platform. Must be one of: Zoom, Teams, Chime, Webex, Google Meet")
 
     # Convert to uppercase for VP infrastructure
     meeting_platform = valid_platforms[platform_lower]
