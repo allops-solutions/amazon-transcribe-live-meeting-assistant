@@ -116,6 +116,9 @@ export class TranscriptionService {
     private transcribeClient: TranscribeStreamingClient;
     private isTranscribing = false;
     private mockTranscriptionInterval: NodeJS.Timeout | null = null;
+    // Applied once per meeting, not on every reconnect/restart — see the
+    // language-lock delay at the top of the session loop in startTranscription().
+    private appliedLanguageLockDelay = false;
     
     // Wake phrase detection and transcript buffering
     private transcriptBuffer: Array<{
@@ -298,6 +301,23 @@ export class TranscriptionService {
         // recorded before each reconnect. writeAudio no longer closes it; it is
         // closed once when the meeting ends (below).
         const recordingStream = createWriteStream(details.tmpRecordingFilename, { flags: 'a' });
+
+        // "Auto-detect (locks in early)" (TRANSCRIBE_LANGUAGE_CODE=identify-language)
+        // identifies the dominant language once, from whatever audio Transcribe
+        // hears first, and never re-evaluates for the rest of the meeting. Opening
+        // the stream immediately on join risks locking onto small talk / a stray
+        // greeting in the wrong language. Give the meeting a few seconds to get
+        // into real conversation first — once only, not on every reconnect or
+        // manual pause/resume within the same meeting. The recording (above) and
+        // Kinesis "meeting started" event are unaffected; only the Transcribe
+        // connection itself waits, so this costs a few seconds of transcript, not
+        // of recording.
+        if (details.transcribeLanguageCode === 'identify-language' && !this.appliedLanguageLockDelay) {
+            this.appliedLanguageLockDelay = true;
+            const delayMs = 18_000;
+            console.log(`Auto-detect language mode: waiting ${delayMs / 1000}s for real conversation before starting transcription.`);
+            await new Promise((r) => setTimeout(r, delayMs));
+        }
 
         // Loop over Transcribe sessions for the life of the meeting. Each
         // iteration is one StartStreamTranscription session; we reconnect when a

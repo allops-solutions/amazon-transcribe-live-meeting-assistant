@@ -198,12 +198,52 @@ Parameters:
       - "global.anthropic.claude-opus-4-6-v1"
       - "global.amazon.nova-2-lite-v1:0"
       - "us.amazon.nova-2-lite-v1:0"
+      - "global.openai.gpt-5.6-luna"
+      - "global.openai.gpt-5.6-terra"
 
     Description: >
       If EndOfCallTranscriptSummary is BEDROCK, then choose a model ID from the list
-      of supported models. Includes Nova models (cost-effective), Claude 3.5/3.7 (advanced), 
+      of supported models. Includes Nova models (cost-effective), Claude 3.5/3.7 (advanced),
       and Claude 4 (cutting-edge). Some models require inference profiles.
       Defaults to 'global.anthropic.claude-haiku-4-5-20251001-v1:0'
+
+  BedrockFallbackModelId:
+    Default: "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+    Type: String
+    AllowedValues:
+      - ""
+      - "anthropic.claude-3-haiku-20240307-v1:0"
+      - "anthropic.claude-3-sonnet-20240229-v1:0"
+      - "anthropic.claude-3-5-sonnet-20240620-v1:0"
+      - "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+      - "amazon.nova-micro-v1:0"
+      - "amazon.nova-lite-v1:0"
+      - "amazon.nova-pro-v1:0"
+      - "us.amazon.nova-premier-v1:0"
+      - "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+      - "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
+      - "us.anthropic.claude-opus-4-20250514-v1:0"
+      - "us.anthropic.claude-opus-4-1-20250805-v1:0"
+      - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+      - "us.anthropic.claude-sonnet-4-6"
+      - "us.anthropic.claude-opus-4-6-v1"
+      - "eu.anthropic.claude-3-5-sonnet-20240620-v1:0"
+      - "apac.anthropic.claude-3-5-sonnet-20240620-v1:0"
+      - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+      - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+      - "global.anthropic.claude-sonnet-4-6"
+      - "global.anthropic.claude-opus-4-6-v1"
+      - "global.amazon.nova-2-lite-v1:0"
+      - "us.amazon.nova-2-lite-v1:0"
+      - "global.openai.gpt-5.6-luna"
+      - "global.openai.gpt-5.6-terra"
+    Description: >
+      If BedrockModelId errors when generating a meeting summary (model unavailable,
+      access denied, validation error — not transient throttling, which already
+      retries), the summary Lambda retries once against this model instead of giving
+      up. Set to empty to disable the fallback. Defaults to
+      'global.anthropic.claude-haiku-4-5-20251001-v1:0' — a different, cheaper model
+      than the primary so a single model's outage doesn't also take out the fallback.
 
   EndOfCallLambdaHookFunctionArn:
     Default: ""
@@ -1679,6 +1719,7 @@ Resources:
       Environment:
         Variables:
           BEDROCK_MODEL_ID: !Ref BedrockModelId
+          BEDROCK_FALLBACK_MODEL_ID: !Ref BedrockFallbackModelId
           SUMMARY_MAX_TOKENS: "4096"
           SUMMARY_EFFORT: "medium"
           FETCH_TRANSCRIPT_LAMBDA_ARN: !GetAtt FetchTranscript.Arn
@@ -1962,8 +2003,15 @@ Resources:
               !Ref EndOfCallLambdaHookFunctionArn,
             ]
           CALL_DATA_STREAM_NAME: !Ref CallDataStream
-          BOTO_READ_TIMEOUT: 60
-      Timeout: 240
+          # Was 60/240: too tight a margin once real (15-90 min) client calls
+          # push transcript size up — BedrockSummaryLambda runs 3 sequential
+          # Bedrock calls (SUMMARY/DETAILS/ACTIONS) and can legitimately take
+          # a couple of minutes on a long transcript, and this orchestrator's
+          # own boto3 client (read_timeout) and function Timeout must both
+          # comfortably exceed that, or a summary that would have succeeded
+          # gets cut off here instead.
+          BOTO_READ_TIMEOUT: 300
+      Timeout: 600
       MemorySize: 128
       Handler: lambda_function.handler
       Layers:
@@ -3498,6 +3546,10 @@ Resources:
               - Effect: Allow
                 Action:
                   - dynamodb:PutItem
+                  # Needed only to truly delete a removed summary profile's
+                  # own "Profile#<slug>" item (the catalog write that unlists
+                  # it is a PutItem like everything else here).
+                  - dynamodb:DeleteItem
                 Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${LLMPromptTemplateTableName}"
               - Effect: Allow
                 Action:
@@ -4342,6 +4394,108 @@ Resources:
       DataSourceName: !GetAtt ListCallsGsiDataSource.Name
       TypeName: Query
       FieldName: getCallCount
+
+  ##############################################################################
+  # regenerateSummary — re-run end-of-call summary generation on demand,
+  # reusing the meeting's original SummaryProfile/SummaryLanguage. Invokes
+  # the same AsyncTranscriptSummaryOrchestrator the automatic end-of-call
+  # path uses; the result arrives via the existing onUpdateCall subscription.
+  ##############################################################################
+
+  RegenerateSummaryResolverFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/${AWS::StackName}/lambda/RegenerateSummaryResolver"
+      RetentionInDays: !Ref CloudWatchLogsExpirationInDays
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+
+  RegenerateSummaryResolverFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: Customer can use VPC if desired
+          - id: W92
+            reason: Customer can choose reserved concurrency based on their requirement.
+    # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency"
+    # checkov:skip=CKV_AWS_116: "DLQ not required for AppSync resolver"
+    # checkov:skip=CKV_AWS_117: "Function does not require VPC access"
+    # checkov:skip=CKV_AWS_173: "Environment variables do not contain sensitive data"
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-RegenerateSummaryResolver"
+      Handler: index.handler
+      Runtime: python3.12
+      CodeUri: ../source/lambda_functions/regenerate_summary_resolver
+      Description: AppSync resolver for regenerateSummary — re-invokes the summary orchestrator on demand
+      MemorySize: 256
+      Timeout: 15
+      Environment:
+        Variables:
+          EVENT_SOURCING_TABLE_NAME: !Ref EventSourcingTable
+          ASYNC_TRANSCRIPT_SUMMARY_ORCHESTRATOR_ARN: !GetAtt AsyncTranscriptSummaryOrchestrator.Arn
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref EventSourcingTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: !GetAtt AsyncTranscriptSummaryOrchestrator.Arn
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:DescribeKey
+              Resource: !Ref CustomerManagedEncryptionKeyArn
+              Condition:
+                StringEquals:
+                  "kms:ViaService": !Sub "dynamodb.${AWS::Region}.amazonaws.com"
+      LoggingConfig:
+        LogGroup: !Ref RegenerateSummaryResolverFunctionLogGroup
+    DependsOn:
+      - RegenerateSummaryResolverFunctionLogGroup
+
+  AppSyncRegenerateSummaryLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - appsync.amazonaws.com
+      Policies:
+        - PolicyName: lambda
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt RegenerateSummaryResolverFunction.Arn
+
+  RegenerateSummaryDataSource:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt AppSyncApiEncrypted.ApiId
+      Name: RegenerateSummaryResolver
+      Description: Lambda resolver for regenerateSummary
+      Type: AWS_LAMBDA
+      ServiceRoleArn: !GetAtt AppSyncRegenerateSummaryLambdaRole.Arn
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt RegenerateSummaryResolverFunction.Arn
+
+  RegenerateSummaryAppSyncResolver:
+    Type: AWS::AppSync::Resolver
+    DependsOn: AppSyncSchema
+    Properties:
+      ApiId: !GetAtt AppSyncApiEncrypted.ApiId
+      DataSourceName: !GetAtt RegenerateSummaryDataSource.Name
+      TypeName: Mutation
+      FieldName: regenerateSummary
 
   GetTranscriptSegmentsAppSyncResolver:
     Type: AWS::AppSync::Resolver
@@ -5540,6 +5694,27 @@ Resources:
         ## launches; immediate launches also pass it via the Step Functions input.
         #if(!$util.isNull($ctx.args.input.enableVideoRecording))
           $util.qr($input.put("enableVideoRecording", $ctx.args.input.enableVideoRecording))
+        #end
+
+        ## Per-meeting Transcribe language mode. Persisted so the VPScheduler
+        ## Lambda can plumb TRANSCRIBE_LANGUAGE_CODE to scheduled launches;
+        ## immediate launches also pass it via the Step Functions input.
+        ## Falls back to today's stack-wide default when not provided.
+        #if(!$util.isNullOrBlank($ctx.args.input.transcribeLanguageMode))
+          $util.qr($input.put("transcribeLanguageMode", $ctx.args.input.transcribeLanguageMode))
+        #else
+          $util.qr($input.put("transcribeLanguageMode", "identify-multiple-languages"))
+        #end
+
+        ## Per-meeting summary profile / language. Left unset (not even an
+        ## empty string) when not provided, so the VPScheduler Lambda's own
+        ## default (also blank -> today's stack-wide Default+Custom templates)
+        ## applies uniformly whether the field is absent or explicitly blank.
+        #if(!$util.isNullOrBlank($ctx.args.input.summaryProfile))
+          $util.qr($input.put("summaryProfile", $ctx.args.input.summaryProfile))
+        #end
+        #if(!$util.isNullOrBlank($ctx.args.input.summaryLanguage))
+          $util.qr($input.put("summaryLanguage", $ctx.args.input.summaryLanguage))
         #end
 
         {

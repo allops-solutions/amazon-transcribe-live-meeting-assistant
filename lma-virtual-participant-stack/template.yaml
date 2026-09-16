@@ -21,30 +21,29 @@ Parameters:
 
   LMAIdentity:
     Type: String
-    Default: LMA ({LMA_USER})
+    Default: ALMA ({LMA_USER})
 
   IntroMessage:
     Type: String
     Default: >-
-      Hello. I am an AI Live Meeting Assistant (LMA).
+      Hello. I am ALMA, allOps's AI Live Meeting Assistant.
       I was invited by {LMA_USER} to join this call.
-      Anyone here can ask me to leave at any time by typing "LMA leave" (or "LMA end") in chat.
-      To learn more please visit: https://amazon.com/live-meeting-assistant.
+      Anyone here can ask me to leave at any time by typing "ALMA leave" (or "ALMA end") in chat.
 
   StartRecordingMessage:
     Type: String
     Default: >-
-      Live Meeting Assistant started.
+      ALMA started.
 
   StopRecordingMessage:
     Type: String
     Default: >
-      Live Meeting Assistant stopped.
+      ALMA stopped.
 
   ExitMessage:
     Type: String
     Default: >
-      Live Meeting Assistant has left the room.
+      ALMA has left the room.
 
   # networking parameters
   VPC:
@@ -98,6 +97,17 @@ Parameters:
   VPProfilesBucketName:
     Type: String
     Description: Name of the S3 bucket holding per-user persisted Chromium profiles
+
+  VPSharedGoogleMeetProfile:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      When true, every Google Meet launch shares ONE Chromium profile (one Google
+      sign-in for everyone, e.g. a dedicated Workspace account) instead of the
+      default per-launching-user profile. Only affects Google Meet — Zoom, Teams
+      and Webex keep their per-user stored-credential profiles. Sign the shared
+      account in once via the VP live view after enabling; every meeting reuses it.
 
   EventSourcingTableName:
     Type: String
@@ -2207,6 +2217,13 @@ Resources:
               Value: !Ref TranscribePreferredLanguage
             - Name: CUSTOM_VOCABULARY_NAME
               Value: !Ref CustomVocabularyName
+            # Per-meeting summary profile/language; blank by default (today's
+            # stack-wide Default+Custom templates), overridden per-task at
+            # launch by the Step Functions / scheduler meeting-creation form.
+            - Name: SUMMARY_PROFILE
+              Value: ""
+            - Name: SUMMARY_LANGUAGE
+              Value: ""
             - Name: LMA_IDENTITY
               Value: !Ref LMAIdentity
             - Name: INTRO_MESSAGE
@@ -2231,6 +2248,8 @@ Resources:
               Value: !Ref DomResolverModelId
             - Name: VP_PROFILES_BUCKET
               Value: !Ref VPProfilesBucketName
+            - Name: VP_SHARED_GOOGLE_MEET_PROFILE
+              Value: !Ref VPSharedGoogleMeetProfile
             # Overridden at task launch by Step Functions when the user opts in.
             - Name: ZOOM_CREDENTIALS_SECRET_NAME
               Value: ""
@@ -2642,7 +2661,10 @@ Resources:
                   "zoomCredentialsSecretName.$": "States.Format('${LMAStackName}/zoom-credentials/{}', $.data.userZoomSub)",
                   "userSub": "",
                   "userZoomSub": "",
-                  "enableVideoRecording": "true"
+                  "enableVideoRecording": "true",
+                  "transcribeLanguageMode": "identify-multiple-languages",
+                  "summaryProfile": "",
+                  "summaryLanguage": ""
                 },
                 "ResultPath": "$.computed",
                 "Next": "MergeZoomSecret"
@@ -2653,7 +2675,10 @@ Resources:
                   "zoomCredentialsSecretName": "",
                   "userSub": "",
                   "userZoomSub": "",
-                  "enableVideoRecording": "true"
+                  "enableVideoRecording": "true",
+                  "transcribeLanguageMode": "identify-multiple-languages",
+                  "summaryProfile": "",
+                  "summaryLanguage": ""
                 },
                 "ResultPath": "$.computed",
                 "Next": "MergeZoomSecret"
@@ -2931,6 +2956,18 @@ Resources:
               {
               "Name": "ENABLE_VIDEO_RECORDING",
               "Value.$": "$.data.enableVideoRecording"
+              },
+              {
+              "Name": "TRANSCRIBE_LANGUAGE_CODE",
+              "Value.$": "$.data.transcribeLanguageMode"
+              },
+              {
+              "Name": "SUMMARY_PROFILE",
+              "Value.$": "$.data.summaryProfile"
+              },
+              {
+              "Name": "SUMMARY_LANGUAGE",
+              "Value.$": "$.data.summaryLanguage"
               }
               ]
               }
@@ -3217,6 +3254,15 @@ Resources:
           def _ecs_params(vp_id, new_image, launch_type, meeting_time_int,
                           user_sub, zoom_secret_name, enable_video_recording_str):
               """RunTask parameters for the EC2/FARGATE scheduled launch path."""
+              # Per-meeting Transcribe language mode (English only / Bosnian only /
+              # auto-detect-locks-in-early / auto-detect-mixed-languages). Defaults
+              # to today's stack-wide behavior for older rows / rows created before
+              # this field existed.
+              transcribe_language_mode = new_image.get('transcribeLanguageMode', {}).get('S') or 'identify-multiple-languages'
+              # Per-meeting summary profile/language. Blank means today's
+              # stack-wide Default+Custom templates.
+              summary_profile = new_image.get('summaryProfile', {}).get('S', '')
+              summary_language = new_image.get('summaryLanguage', {}).get('S', '')
               return {
                   'ClientToken': vp_id,
                   'TaskDefinition': os.environ['TASK_DEFINITION_ARN'],
@@ -3247,6 +3293,9 @@ Resources:
                               {'Name': 'RECORDINGS_BUCKET_NAME', 'Value': os.environ.get('RECORDINGS_BUCKET_NAME', '')},
                               {'Name': 'VP_TASK_REGISTRY_TABLE_NAME', 'Value': os.environ.get('VP_TASK_REGISTRY_TABLE_NAME', '')},
                               {'Name': 'ENABLE_VIDEO_RECORDING', 'Value': enable_video_recording_str},
+                              {'Name': 'TRANSCRIBE_LANGUAGE_CODE', 'Value': transcribe_language_mode},
+                              {'Name': 'SUMMARY_PROFILE', 'Value': summary_profile},
+                              {'Name': 'SUMMARY_LANGUAGE', 'Value': summary_language},
                           ]
                       }]
                   },

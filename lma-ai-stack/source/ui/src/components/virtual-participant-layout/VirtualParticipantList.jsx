@@ -23,6 +23,7 @@ import {
   TimeInput,
   Checkbox,
   Toggle,
+  RadioGroup,
   Textarea,
   Pagination,
   TextFilter,
@@ -55,6 +56,14 @@ import '@cloudscape-design/global-styles/index.css';
 
 const client = generateClient();
 const logger = new ConsoleLogger('VirtualParticipantList');
+
+const getLLMPromptTemplate = `
+  query GetLLMPromptTemplate($LLMPromptTemplateId: ID!) {
+    getLLMPromptTemplate(LLMPromptTemplateId: $LLMPromptTemplateId) {
+      LLMPromptTemplateId
+    }
+  }
+`;
 
 const listVirtualParticipants = `
   query ListVirtualParticipants {
@@ -118,6 +127,17 @@ const VirtualParticipantList = () => {
   // task-definition default); users untick to launch a VP that records audio +
   // transcript only.
   const [enableVideoRecording, setEnableVideoRecording] = useState(true);
+  // Per-meeting Transcribe language mode. Defaults to today's stack-wide
+  // behavior (auto-detect, re-checks throughout the call) so a meeting
+  // nobody categorizes still transcribes the way it always has.
+  const [transcribeLanguageMode, setTranscribeLanguageMode] = useState('identify-multiple-languages');
+  // Summary profile / output language for this meeting. Both blank by
+  // default (no per-profile default language) — a meeting that doesn't pick
+  // either gets today's stack-wide Default/Custom templates, in whatever
+  // language they're written in.
+  const [summaryProfile, setSummaryProfile] = useState('');
+  const [summaryLanguage, setSummaryLanguage] = useState('');
+  const [summaryProfileCatalog, setSummaryProfileCatalog] = useState([]); // [{ id, name }]
   const [notification, setNotification] = useState(null);
   const [isCreating, setIsCreating] = useState(false);
   const [creatingType, setCreatingType] = useState(null);
@@ -191,6 +211,27 @@ const VirtualParticipantList = () => {
   // Load participants on component mount
   useEffect(() => {
     loadParticipants();
+  }, []);
+
+  // Load the summary profile catalog (for the meeting-creation form's Profile
+  // dropdown) on mount. Missing/empty catalog just means no profiles exist
+  // yet — not an error, since most stacks won't have created any.
+  useEffect(() => {
+    const loadSummaryProfileCatalog = async () => {
+      try {
+        const result = await client.graphql({
+          query: getLLMPromptTemplate,
+          variables: { LLMPromptTemplateId: 'SummaryProfileCatalog' },
+        });
+        const catalogItem = JSON.parse(result.data.getLLMPromptTemplate.LLMPromptTemplateId) || {};
+        const raw = catalogItem['0#PROFILES'];
+        setSummaryProfileCatalog(raw ? JSON.parse(raw) : []);
+      } catch (err) {
+        logger.debug('No summary profile catalog found (none created yet):', err);
+        setSummaryProfileCatalog([]);
+      }
+    };
+    loadSummaryProfileCatalog();
   }, []);
 
   useEffect(() => {
@@ -537,7 +578,16 @@ const VirtualParticipantList = () => {
         // ENABLE_VIDEO_RECORDING to scheduled launches. Immediate launches
         // carry it via the Step Functions input below.
         enableVideoRecording,
+        // Persisted on the row so the VPScheduler Lambda can plumb
+        // TRANSCRIBE_LANGUAGE_CODE to scheduled launches. Immediate launches
+        // carry it via the Step Functions input below.
+        transcribeLanguageMode,
       };
+      // Optional — omitted entirely (not even blank) when not chosen, so the
+      // resolver leaves them unset and the summary Lambda falls back to
+      // today's stack-wide Default+Custom templates.
+      if (summaryProfile) vpInput.summaryProfile = summaryProfile;
+      if (summaryLanguage) vpInput.summaryLanguage = summaryLanguage;
 
       // Add scheduling fields if this is a scheduled VP
       if (isScheduled && meetingTimestamp) {
@@ -583,6 +633,9 @@ const VirtualParticipantList = () => {
               userZoomSub,
               // ECS container Environment values must be strings, not booleans.
               enableVideoRecording: enableVideoRecording ? 'true' : 'false',
+              transcribeLanguageMode,
+              summaryProfile,
+              summaryLanguage,
               accessToken: (await fetchAuthSession()).tokens?.accessToken?.toString() || '',
               idToken: (await fetchAuthSession()).tokens?.idToken?.toString() || '',
               rereshToken: '', // Amplify v6 does not expose refresh tokens directly
@@ -629,6 +682,9 @@ const VirtualParticipantList = () => {
       setMeetingTimeError('');
       setConsentChecked(false);
       setEnableVideoRecording(true);
+      setTranscribeLanguageMode('identify-multiple-languages');
+      setSummaryProfile('');
+      setSummaryLanguage('');
 
       loadParticipants();
 
@@ -940,6 +996,76 @@ const VirtualParticipantList = () => {
               <Toggle checked={enableVideoRecording} onChange={({ detail }) => setEnableVideoRecording(detail.checked)}>
                 Record meeting video
               </Toggle>
+            </FormField>
+
+            <FormField label="Meeting language" stretch>
+              <RadioGroup
+                value={transcribeLanguageMode}
+                onChange={({ detail }) => setTranscribeLanguageMode(detail.value)}
+                items={[
+                  {
+                    value: 'en-US',
+                    label: 'English only',
+                    description: 'Best accuracy for English-speaking calls. Bosnian speech will be transcribed incorrectly.',
+                  },
+                  {
+                    value: 'bs-BA',
+                    label: 'Bosnian only',
+                    description: 'Best accuracy for Bosnian-heavy calls, including occasional English terms.',
+                  },
+                  {
+                    value: 'identify-language',
+                    label: 'Auto-detect (locks in early)',
+                    description:
+                      'Identifies the language once, a few seconds into the conversation, and sticks with it. ' +
+                      "Best when you don't know which language a call will be in, but expect it to be consistent.",
+                  },
+                  {
+                    value: 'identify-multiple-languages',
+                    label: 'Auto-detect, mixed languages (default)',
+                    description:
+                      'Re-checks language throughout the call. May produce poor quality when a speaker switches ' +
+                      'languages mid-sentence — use English only / Bosnian only above for meetings like that.',
+                  },
+                ]}
+              />
+            </FormField>
+
+            <FormField
+              label="Summary profile (optional)"
+              description="Which set of summary sections to use. Leave blank for the stack's Default/Custom templates. Manage profiles under Configuration → Transcript Summary."
+              stretch
+            >
+              <Select
+                selectedOption={
+                  summaryProfile
+                    ? {
+                        value: summaryProfile,
+                        label: summaryProfileCatalog.find((p) => p.id === summaryProfile)?.name || summaryProfile,
+                      }
+                    : null
+                }
+                onChange={({ detail }) => setSummaryProfile(detail.selectedOption.value)}
+                options={summaryProfileCatalog.map((p) => ({ value: p.id, label: p.name }))}
+                placeholder="Default / Custom (stack-wide)"
+                empty="No summary profiles created yet"
+              />
+            </FormField>
+
+            <FormField
+              label="Summary language (optional)"
+              description="Output language for this meeting's summary, independent of the profile above. Leave blank to use whatever language the chosen templates are written in."
+              stretch
+            >
+              <Select
+                selectedOption={summaryLanguage ? { value: summaryLanguage, label: summaryLanguage } : null}
+                onChange={({ detail }) => setSummaryLanguage(detail.selectedOption.value)}
+                options={[
+                  { value: 'English', label: 'English' },
+                  { value: 'Bosnian', label: 'Bosnian' },
+                ]}
+                placeholder="Whatever language the templates are written in"
+              />
             </FormField>
 
             <Checkbox onChange={({ detail }) => setConsentChecked(detail.checked)} checked={consentChecked}>

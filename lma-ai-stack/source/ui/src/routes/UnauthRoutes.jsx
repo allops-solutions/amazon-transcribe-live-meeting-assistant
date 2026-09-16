@@ -14,7 +14,12 @@ import OAuthCallback from '../components/mcp-servers/OAuthCallback';
 // Set at build time via the AllowedSignUpEmailDomain CloudFormation parameter.
 const VITE_SHOULD_HIDE_SIGN_UP = import.meta.env.VITE_SHOULD_HIDE_SIGN_UP ?? 'true';
 
-const AuthHeader = () => <h1 style={{ textAlign: 'center', margin: '2rem 0' }}>Welcome to Live Meeting Assistant!</h1>;
+const AuthHeader = () => (
+  <div style={{ textAlign: 'center', margin: '2rem 0' }}>
+    <img src="/allops-logo.png" alt="allOps" style={{ height: '48px', marginBottom: '0.5rem' }} />
+    <h1>Welcome to ALMA!</h1>
+  </div>
+);
 
 const AuthPanel = () => (
   <Authenticator

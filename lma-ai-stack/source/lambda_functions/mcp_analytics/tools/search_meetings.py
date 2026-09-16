@@ -85,12 +85,11 @@ def execute(
 
     kb_client = boto3.client("bedrock-agent-runtime")
 
-    # Build metadata filters for UBAC and date range
+    # Build metadata filters for date range. allOps policy: every
+    # authenticated user (Admin or User) can search every meeting — no
+    # owner filter. See getCall.response.vtl for the rationale. is_admin/
+    # user_id kept as params so callers don't need updating.
     filters = []
-
-    # UBAC: Non-admin users see only their meetings
-    if not is_admin and user_id:
-        filters.append({"equals": {"key": "owner", "value": user_id}})
 
     # Date range filters
     if start_date:

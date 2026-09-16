@@ -38,9 +38,10 @@ def execute(
     if not meeting_id:
         raise ValueError("Meeting ID is required")
 
-    # Check permissions
-    if not can_access_meeting(meeting_id, user_id, is_admin):
-        raise PermissionError(f"Access denied to meeting {meeting_id}")
+    # allOps policy: every authenticated user (Admin or User) can access every
+    # meeting's transcript — no Owner check. See getCall.response.vtl for the
+    # rationale. is_admin/user_id kept as params so callers don't need
+    # updating.
 
     # Fetch transcript from S3
     # LMA transcript files use underscores instead of spaces in filenames
@@ -108,33 +109,6 @@ def execute(
 
     result["meetingUrl"] = get_meeting_url(meeting_id)
     return result
-
-
-def can_access_meeting(meeting_id: str, user_id: str, is_admin: bool) -> bool:
-    """
-    Check if user has permission to access meeting.
-    Admins can access all meetings, users can access only their own.
-    """
-    if is_admin:
-        return True
-
-    # Query DynamoDB to check ownership
-    dynamodb = boto3.resource("dynamodb")
-    table_name = os.environ.get("CALLS_TABLE")
-    table = dynamodb.Table(table_name)
-
-    try:
-        response = table.get_item(Key={"PK": f"c#{meeting_id}", "SK": f"c#{meeting_id}"})
-
-        meeting = response.get("Item", {})
-        owner = meeting.get("Owner", meeting.get("AgentId", ""))
-
-        # Check if user is the owner
-        return owner == user_id
-
-    except Exception as e:
-        logger.error(f"Error checking meeting access: {e}")
-        return False
 
 
 def format_as_text(transcript_data: Dict[str, Any]) -> str:

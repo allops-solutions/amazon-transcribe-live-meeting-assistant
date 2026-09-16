@@ -63,11 +63,10 @@ def execute(
             end = today.strftime("%Y-%m-%d")
             meetings = query_by_date_range(table, start, end, limit)
 
-        # Apply UBAC filter
-        if not is_admin:
-            meetings = [
-                m for m in meetings if m.get("Owner") == user_id or m.get("AgentId") == user_id
-            ]
+        # allOps policy: every authenticated user (Admin or User) can see every
+        # meeting — no Owner/AgentId filtering. See getCall.response.vtl for
+        # the rationale. is_admin/user_id kept as params (unused for
+        # filtering) so callers don't need updating.
 
         # Filter by participant if specified
         if participant:

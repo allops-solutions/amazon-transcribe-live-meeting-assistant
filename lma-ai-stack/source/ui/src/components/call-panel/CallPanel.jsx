@@ -69,6 +69,15 @@ import MCPServersModal from '../mcp-servers';
 const client = generateClient();
 const logger = new ConsoleLogger('CallPanel');
 
+const regenerateSummaryMutation = /* GraphQL */ `
+  mutation RegenerateSummary($input: RegenerateSummaryInput!) {
+    regenerateSummary(input: $input) {
+      CallId
+      Success
+    }
+  }
+`;
+
 // comprehend PII types
 const piiTypesSplitRegEx = new RegExp(`\\[(${COMPREHEND_PII_TYPES.join('|')})\\]`);
 
@@ -187,7 +196,14 @@ const CallAttributes = ({ item, setToolsOpen, getCallDetailsFromCallIds }) => {
 
 // eslint-disable-next-line arrow-body-style
 const CallSummary = ({ item }) => {
-  const [setCopySuccess] = useState(false);
+  // Was `const [setCopySuccess] = useState(false)` — a single-element
+  // destructure binds setCopySuccess to the state VALUE, not the setter, so
+  // every call below threw "setCopySuccess is not a function" and the copy
+  // silently fell through to the (also broken) fallback path even though
+  // navigator.clipboard.writeText had already succeeded. The value itself
+  // isn't rendered anywhere, so keep only the setter.
+  const [, setCopySuccess] = useState(false);
+  const [isRegenerating, setIsRegenerating] = useState(false);
 
   const copyToClipboard = async () => {
     try {
@@ -211,6 +227,24 @@ const CallSummary = ({ item }) => {
       } catch (fallbackErr) {
         logger.error('Fallback copy failed:', fallbackErr);
       }
+    }
+  };
+
+  const handleRegenerateSummary = async () => {
+    setIsRegenerating(true);
+    try {
+      await client.graphql({
+        query: regenerateSummaryMutation,
+        variables: { input: { CallId: item.callId } },
+      });
+      // No local state update here on purpose — the new CallSummaryText
+      // arrives via the existing onUpdateCall subscription (regenerateSummary
+      // runs async and addCallSummaryText is one of its trigger mutations),
+      // the same path the original end-of-call summary uses.
+    } catch (err) {
+      logger.error('Failed to regenerate summary:', err);
+    } finally {
+      setIsRegenerating(false);
     }
   };
 
@@ -242,6 +276,17 @@ const CallSummary = ({ item }) => {
           }
           actions={
             <SpaceBetween size="xxs" direction="horizontal">
+              {item.callSummaryText && (
+                <Button
+                  iconName="refresh"
+                  variant="normal"
+                  loading={isRegenerating}
+                  disabled={isRegenerating}
+                  onClick={handleRegenerateSummary}
+                >
+                  Regenerate
+                </Button>
+              )}
               {item.callSummaryText && (
                 <ButtonDropdown
                   items={[

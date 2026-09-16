@@ -2,25 +2,7 @@
   $util.error($ctx.error.message, $ctx.error.type)
 #end
 
-## This resolver can be invoked by either a Lambda function with IAM authentication
-## or a User authenticated using Cognito. The Lambda function gets unrestricted access
-## to all the call records stored in the DynamoDB to perform the backend operations in the 
-## Meeting Controls Lambda function. 
-
-#set($isCognitoUser = true)
-#if($context.identity.userArn && $context.identity.userArn.contains(":assumed-role/"))
-  #set($isCognitoUser = false)
-#end
-
-#if(!$context.identity.groups.contains("Admin") && $isCognitoUser)
-  #set($myResults = [])
-  #foreach($item in $context.result.items)
-    #if($item.Owner == $context.identity.username || $item.SharedWith.contains($context.identity.username))
-      #set($added = $myResults.add($item))
-    #end
-  #end
-  $util.toJson({"TranscriptSegments": $myResults, "nextToken": $ctx.result.nextToken})
-#else
-  $util.toJson({"TranscriptSegments": $ctx.result.items, "nextToken": $ctx.result.nextToken})
-#end
-
+## allOps policy: every authenticated user (Admin or User) can read every
+## meeting's transcript — see getCall.response.vtl for the rationale. No
+## Owner/SharedWith filtering here by design.
+$util.toJson({"TranscriptSegments": $ctx.result.items, "nextToken": $ctx.result.nextToken})

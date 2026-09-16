@@ -152,6 +152,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 meeting_id=tool_input.get("meetingId"),
                 scheduled_time=tool_input.get("scheduledTime"),
                 meeting_password=tool_input.get("meetingPassword"),
+                meeting_language=tool_input.get("meetingLanguage"),
+                summary_profile=tool_input.get("summaryProfile"),
+                summary_language=tool_input.get("summaryLanguage"),
                 user_id=user_id,
                 is_admin=is_admin,
             )
@@ -162,6 +165,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 meeting_platform=tool_input.get("meetingPlatform"),
                 meeting_id=tool_input.get("meetingId"),
                 meeting_password=tool_input.get("meetingPassword"),
+                meeting_language=tool_input.get("meetingLanguage"),
+                summary_profile=tool_input.get("summaryProfile"),
+                summary_language=tool_input.get("summaryLanguage"),
                 user_id=user_id,
                 is_admin=is_admin,
                 # Default ON; pass useStoredZoomCredentials=false to opt-out.
@@ -272,6 +278,34 @@ MCP_TOOLS = [
                 },
                 "scheduledTime": {"type": "string", "description": "ISO 8601 datetime"},
                 "meetingPassword": {"type": "string", "description": "Optional meeting password"},
+                "meetingLanguage": {
+                    "type": "string",
+                    "description": (
+                        "Optional transcription language mode: 'English only', 'Bosnian only', "
+                        "'Auto-detect (locks in early)', or 'Auto-detect (mixed languages)'. Omit "
+                        "for the stack default (auto-detect, mixed languages) — best for calls "
+                        "that mix English and Bosnian within the same sentence only if you don't "
+                        "know the dominant language in advance; prefer 'English only' or "
+                        "'Bosnian only' when you do, for much better accuracy."
+                    ),
+                },
+                "summaryProfile": {
+                    "type": "string",
+                    "description": (
+                        "Optional name of a summary profile set up on the Transcript Summary "
+                        "page (e.g. 'Technical Client Call'). Omit to use the stack's Default/"
+                        "Custom summary templates. An unrecognized name falls back to Default/"
+                        "Custom rather than failing."
+                    ),
+                },
+                "summaryLanguage": {
+                    "type": "string",
+                    "description": (
+                        "Optional output language for the summary (e.g. 'English', 'Bosnian'), "
+                        "independent of summaryProfile. Omit to use whatever language the chosen "
+                        "templates are written in."
+                    ),
+                },
             },
             "required": ["meetingName", "meetingPlatform", "meetingId", "scheduledTime"],
         },
@@ -305,6 +339,34 @@ MCP_TOOLS = [
                     ),
                 },
                 "meetingPassword": {"type": "string", "description": "Optional meeting password"},
+                "meetingLanguage": {
+                    "type": "string",
+                    "description": (
+                        "Optional transcription language mode: 'English only', 'Bosnian only', "
+                        "'Auto-detect (locks in early)', or 'Auto-detect (mixed languages)'. Omit "
+                        "for the stack default (auto-detect, mixed languages) — best for calls "
+                        "that mix English and Bosnian within the same sentence only if you don't "
+                        "know the dominant language in advance; prefer 'English only' or "
+                        "'Bosnian only' when you do, for much better accuracy."
+                    ),
+                },
+                "summaryProfile": {
+                    "type": "string",
+                    "description": (
+                        "Optional name of a summary profile set up on the Transcript Summary "
+                        "page (e.g. 'Technical Client Call'). Omit to use the stack's Default/"
+                        "Custom summary templates. An unrecognized name falls back to Default/"
+                        "Custom rather than failing."
+                    ),
+                },
+                "summaryLanguage": {
+                    "type": "string",
+                    "description": (
+                        "Optional output language for the summary (e.g. 'English', 'Bosnian'), "
+                        "independent of summaryProfile. Omit to use whatever language the chosen "
+                        "templates are written in."
+                    ),
+                },
                 "useStoredZoomCredentials": {
                     "type": "boolean",
                     "description": (
@@ -425,6 +487,9 @@ def execute_tool_call(msg_id, tool_name, arguments, user_id, username, is_admin)
                 meeting_id=arguments.get("meetingId"),
                 scheduled_time=arguments.get("scheduledTime"),
                 meeting_password=arguments.get("meetingPassword"),
+                meeting_language=arguments.get("meetingLanguage"),
+                summary_profile=arguments.get("summaryProfile"),
+                summary_language=arguments.get("summaryLanguage"),
                 user_id=user_id,
                 is_admin=is_admin,
             )
@@ -434,6 +499,9 @@ def execute_tool_call(msg_id, tool_name, arguments, user_id, username, is_admin)
                 meeting_platform=arguments.get("meetingPlatform"),
                 meeting_id=arguments.get("meetingId"),
                 meeting_password=arguments.get("meetingPassword"),
+                meeting_language=arguments.get("meetingLanguage"),
+                summary_profile=arguments.get("summaryProfile"),
+                summary_language=arguments.get("summaryLanguage"),
                 user_id=user_id,
                 is_admin=is_admin,
                 use_stored_zoom_credentials=arguments.get("useStoredZoomCredentials", True),

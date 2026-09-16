@@ -11,6 +11,7 @@ import {
   SpaceBetween,
   FormField,
   Input,
+  Select,
   Textarea,
   Button,
   Alert,
@@ -18,6 +19,7 @@ import {
   Box,
   ExpandableSection,
   Icon,
+  Modal,
 } from '@cloudscape-design/components';
 
 const client = generateClient();
@@ -37,6 +39,23 @@ const updateLLMPromptTemplateMutation = `
     }
   }
 `;
+
+// The catalog of named summary profiles is itself stored as one LLMPromptTemplate
+// item (id SummaryProfileCatalog), under a field matching the same N#LABEL shape
+// every other template field uses, so it needs no special case in the write
+// resolver's field allowlist. Its value is a JSON-encoded array of {id, name}.
+const CATALOG_ID = 'SummaryProfileCatalog';
+const CATALOG_FIELD = '0#PROFILES';
+// Sentinel for "no profile selected" in the Select control — GraphQL/Cloudscape
+// don't do well with an actual null/empty option value.
+const DEFAULT_OPTION_VALUE = '__default__';
+
+const slugify = (name) =>
+  name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 
 // Parse config object into sorted array of {number, label, prompt} entries
 const parseTemplateConfig = (config) => {
@@ -63,33 +82,64 @@ const TranscriptSummaryPage = () => {
   const [success, setSuccess] = useState(null);
   const [defaultConfig, setDefaultConfig] = useState({});
   const [templates, setTemplates] = useState([]);
+  const [catalog, setCatalog] = useState([]); // [{ id, name }]
+  const [selectedProfileId, setSelectedProfileId] = useState(null); // null = Default/Custom
+  const [showNewProfileModal, setShowNewProfileModal] = useState(false);
+  const [newProfileName, setNewProfileName] = useState('');
+  const [newProfileError, setNewProfileError] = useState('');
 
-  const loadConfig = useCallback(async () => {
+  const fetchTemplateItem = async (templateId) => {
+    const result = await client.graphql({
+      query: getLLMPromptTemplateQuery,
+      variables: { LLMPromptTemplateId: templateId },
+    });
+    return JSON.parse(result.data.getLLMPromptTemplate.LLMPromptTemplateId) || {};
+  };
+
+  const loadCatalog = useCallback(async () => {
+    try {
+      const catalogItem = await fetchTemplateItem(CATALOG_ID);
+      const raw = catalogItem[CATALOG_FIELD];
+      setCatalog(raw ? JSON.parse(raw) : []);
+    } catch (err) {
+      console.error('Error loading summary profile catalog:', err);
+      setCatalog([]);
+    }
+  }, []);
+
+  const saveCatalog = async (updatedCatalog) => {
+    await client.graphql({
+      query: updateLLMPromptTemplateMutation,
+      variables: {
+        input: {
+          LLMPromptTemplateId: CATALOG_ID,
+          TemplateConfig: JSON.stringify({ [CATALOG_FIELD]: JSON.stringify(updatedCatalog) }),
+        },
+      },
+    });
+    setCatalog(updatedCatalog);
+  };
+
+  // profileId === null loads the stack-wide Default+Custom pair (today's only
+  // behavior); a string loads that named profile's own template set, seeded
+  // from the Default templates when the profile has no saved content yet
+  // (brand new, or created but never saved) — the same helpful starting point
+  // Default already gives the Custom editor.
+  const loadConfig = useCallback(async (profileId) => {
     setLoading(true);
     setError(null);
     try {
-      const [defaultResult, customResult] = await Promise.all([
-        client.graphql({
-          query: getLLMPromptTemplateQuery,
-          variables: { LLMPromptTemplateId: 'DefaultSummaryPromptTemplates' },
-        }),
-        client.graphql({
-          query: getLLMPromptTemplateQuery,
-          variables: { LLMPromptTemplateId: 'CustomSummaryPromptTemplates' },
-        }),
-      ]);
+      const defaultData = await fetchTemplateItem('DefaultSummaryPromptTemplates');
+      setDefaultConfig(defaultData);
 
-      const defaultData = JSON.parse(defaultResult.data.getLLMPromptTemplate.LLMPromptTemplateId);
-      const customData = JSON.parse(customResult.data.getLLMPromptTemplate.LLMPromptTemplateId);
-
-      setDefaultConfig(defaultData || {});
-
-      // If custom config has template entries, use those; otherwise use defaults
-      const customEntries = parseTemplateConfig(customData);
-      if (customEntries.length > 0) {
-        setTemplates(customEntries);
+      if (profileId) {
+        const profileData = await fetchTemplateItem(`Profile#${profileId}`);
+        const profileEntries = parseTemplateConfig(profileData);
+        setTemplates(profileEntries.length > 0 ? profileEntries : parseTemplateConfig(defaultData));
       } else {
-        setTemplates(parseTemplateConfig(defaultData));
+        const customData = await fetchTemplateItem('CustomSummaryPromptTemplates');
+        const customEntries = parseTemplateConfig(customData);
+        setTemplates(customEntries.length > 0 ? customEntries : parseTemplateConfig(defaultData));
       }
     } catch (err) {
       console.error('Error loading LLM prompt templates:', err);
@@ -100,8 +150,91 @@ const TranscriptSummaryPage = () => {
   }, []);
 
   useEffect(() => {
-    loadConfig();
-  }, [loadConfig]);
+    loadCatalog();
+    loadConfig(null);
+  }, [loadCatalog, loadConfig]);
+
+  const handleProfileChange = (value) => {
+    const profileId = value === DEFAULT_OPTION_VALUE ? null : value;
+    setSelectedProfileId(profileId);
+    setError(null);
+    setSuccess(null);
+    loadConfig(profileId);
+  };
+
+  const handleOpenNewProfileModal = () => {
+    setNewProfileName('');
+    setNewProfileError('');
+    setShowNewProfileModal(true);
+  };
+
+  const handleCreateProfile = async () => {
+    const name = newProfileName.trim();
+    if (!name) {
+      setNewProfileError('Enter a name for the profile.');
+      return;
+    }
+    const id = slugify(name);
+    if (!id) {
+      setNewProfileError('That name has no usable characters — try including a letter or number.');
+      return;
+    }
+    if (catalog.some((p) => p.id === id)) {
+      setNewProfileError('A profile with this name already exists.');
+      return;
+    }
+    setSaving(true);
+    try {
+      const updatedCatalog = [...catalog, { id, name }];
+      await saveCatalog(updatedCatalog);
+      setShowNewProfileModal(false);
+      setSelectedProfileId(id);
+      await loadConfig(id);
+      setSuccess(`Profile "${name}" created. Edit its sections below, then Save Changes.`);
+    } catch (err) {
+      console.error('Error creating summary profile:', err);
+      setNewProfileError('Failed to create profile. Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteProfile = async () => {
+    if (!selectedProfileId) return;
+    const profile = catalog.find((p) => p.id === selectedProfileId);
+    const profileId = selectedProfileId;
+    // eslint-disable-next-line no-alert
+    if (!window.confirm(`Permanently delete profile "${profile?.name || profileId}"? ` +
+      'This cannot be undone. A meeting already using it falls back to the Default templates ' +
+      'the next time its summary is generated.')) {
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      // Unlist first, then hard-delete the profile's own item. If the delete
+      // fails after unlisting, the orphaned item is harmless (unreachable
+      // from the catalog) and can be cleaned up by trying again.
+      await saveCatalog(catalog.filter((p) => p.id !== profileId));
+      await client.graphql({
+        query: updateLLMPromptTemplateMutation,
+        variables: {
+          input: {
+            LLMPromptTemplateId: `Profile#${profileId}`,
+            Delete: true,
+          },
+        },
+      });
+      setSelectedProfileId(null);
+      await loadConfig(null);
+      setSuccess('Profile deleted.');
+    } catch (err) {
+      console.error('Error deleting summary profile:', err);
+      setError('Failed to delete profile. Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const handleLabelChange = (index, newLabel) => {
     const updated = [...templates];
@@ -148,14 +281,18 @@ const TranscriptSummaryPage = () => {
         query: updateLLMPromptTemplateMutation,
         variables: {
           input: {
-            LLMPromptTemplateId: 'CustomSummaryPromptTemplates',
+            LLMPromptTemplateId: selectedProfileId ? `Profile#${selectedProfileId}` : 'CustomSummaryPromptTemplates',
             TemplateConfig: JSON.stringify(configData),
           },
         },
       });
 
-      setSuccess('Summary prompt templates saved successfully.');
-      await loadConfig();
+      setSuccess(
+        selectedProfileId
+          ? `Profile "${catalog.find((p) => p.id === selectedProfileId)?.name || selectedProfileId}" saved successfully.`
+          : 'Summary prompt templates saved successfully.',
+      );
+      await loadConfig(selectedProfileId);
     } catch (err) {
       console.error('Error saving LLM prompt templates:', err);
       setError('Failed to save templates. Please try again.');
@@ -165,32 +302,45 @@ const TranscriptSummaryPage = () => {
   };
 
   const handleResetToDefaults = async () => {
-    setSaving(true);
-    setError(null);
-    setSuccess(null);
-    try {
-      await client.graphql({
-        query: updateLLMPromptTemplateMutation,
-        variables: {
-          input: {
-            LLMPromptTemplateId: 'CustomSummaryPromptTemplates',
-            TemplateConfig: JSON.stringify({}),
+    if (!selectedProfileId) {
+      // Default/Custom: reset means clear the Custom override entirely.
+      setSaving(true);
+      setError(null);
+      setSuccess(null);
+      try {
+        await client.graphql({
+          query: updateLLMPromptTemplateMutation,
+          variables: {
+            input: {
+              LLMPromptTemplateId: 'CustomSummaryPromptTemplates',
+              TemplateConfig: JSON.stringify({}),
+            },
           },
-        },
-      });
+        });
 
+        setTemplates(parseTemplateConfig(defaultConfig));
+        setSuccess('Custom overrides cleared. Default templates will be used.');
+        await loadConfig(null);
+      } catch (err) {
+        console.error('Error resetting templates:', err);
+        setError('Failed to reset templates. Please try again.');
+      } finally {
+        setSaving(false);
+      }
+    } else {
+      // A named profile: just reload the Default templates into the editor —
+      // nothing is written until Save Changes.
       setTemplates(parseTemplateConfig(defaultConfig));
-      setSuccess('Custom overrides cleared. Default templates will be used.');
-      await loadConfig();
-    } catch (err) {
-      console.error('Error resetting templates:', err);
-      setError('Failed to reset templates. Please try again.');
-    } finally {
-      setSaving(false);
+      setSuccess('Reloaded the Default templates into the editor. Save Changes to apply them to this profile.');
     }
   };
 
-  if (loading) {
+  const profileOptions = [
+    { value: DEFAULT_OPTION_VALUE, label: 'Default / Custom (meetings without a profile)' },
+    ...catalog.map((p) => ({ value: p.id, label: p.name })),
+  ];
+
+  if (loading && catalog.length === 0 && Object.keys(defaultConfig).length === 0) {
     return (
       <Container header={<Header variant="h1">Transcript Summary Prompts</Header>}>
         <Box textAlign="center" padding="xxl">
@@ -207,22 +357,10 @@ const TranscriptSummaryPage = () => {
           <Header
             variant="h1"
             description={
-              'Customize the summary prompt templates used for end-of-meeting transcript ' +
-              'summarization. Changes will apply to all future meeting summaries. ' +
-              'Set a prompt to "NONE" to disable a default template.'
-            }
-            actions={
-              <SpaceBetween direction="horizontal" size="xs">
-                <Button onClick={handleResetToDefaults} loading={saving}>
-                  Reset to Defaults
-                </Button>
-                <Button onClick={() => handleSave()} disabled={saving}>
-                  Cancel
-                </Button>
-                <Button variant="primary" onClick={handleSave} loading={saving}>
-                  Save Changes
-                </Button>
-              </SpaceBetween>
+              'Customize the summary prompt templates used for end-of-meeting transcript summarization. ' +
+              'Create a named profile per meeting type (e.g. Technical Client Call, Startup Call, Team Weekly) — ' +
+              'a meeting picks which profile (and which output language) to use when it is created. ' +
+              'Set a prompt to "NONE" to disable a section.'
             }
           >
             Transcript Summary Prompts
@@ -240,6 +378,51 @@ const TranscriptSummaryPage = () => {
               {success}
             </Alert>
           )}
+
+          <FormField
+            label="Profile"
+            description="Which set of sections you're editing. Meetings choose a profile independently of language."
+            stretch
+          >
+            <SpaceBetween direction="horizontal" size="xs">
+              <div style={{ minWidth: '320px' }}>
+                <Select
+                  selectedOption={
+                    profileOptions.find((o) => o.value === (selectedProfileId || DEFAULT_OPTION_VALUE)) || null
+                  }
+                  onChange={({ detail }) => handleProfileChange(detail.selectedOption.value)}
+                  options={profileOptions}
+                  disabled={saving}
+                />
+              </div>
+              <Button onClick={handleOpenNewProfileModal} disabled={saving}>
+                New profile
+              </Button>
+              {selectedProfileId && (
+                <Button onClick={handleDeleteProfile} disabled={saving}>
+                  Delete profile
+                </Button>
+              )}
+            </SpaceBetween>
+          </FormField>
+
+          <Header
+            variant="h3"
+            actions={
+              <SpaceBetween direction="horizontal" size="xs">
+                <Button onClick={handleResetToDefaults} loading={saving}>
+                  Reset to Defaults
+                </Button>
+                <Button variant="primary" onClick={handleSave} loading={saving}>
+                  Save Changes
+                </Button>
+              </SpaceBetween>
+            }
+          >
+            {selectedProfileId
+              ? `Editing: ${catalog.find((p) => p.id === selectedProfileId)?.name || selectedProfileId}`
+              : 'Editing: Default / Custom'}
+          </Header>
 
           {templates.map((template, index) => (
             <Container
@@ -271,7 +454,10 @@ const TranscriptSummaryPage = () => {
                     placeholder="e.g., SUMMARY, DETAILS, ACTIONS"
                   />
                 </FormField>
-                <FormField label='Prompt (set to "NONE" to disable this template)'>
+                <FormField
+                  label='Prompt (set to "NONE" to disable this section)'
+                  description="Use {transcript} for the meeting transcript. Use {language} to control exactly where the output-language instruction goes — otherwise it's appended automatically when a meeting requests one."
+                >
                   <Textarea
                     value={template.prompt}
                     onChange={({ detail }) => handlePromptChange(index, detail.value)}
@@ -294,6 +480,31 @@ const TranscriptSummaryPage = () => {
           <pre>{JSON.stringify(defaultConfig, null, 2)}</pre>
         </Box>
       </ExpandableSection>
+
+      <Modal
+        visible={showNewProfileModal}
+        onDismiss={() => setShowNewProfileModal(false)}
+        header="New summary profile"
+        footer={
+          <SpaceBetween direction="horizontal" size="xs">
+            <Button onClick={() => setShowNewProfileModal(false)}>Cancel</Button>
+            <Button variant="primary" onClick={handleCreateProfile} loading={saving}>
+              Create
+            </Button>
+          </SpaceBetween>
+        }
+      >
+        <SpaceBetween size="m">
+          <FormField label="Profile name" errorText={newProfileError}>
+            <Input
+              value={newProfileName}
+              onChange={({ detail }) => setNewProfileName(detail.value)}
+              placeholder="e.g., Technical Client Call"
+            />
+          </FormField>
+          <Box variant="small">Starts from the Default templates — edit and Save Changes once created.</Box>
+        </SpaceBetween>
+      </Modal>
     </SpaceBetween>
   );
 };

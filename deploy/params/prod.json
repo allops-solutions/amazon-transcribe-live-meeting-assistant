@@ -1,0 +1,282 @@
+[
+  {
+    "ParameterKey": "AcsConnectionString",
+    "ParameterValue": "FILL_IN_FROM_SECRET_STORE"
+  },
+  {
+    "ParameterKey": "AdminEmail",
+    "ParameterValue": "TODO_PROD_ADMIN_EMAIL@allops.co"
+  },
+  {
+    "ParameterKey": "AllowedSignUpEmailDomain",
+    "ParameterValue": "allops.co"
+  },
+  {
+    "ParameterKey": "AppSyncApiCacheInstanceType",
+    "ParameterValue": "SMALL"
+  },
+  {
+    "ParameterKey": "AssistantWakePhraseRegEx",
+    "ParameterValue": "(OK|Okay)[.,! ]*[Aa]ssistant"
+  },
+  {
+    "ParameterKey": "AudioRecordingExpirationInDays",
+    "ParameterValue": "TODO_SET_RETENTION_POLICY_DAYS"
+  },
+  {
+    "ParameterKey": "BedrockFallbackModelId",
+    "ParameterValue": "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+  },
+  {
+    "ParameterKey": "BedrockGuardrailId",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "BedrockGuardrailVersion",
+    "ParameterValue": "DRAFT"
+  },
+  {
+    "ParameterKey": "BedrockKnowledgeBaseId",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "BedrockKnowledgeBaseS3BucketName",
+    "ParameterValue": "TODO_CREATE_PROD_DOCS_BUCKET_FIRST"
+  },
+  {
+    "ParameterKey": "BedrockKnowledgeBaseS3DocumentUploadFolderPrefix",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "BedrockModelId",
+    "ParameterValue": "global.anthropic.claude-sonnet-4-6"
+  },
+  {
+    "ParameterKey": "CloudFrontAllowedGeos",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "CloudFrontPriceClass",
+    "ParameterValue": "PriceClass_100"
+  },
+  {
+    "ParameterKey": "CloudWatchLogsExpirationInDays",
+    "ParameterValue": "TODO_SET_RETENTION_POLICY_DAYS"
+  },
+  {
+    "ParameterKey": "CustomLanguageModelName",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "CustomVocabularyName",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "ElevenLabsAgentId",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "ElevenLabsApiKey",
+    "ParameterValue": "FILL_IN_FROM_SECRET_STORE"
+  },
+  {
+    "ParameterKey": "EnableAppSyncApiCache",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "EnableAudioRecording",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "EnableDataRetentionOnDelete",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "EnableMCP",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "EnableVideoRecording",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "EndOfCallLambdaHookFunctionArn",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "EndOfCallTranscriptSummary",
+    "ParameterValue": "BEDROCK"
+  },
+  {
+    "ParameterKey": "IsContentRedactionEnabled",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "IsPartialTranscriptEnabled",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "LogLevel",
+    "ParameterValue": "INFO"
+  },
+  {
+    "ParameterKey": "MCPServerCallbackURLs",
+    "ParameterValue": "https://us-east-1.quicksight.aws.amazon.com/sn/oauthcallback,https://us-west-2.quicksight.aws.amazon.com/sn/oauthcallback,http://localhost:3000/callback"
+  },
+  {
+    "ParameterKey": "MeetingAssistService",
+    "ParameterValue": "STRANDS_BEDROCK_WITH_KB (Create)"
+  },
+  {
+    "ParameterKey": "MeetingAssistServiceBedrockModelID",
+    "ParameterValue": "global.anthropic.claude-sonnet-4-6"
+  },
+  {
+    "ParameterKey": "MeetingRecordExpirationInDays",
+    "ParameterValue": "TODO_SET_RETENTION_POLICY_DAYS"
+  },
+  {
+    "ParameterKey": "ModelValidation",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "PermissionsBoundaryArn",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "PostCallSummaryLambdaHookFunctionArn",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "PrivateSubnet1",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "PrivateSubnet2",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "PublicSubnet1",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "PublicSubnet2",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "ShowSpeakerLabel",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "SimliApiKey",
+    "ParameterValue": "FILL_IN_FROM_SECRET_STORE"
+  },
+  {
+    "ParameterKey": "SimliFaceId",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "StartOfCallLambdaHookFunctionArn",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "TavilyApiKey",
+    "ParameterValue": "FILL_IN_FROM_SECRET_STORE"
+  },
+  {
+    "ParameterKey": "TranscribeContentRedactionType",
+    "ParameterValue": "PII"
+  },
+  {
+    "ParameterKey": "TranscribeLanguageCode",
+    "ParameterValue": "identify-multiple-languages"
+  },
+  {
+    "ParameterKey": "TranscribeLanguageOptions",
+    "ParameterValue": "en-US, bs-BA"
+  },
+  {
+    "ParameterKey": "TranscribePiiEntityTypes",
+    "ParameterValue": "BANK_ACCOUNT_NUMBER,BANK_ROUTING,CREDIT_DEBIT_NUMBER,CREDIT_DEBIT_CVV,CREDIT_DEBIT_EXPIRY,PIN,EMAIL,ADDRESS,NAME,PHONE,SSN"
+  },
+  {
+    "ParameterKey": "TranscribePreferredLanguage",
+    "ParameterValue": "bs-BA"
+  },
+  {
+    "ParameterKey": "TranscriptKnowledgeBase",
+    "ParameterValue": "BEDROCK_KNOWLEDGE_BASE (Create)"
+  },
+  {
+    "ParameterKey": "TranscriptLambdaHookFunctionArn",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "TranscriptLambdaHookFunctionNonPartialOnly",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "TranscriptionEngine",
+    "ParameterValue": "AmazonTranscribe"
+  },
+  {
+    "ParameterKey": "TranscriptionExpirationInDays",
+    "ParameterValue": "TODO_SET_RETENTION_POLICY_DAYS"
+  },
+  {
+    "ParameterKey": "UseExistingVPC",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "VPC",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "VPDomResolverModelId",
+    "ParameterValue": "global.anthropic.claude-sonnet-4-6"
+  },
+  {
+    "ParameterKey": "VPInstanceType",
+    "ParameterValue": "t3.medium"
+  },
+  {
+    "ParameterKey": "VPLaunchType",
+    "ParameterValue": "FARGATE"
+  },
+  {
+    "ParameterKey": "VPMaxInstances",
+    "ParameterValue": "10"
+  },
+  {
+    "ParameterKey": "VPMinInstances",
+    "ParameterValue": "1"
+  },
+  {
+    "ParameterKey": "VPSharedGoogleMeetProfile",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "VoiceAssistantActivationDuration",
+    "ParameterValue": "30"
+  },
+  {
+    "ParameterKey": "VoiceAssistantActivationMode",
+    "ParameterValue": "wake_phrase"
+  },
+  {
+    "ParameterKey": "VoiceAssistantProvider",
+    "ParameterValue": "none"
+  },
+  {
+    "ParameterKey": "VoiceAssistantWakePhrases",
+    "ParameterValue": "hey alex,ok alex,hi alex,hello alex"
+  },
+  {
+    "ParameterKey": "ZoomMeetingSdkClientId",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "ZoomMeetingSdkClientSecret",
+    "ParameterValue": "FILL_IN_FROM_SECRET_STORE"
+  }
+]

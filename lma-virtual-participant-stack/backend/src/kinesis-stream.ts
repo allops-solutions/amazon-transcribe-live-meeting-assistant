@@ -135,8 +135,19 @@ class KinesisStreamManager {
       RefreshToken: process.env.USER_REFRESH_TOKEN || '',
     };
 
+    // Persisted on the Call record (createCall passes this whole object
+    // through as CreateCallInput) so a later regenerateSummary reuses the
+    // same profile/language this meeting was launched with. Omitted
+    // entirely when not set, matching sendEndMeeting's convention below.
+    if (details.summaryProfile) {
+      record.SummaryProfile = details.summaryProfile;
+    }
+    if (details.summaryLanguage) {
+      record.SummaryLanguage = details.summaryLanguage;
+    }
+
     await this.sendRecord(record);
-    
+
     // Link CallId to VP record (matching Python kds.py behavior)
     const vpId = details.invite.virtualParticipantId;
     if (vpId) {
@@ -264,6 +275,17 @@ class KinesisStreamManager {
       IdToken: process.env.USER_ID_TOKEN || '',
       RefreshToken: process.env.USER_REFRESH_TOKEN || '',
     };
+
+    // call_event_processor forwards this whole END message, unmodified, to
+    // the async summary orchestrator and on to the summary Lambda — so this
+    // is the one place a per-meeting summary profile/language needs to ride
+    // along. Omitted entirely when not set, matching today's behavior.
+    if (details.summaryProfile) {
+      record.SummaryProfile = details.summaryProfile;
+    }
+    if (details.summaryLanguage) {
+      record.SummaryLanguage = details.summaryLanguage;
+    }
 
     await this.sendRecord(record);
   }

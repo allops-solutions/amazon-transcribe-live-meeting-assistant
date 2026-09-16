@@ -109,9 +109,9 @@ function Capture() {
         <SpaceBetween size={'xs'}>
           <Header
             variant="h1"
-            description="Powered by Amazon Transcribe and Amazon Bedrock"
+            description="allOps Live Meeting Assistant — powered by Amazon Transcribe and Amazon Bedrock"
           >
-            Amazon Live Meeting Assistant
+            ALMA
           </Header>
         </SpaceBetween>
       }

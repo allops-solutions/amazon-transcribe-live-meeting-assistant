@@ -83,7 +83,14 @@ export interface MeetingDetails {
   enableContentRedaction: boolean;
   transcribeContentRedactionType: string;
   customVocabularyName: string;
-  
+
+  // Per-meeting summary profile ("technical-client", "startup", "team-weekly",
+  // ...) and output language, carried in the END call event so the summary
+  // Lambda can pick the right template set. Empty means today's stack-wide
+  // Default+Custom templates.
+  summaryProfile: string;
+  summaryLanguage: string;
+
   // Recording Configuration
   enableAudioRecording: boolean;
   enableVideoRecording: boolean;
@@ -105,7 +112,7 @@ class DetailsManager {
     const virtualParticipantId = process.env.VIRTUAL_PARTICIPANT_ID || uuidv4();
 
     // LMA Configuration
-    const lmaIdentity = process.env.LMA_IDENTITY || 'LMA ({LMA_USER})';
+    const lmaIdentity = process.env.LMA_IDENTITY || 'ALMA ({LMA_USER})';
     const lmaUser = userName;
 
     // Replace {LMA_USER} placeholder in messages
@@ -116,18 +123,17 @@ class DetailsManager {
     // Messages Configuration
     const introMessage = replacePlaceholders(
       process.env.INTRO_MESSAGE ||
-      'Hello. I am an AI Live Meeting Assistant (LMA). I was invited by {LMA_USER} to join this call. ' +
-      'Anyone here can ask me to leave at any time by typing "LMA leave" (or "LMA end") in chat. ' +
-      'To learn more please visit: https://amazon.com/live-meeting-assistant.'
+      "Hello. I am ALMA, allOps's AI Live Meeting Assistant. I was invited by {LMA_USER} to join this call. " +
+      'Anyone here can ask me to leave at any time by typing "ALMA leave" (or "ALMA end") in chat.'
     );
     const startRecordingMessage = replacePlaceholders(
-      process.env.START_RECORDING_MESSAGE || 'Live Meeting Assistant started.'
+      process.env.START_RECORDING_MESSAGE || 'ALMA started.'
     );
     const stopRecordingMessage = replacePlaceholders(
-      process.env.STOP_RECORDING_MESSAGE || 'Live Meeting Assistant stopped.'
+      process.env.STOP_RECORDING_MESSAGE || 'ALMA stopped.'
     );
     const exitMessage = replacePlaceholders(
-      process.env.EXIT_MESSAGE || 'Live Meeting Assistant has left the room.'
+      process.env.EXIT_MESSAGE || 'ALMA has left the room.'
     );
 
     const zoomSdkCredsPresent = !!((process.env.ZOOM_MEETING_SDK_CLIENT_ID || '').trim() && (process.env.ZOOM_MEETING_SDK_CLIENT_SECRET || '').trim());
@@ -203,6 +209,9 @@ class DetailsManager {
       transcribeContentRedactionType: process.env.TRANSCRIBE_CONTENT_REDACTION_TYPE || 'PII',
       customVocabularyName: process.env.CUSTOM_VOCABULARY_NAME || '',
 
+      summaryProfile: process.env.SUMMARY_PROFILE || '',
+      summaryLanguage: process.env.SUMMARY_LANGUAGE || '',
+
       // Recording Configuration
       enableAudioRecording: process.env.ENABLE_AUDIO_RECORDING !== 'false',
       // Video recording defaults ON; the per-VP UI toggle and task-definition
@@ -245,23 +254,24 @@ export function resolveJoinMethod(override: string | undefined, credentialsPrese
  * The matcher is deliberately strict — it accepts only messages that consist
  * of exactly the addressee + verb (or verb + addressee), with optional
  * lightweight punctuation. This prevents false positives from prose that
- * happens to contain both "LMA" and a dismissal verb — most importantly
+ * happens to contain both "ALMA" and a dismissal verb — most importantly
  * the bot's own intro message (which itself reads
- *   '...typing "LMA leave" (or "LMA end") in chat.'
- * ), so a second LMA bot in the same meeting can no longer end the first
+ *   '...typing "ALMA leave" (or "ALMA end") in chat.'
+ * ), so a second ALMA bot in the same meeting can no longer end the first
  * one with its join announcement.
  *
  * Recognised verbs (case-insensitive): end, leave, stop, quit, exit, goodbye, bye.
- * The addressee may be "LMA" or "@LMA".
+ * The addressee may be "ALMA" or "@ALMA" — "LMA"/"@LMA" also still match, so
+ * anyone used to the old name isn't suddenly unable to dismiss the bot.
  *
  * Examples that match:
- *   "LMA end", "LMA, leave!", "@LMA stop", "lma quit",
- *   "Goodbye LMA", "bye, LMA!", "exit LMA"
+ *   "ALMA end", "ALMA, leave!", "@ALMA stop", "alma quit", "LMA end",
+ *   "Goodbye ALMA", "bye, ALMA!", "exit ALMA"
  *
  * Examples that do NOT match:
- *   "the meeting will end at 3pm", "I have to leave, but LMA looks great",
+ *   "the meeting will end at 3pm", "I have to leave, but ALMA looks great",
  *   any message that quotes the command in a longer sentence (including the
- *   bot's own intro), "Hello LMA", "endpoint", "ending soon".
+ *   bot's own intro), "Hello ALMA", "endpoint", "ending soon".
  */
 export function matchesEndCommand(message: string): boolean {
   if (!message) return false;
@@ -271,7 +281,7 @@ export function matchesEndCommand(message: string): boolean {
   // under this. Real prose virtually never does.
   if (trimmed.length > 40) return false;
   const verb = '(?:end|leave|stop|quit|exit|goodbye|bye)';
-  const addressee = '@?lma';
+  const addressee = '@?a?lma';
   // Allow optional inline punctuation between the two tokens (",", ":", "-",
   // "!", "?", ".") and trailing terminators.
   const sep = '[\\s,:!?.\\-]+';

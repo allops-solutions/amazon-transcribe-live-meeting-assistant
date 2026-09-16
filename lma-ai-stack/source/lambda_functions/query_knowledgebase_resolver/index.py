@@ -32,27 +32,20 @@ KB_CLIENT = boto3.client(
 )
 
 
-def get_kb_response(query, userId, isAdminUser, sessionId):
+def get_kb_response(query, userId, sessionId):
+    # allOps policy: every authenticated user (Admin or User) can query every
+    # meeting's documents/transcripts — no Owner retrieval filter. See
+    # getCall.response.vtl for the rationale.
     input = {
         "input": {"text": query},
         "retrieveAndGenerateConfiguration": {
             "knowledgeBaseConfiguration": {
                 "knowledgeBaseId": KB_ID,
                 "modelArn": MODEL_ARN,
-                "retrievalConfiguration": {
-                    "vectorSearchConfiguration": {
-                        "filter": {"equals": {"key": "Owner", "value": userId}}
-                    }
-                },
             },
             "type": "KNOWLEDGE_BASE",
         },
     }
-    if isAdminUser:
-        print("Admin user, no retrieval filters")
-        input["retrieveAndGenerateConfiguration"]["knowledgeBaseConfiguration"].pop(
-            "retrievalConfiguration", None
-        )
     if sessionId:
         input["sessionId"] = sessionId
     print("Amazon Bedrock KB Request: ", input)
@@ -98,11 +91,7 @@ def handler(event, context):
     query = event["arguments"]["input"]
     sessionId = event["arguments"].get("sessionId") or None
     userId = event["identity"]["username"]
-    isAdminUser = False
-    groups = event["identity"].get("groups")
-    if groups:
-        isAdminUser = "Admin" in groups
-    kb_response = get_kb_response(query, userId, isAdminUser, sessionId)
+    kb_response = get_kb_response(query, userId, sessionId)
     kb_response["markdown"] = markdown_response(kb_response)
     print("Returning response: %s" % json.dumps(kb_response))
     return json.dumps(kb_response)

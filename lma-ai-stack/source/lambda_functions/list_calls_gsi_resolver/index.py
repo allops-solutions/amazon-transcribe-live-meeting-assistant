@@ -97,25 +97,13 @@ def _get_caller_identity(event):
 
 
 def _call_visible_to(caller, detail_item):
-    """Match the previous listCalls.response.vtl filter: allow if caller is
-    owner or listed in SharedWith. Admins see everything.
+    """allOps policy: every authenticated user (Admin or User) can see every
+    meeting — no Owner/SharedWith filtering. Kept as a function (rather than
+    inlining `True` at the one call site) so the policy is documented in one
+    place and the call site itself reads as an explicit RBAC checkpoint.
     """
-    if caller["is_admin"]:
-        return True
-
-    owner = detail_item.get("Owner") or ""
-    shared_with_raw = detail_item.get("SharedWith")
-    # Legacy rows may store SharedWith as comma-separated string.
-    shared_with = []
-    if isinstance(shared_with_raw, str):
-        shared_with = [s.strip() for s in shared_with_raw.split(",") if s.strip()]
-    elif isinstance(shared_with_raw, list):
-        shared_with = [str(s).strip() for s in shared_with_raw if s]
-
-    identities = {i for i in (caller["username"], caller["email"]) if i}
-    if owner in identities:
-        return True
-    return any(sw in identities for sw in shared_with)
+    del caller, detail_item  # unused now the check is unconditional
+    return True
 
 
 def _batch_get_call_details(table, call_ids):
@@ -309,23 +297,16 @@ def list_calls_date_range(event):
 
 
 # Non-admin count path caps pages so callers with very broad ranges can't
-# force unbounded work.  Each page is up to 1 MB of projected attributes
-# (~5-10k items at ~100-200B/row) so 50 pages = ~250k-500k items.
-MAX_COUNT_PAGES_NON_ADMIN = 50
-# Admin count path uses Select="COUNT" which is much cheaper per page; we
-# still cap to prevent runaway pagination on pathological ranges.
-MAX_COUNT_PAGES_ADMIN = 500
+# allOps policy: every caller sees every meeting, so every caller gets the
+# cheap Select="COUNT" path — there's no non-admin RBAC-filtered path left to
+# cap separately (that used to cost a per-item Owner/SharedWith check).
+MAX_COUNT_PAGES = 500
 
 
 def get_call_count(event):
-    """Count matching list items on the GSI, applying RBAC.
-
-    - Admin callers: uses DynamoDB ``Select="COUNT"`` on the GSI — no
-      per-item work, cheap regardless of range size.
-    - Non-admin callers: queries the GSI with projected attributes
-      (``Owner``, ``SharedWith`` are in the INCLUDE projection so no
-      BatchGet is needed) and counts only rows the caller is entitled
-      to see.
+    """Count matching list items on the GSI. Uses DynamoDB ``Select="COUNT"``
+    — no per-item work, cheap regardless of range size — for every caller;
+    see _call_visible_to for why there's no RBAC filtering to apply here.
 
     The response includes a ``truncated`` flag indicating whether the
     page cap was hit before exhausting the range; clients should display
@@ -345,48 +326,28 @@ def get_call_count(event):
     pages = 0
     last_key = None
 
-    if caller["is_admin"]:
-        query_kwargs = {
-            "IndexName": TYPE_DATE_INDEX,
-            "KeyConditionExpression": key_condition,
-            "Select": "COUNT",
-        }
-        while pages < MAX_COUNT_PAGES_ADMIN:
-            if last_key:
-                query_kwargs["ExclusiveStartKey"] = last_key
-            response = table.query(**query_kwargs)
-            total += response.get("Count", 0)
-            last_key = response.get("LastEvaluatedKey")
-            pages += 1
-            if not last_key:
-                break
-    else:
-        # Non-admin: need per-row Owner / SharedWith inspection.  The GSI
-        # projection already includes both so we don't BatchGet.
-        query_kwargs = {
-            "IndexName": TYPE_DATE_INDEX,
-            "KeyConditionExpression": key_condition,
-            "Select": "ALL_PROJECTED_ATTRIBUTES",
-        }
-        while pages < MAX_COUNT_PAGES_NON_ADMIN:
-            if last_key:
-                query_kwargs["ExclusiveStartKey"] = last_key
-            response = table.query(**query_kwargs)
-            for item in response.get("Items", []):
-                if _call_visible_to(caller, item):
-                    total += 1
-            last_key = response.get("LastEvaluatedKey")
-            pages += 1
-            if not last_key:
-                break
+    query_kwargs = {
+        "IndexName": TYPE_DATE_INDEX,
+        "KeyConditionExpression": key_condition,
+        "Select": "COUNT",
+    }
+    while pages < MAX_COUNT_PAGES:
+        if last_key:
+            query_kwargs["ExclusiveStartKey"] = last_key
+        response = table.query(**query_kwargs)
+        total += response.get("Count", 0)
+        last_key = response.get("LastEvaluatedKey")
+        pages += 1
+        if not last_key:
+            break
 
     truncated = bool(last_key)
     logger.info(
-        "Call count: %d (range=%s..%s, admin=%s, pages=%d, truncated=%s)",
+        "Call count: %d (range=%s..%s, caller=%s, pages=%d, truncated=%s)",
         total,
         start_dt,
         end_dt,
-        caller["is_admin"],
+        caller["username"],
         pages,
         truncated,
     )

@@ -435,6 +435,37 @@ Parameters:
       of supported models. Includes Nova models (cost-effective) and Claude 4+ (cutting-edge).
       Some models require inference profiles. Defaults to 'global.anthropic.claude-haiku-4-5-20251001-v1:0'
 
+  BedrockFallbackModelId:
+    Default: "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+    Type: String
+    AllowedValues:
+      - ""
+      - "amazon.nova-micro-v1:0"
+      - "amazon.nova-lite-v1:0"
+      - "amazon.nova-pro-v1:0"
+      - "us.amazon.nova-premier-v1:0"
+      - "global.amazon.nova-2-lite-v1:0"
+      - "us.amazon.nova-2-lite-v1:0"
+      - "us.anthropic.claude-opus-4-20250514-v1:0"
+      - "us.anthropic.claude-opus-4-1-20250805-v1:0"
+      - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+      - "us.anthropic.claude-sonnet-4-6"
+      - "us.anthropic.claude-opus-4-6-v1"
+      - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+      - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+      - "global.anthropic.claude-sonnet-4-6"
+      - "global.anthropic.claude-opus-4-6-v1"
+      - "global.openai.gpt-5.6-luna"
+      - "global.openai.gpt-5.6-terra"
+    Description: >
+      If the primary BedrockModelId errors when generating a meeting summary (model
+      unavailable, access denied, validation error — not transient throttling, which
+      already retries), the summary Lambda retries once against this model instead of
+      giving up. Set to empty to disable the fallback. Defaults to
+      'global.anthropic.claude-haiku-4-5-20251001-v1:0' — a different, cheaper model
+      than the primary Sonnet/Opus default so a single model's outage doesn't also take
+      out the fallback.
+
   EndOfCallLambdaHookFunctionArn:
     Default: ""
     Type: String
@@ -733,6 +764,18 @@ Parameters:
       FARGATE: Serverless, ~$2/month base, but 1-2 minute startup. Use where
       MicroVMs are unavailable and cost matters more than latency.
 
+  VPSharedGoogleMeetProfile:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      When true, every Google Meet launch shares ONE Chromium profile (one Google
+      sign-in for everyone, e.g. a dedicated Workspace account such as
+      alma@yourdomain) instead of the default per-launching-user profile. Only
+      affects Google Meet — Zoom, Teams and Webex keep their per-user
+      stored-credential profiles. Sign the shared account in once via the VP
+      live view after enabling; every meeting reuses it.
+
   VPDomResolverModelId:
     Type: String
     Default: "global.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -818,6 +861,7 @@ Metadata:
         Parameters:
           - VPLaunchType
           - VPDomResolverModelId
+          - VPSharedGoogleMeetProfile
           - VPInstanceType
           - VPMinInstances
           - VPMaxInstances
@@ -886,6 +930,7 @@ Metadata:
           - TranscriptLambdaHookFunctionNonPartialOnly
           - EndOfCallTranscriptSummary
           - BedrockModelId
+          - BedrockFallbackModelId
           - EndOfCallLambdaHookFunctionArn
           - StartOfCallLambdaHookFunctionArn
           - PostCallSummaryLambdaHookFunctionArn
@@ -1116,6 +1161,7 @@ Conditions:
   ShouldRetainDataOnDelete: !Equals [!Ref EnableDataRetentionOnDelete, "true"]
   ShouldDeleteDataOnDelete: !Equals [!Ref EnableDataRetentionOnDelete, "false"]
   ShouldCreateRecordingBucket: !Equals ["", ""]
+  HasBedrockFallbackModelId: !Not [!Equals [!Ref BedrockFallbackModelId, ""]]
   ShouldUseStrandsBedrock:
     !Equals [!Ref MeetingAssistService, "STRANDS_BEDROCK"]
   ShouldUseStrandsBedrockWithKBCreate:
@@ -1641,6 +1687,7 @@ Resources:
         - !Ref MeetingAssistServiceBedrockModelID # Meeting assistant
         - "amazon.titan-embed-text-v2:0" # Meeting Assistant Bedrock KB embeddings
         - !Ref BedrockModelId # Meeting summarization
+        - !If [HasBedrockFallbackModelId, !Ref BedrockFallbackModelId, !Ref "AWS::NoValue"] # Meeting summarization fallback
 
   ##########################################################################
   # Resources shared by multiple nested stacks
@@ -2503,6 +2550,7 @@ Resources:
         TranscriptLambdaHookFunctionNonPartialOnly: !Ref TranscriptLambdaHookFunctionNonPartialOnly
         EndOfCallTranscriptSummary: !Ref EndOfCallTranscriptSummary
         BedrockModelId: !Ref BedrockModelId
+        BedrockFallbackModelId: !Ref BedrockFallbackModelId
         EndOfCallLambdaHookFunctionArn: !Ref EndOfCallLambdaHookFunctionArn
         StartOfCallLambdaHookFunctionArn: !Ref StartOfCallLambdaHookFunctionArn
         PostCallSummaryLambdaHookFunctionArn: !Ref PostCallSummaryLambdaHookFunctionArn
@@ -2794,6 +2842,7 @@ Resources:
       # yamllint enable rule:line-length
       Parameters:
         DomResolverModelId: !Ref VPDomResolverModelId
+        VPSharedGoogleMeetProfile: !Ref VPSharedGoogleMeetProfile
         LMAStackName: !Ref AWS::StackName
         StrandsLambdaArn: !If
           - ShouldUseAnyStrandsBedrock

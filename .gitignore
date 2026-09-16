@@ -81,3 +81,8 @@ utilities/load-simulator/examples/bobmeetings.yaml
 # run from that directory; anchor it at the repo root so `git add -A` from
 # anywhere (or after a directory rename) can never pick these up again.
 **/.build/
+
+# Local copies of stack parameter files with real secret values filled in —
+# see deploy/params/README.md. The tracked dev.json/prod.json always keep
+# FILL_IN_FROM_SECRET_STORE placeholders.
+deploy/params/*.local.json

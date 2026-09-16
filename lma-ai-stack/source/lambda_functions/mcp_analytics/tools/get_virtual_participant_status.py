@@ -97,12 +97,11 @@ def execute(
     if not vp:
         raise ValueError(f"Virtual participant {virtual_participant_id} not found")
 
-    # Per-user access control — admins see everything, owners see their own.
-    if not is_admin and user_id:
-        owner = vp.get("Owner") or ""
-        shared = vp.get("SharedWith") or ""
-        if owner != user_id and user_id not in shared.split(","):
-            raise PermissionError("You do not have access to this virtual participant")
+    # allOps policy: every authenticated user (Admin or User) can see every
+    # virtual participant — no Owner/SharedWith check. See
+    # getCall.response.vtl for the rationale (the getVirtualParticipant
+    # resolver above is itself unrestricted; is_admin/user_id kept as
+    # params so callers don't need updating).
 
     status = vp.get("status") or "UNKNOWN"
     manual_action_required = status == "MANUAL_ACTION_REQUIRED"

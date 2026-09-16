@@ -25,6 +25,13 @@ const PROFILE_ROOT = process.env.VP_PROFILE_ROOT || '/srv/cloakbrowser-profiles'
 const TAR_NAME = 'profile.tar.gz';
 // Must match VPProfilesPolicy in template.yaml.
 const S3_PREFIX = 'profiles/';
+// When set, every Google Meet launch shares ONE Chromium profile (one Google
+// sign-in for everyone, e.g. a dedicated alma@allops.co Workspace account)
+// instead of the default per-launching-user profile. Scoped to Google Meet
+// only — Zoom/Teams/Webex keep their per-user stored-credential profiles,
+// since those intentionally carry each user's own login.
+const SHARED_GOOGLE_MEET_PROFILE = process.env.VP_SHARED_GOOGLE_MEET_PROFILE === 'true';
+const SHARED_PROFILE_KEY = 'shared';
 
 // Meeting platforms whose web login rides on SESSION cookies (is_persistent=0,
 // expires_utc=0). Chromium keeps those only in memory for the life of one
@@ -135,8 +142,14 @@ function normalizePlatform(platform: string | undefined): string {
 
 export async function acquireProfile(opts: { cognitoSub: string; platform?: string }): Promise<ProfileHandle> {
     const handle: ProfileHandle = { enabled: false, localDir: '', s3Key: '' };
+    const platform = normalizePlatform(opts.platform);
+    const sharedMode = SHARED_GOOGLE_MEET_PROFILE && platform === 'googlemeet';
     const sub = (opts.cognitoSub || '').trim();
-    if (!PROFILES_BUCKET || !sub) {
+
+    // Shared mode needs no real cognitoSub — the whole point is that every
+    // launch (any user) resolves to the same profile — so it bypasses the
+    // per-user "no sub, no profile" guard below.
+    if (!PROFILES_BUCKET || (!sub && !sharedMode)) {
         console.log(
             `[profile-store] DISABLED (bucket=${PROFILES_BUCKET ? 'set' : 'EMPTY'}, ` +
                 `sub=${sub ? 'set' : 'EMPTY'}); using fresh ephemeral profile.`,
@@ -144,14 +157,17 @@ export async function acquireProfile(opts: { cognitoSub: string; platform?: stri
         return handle;
     }
 
-    const platform = normalizePlatform(opts.platform);
-    const userHash = createHash('sha256').update(sub.toLowerCase()).digest('hex');
+    const userHash = sharedMode ? SHARED_PROFILE_KEY : createHash('sha256').update(sub.toLowerCase()).digest('hex');
     handle.enabled = true;
     handle.s3Key = `${S3_PREFIX}${userHash}/${platform}/${TAR_NAME}`;
-    handle.localDir = join(PROFILE_ROOT, `${userHash.slice(0, 16)}-${platform}`);
+    handle.localDir = join(PROFILE_ROOT, `${sharedMode ? userHash : userHash.slice(0, 16)}-${platform}`);
     await fs.mkdir(handle.localDir, { recursive: true });
 
-    console.log(`[profile-store] user hash (sha256) : ${userHash.slice(0, 16)}...`);
+    console.log(
+        sharedMode
+            ? `[profile-store] shared Google Meet profile (VP_SHARED_GOOGLE_MEET_PROFILE=true)`
+            : `[profile-store] user hash (sha256) : ${userHash.slice(0, 16)}...`,
+    );
     console.log(`[profile-store] platform           : ${platform}`);
     console.log(`[profile-store] localDir           : ${handle.localDir}`);
     console.log(`[profile-store] s3Key              : s3://${PROFILES_BUCKET}/${handle.s3Key}`);

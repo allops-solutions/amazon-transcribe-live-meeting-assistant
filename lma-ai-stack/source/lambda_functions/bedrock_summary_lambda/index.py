@@ -21,6 +21,8 @@ logger.setLevel(logging.ERROR)
 
 # use inference profile for model id as Nova models require the use of inference profiles
 BEDROCK_MODEL_ID = os.environ["BEDROCK_MODEL_ID"]
+# Retried once, per section, if the primary model errors (not empty = enabled).
+BEDROCK_FALLBACK_MODEL_ID = os.getenv("BEDROCK_FALLBACK_MODEL_ID", "").strip()
 FETCH_TRANSCRIPT_LAMBDA_ARN = os.environ["FETCH_TRANSCRIPT_LAMBDA_ARN"]
 PROCESS_TRANSCRIPT = os.getenv("PROCESS_TRANSCRIPT", "False") == "True"
 TOKEN_COUNT = int(os.getenv("TOKEN_COUNT", "0"))  # default 0 - do not truncate.
@@ -47,7 +49,13 @@ BEDROCK_ENDPOINT_URL = os.environ.get(
 )
 
 
-lambda_client = boto3.client("lambda")
+# Adaptive retry (not boto3's default "legacy" mode, which gives up after a
+# handful of fixed-delay attempts) — get_transcripts() below invokes
+# FetchTranscript synchronously, and on 2026-09-16 that invoke hit
+# TooManyRequestsException (account-wide concurrent-executions ceiling, not
+# a code bug — see LMA-HANDOFF.md) and gave up, producing "An error
+# occurred." for the whole summary. Matches the bedrock client's config below.
+lambda_client = boto3.client("lambda", config=Config(retries={"max_attempts": 5, "mode": "adaptive"}))
 dynamodb_client = boto3.client("dynamodb")
 bedrock = boto3.client(
     service_name="bedrock-runtime",
@@ -108,6 +116,51 @@ def get_templates_from_dynamodb(prompt_override):
     return templates
 
 
+def get_profile_templates_from_dynamodb(profile_id):
+    """Load a named summary profile's section templates (e.g. "technical-client",
+    "startup", "team-weekly"). Profiles are self-contained — unlike the
+    Default/Custom pair, there is no merge; a profile's own N#LABEL fields are
+    its complete set of sections. Falls back to the Default+Custom merge if
+    the profile can't be found, so a stale/deleted profile reference on an
+    old meeting never breaks summary generation."""
+    try:
+        response = dynamodb_client.get_item(
+            Key={"LLMPromptTemplateId": {"S": f"Profile#{profile_id}"}},
+            TableName=LLM_PROMPT_TEMPLATE_TABLE_NAME,
+        )
+        item = response.get("Item")
+        if not item:
+            print(f"Summary profile '{profile_id}' not found — falling back to Default+Custom templates")
+            return get_templates_from_dynamodb(None)
+
+        templates = []
+        for k in sorted(item):
+            if k in ("LLMPromptTemplateId", "*Information*"):
+                continue
+            prompt = item[k]["S"]
+            if prompt and prompt != "NONE":
+                prompt = prompt.replace("<br>", "\n")
+                index = k.find("#")
+                k_stripped = k[index + 1:]
+                templates.append({k_stripped: prompt})
+        return templates
+    except Exception as e:
+        print(f"Error loading summary profile '{profile_id}': {e} — falling back to Default+Custom templates")
+        return get_templates_from_dynamodb(None)
+
+
+def apply_language(prompt, language):
+    """Inject the requested output language into a section prompt. Profile
+    authors can place a {language} placeholder anywhere in their prompt for
+    exact control; prompts without one (including the existing Default/Custom
+    templates, which predate this feature) get the instruction appended."""
+    if not language:
+        return prompt
+    if "{language}" in prompt:
+        return prompt.replace("{language}", language)
+    return f"{prompt}\n\nWrite your entire response in {language}."
+
+
 def get_transcripts(callId):
     payload = {
         "CallId": callId,
@@ -165,11 +218,9 @@ def build_inference_args(modelId):
     return args
 
 
-def call_bedrock(prompt_data):
-    modelId = BEDROCK_MODEL_ID
+def _converse(modelId, prompt_data):
     print("Bedrock request - ModelId", modelId)
     message = {"role": "user", "content": [{"text": prompt_data}]}
-
     args = build_inference_args(modelId)
     print("Bedrock inference args:", json.dumps(args))
     response = bedrock.converse(modelId=modelId, messages=[message], **args)
@@ -183,14 +234,47 @@ def call_bedrock(prompt_data):
     return generated_text
 
 
-def generate_summary(transcript, prompt_override):
-    # first check to see if this is one prompt, or many prompts as a json
-    templates = get_templates_from_dynamodb(prompt_override)
+def call_bedrock(prompt_data):
+    # boto3's adaptive retry (see the bedrock client config below) already
+    # exhausts its own retry budget for transient/throttling errors before
+    # raising — so an exception reaching here is a harder failure (model
+    # unavailable, access denied, validation error, region outage). One
+    # retry against a different model/provider covers exactly that case
+    # without masking a genuinely broken prompt (which would fail on the
+    # fallback too, and correctly still surface as an error).
+    try:
+        return _converse(BEDROCK_MODEL_ID, prompt_data)
+    except Exception as primary_error:
+        if not BEDROCK_FALLBACK_MODEL_ID or BEDROCK_FALLBACK_MODEL_ID == BEDROCK_MODEL_ID:
+            raise
+        print(
+            f"Primary model '{BEDROCK_MODEL_ID}' failed ({primary_error}); "
+            f"retrying with fallback model '{BEDROCK_FALLBACK_MODEL_ID}'"
+        )
+        try:
+            return _converse(BEDROCK_FALLBACK_MODEL_ID, prompt_data)
+        except Exception as fallback_error:
+            print(f"Fallback model '{BEDROCK_FALLBACK_MODEL_ID}' also failed: {fallback_error}")
+            raise
+
+
+def generate_summary(transcript, prompt_override, profile_id=None, language=None):
+    # Priority: an explicit ad-hoc Prompt override (existing behavior, e.g.
+    # debug/manual invocation) > a named summary profile > the stack's
+    # Default+Custom template merge (today's only behavior, unchanged when
+    # neither of the above is set).
+    if prompt_override is not None:
+        templates = get_templates_from_dynamodb(prompt_override)
+    elif profile_id:
+        templates = get_profile_templates_from_dynamodb(profile_id)
+    else:
+        templates = get_templates_from_dynamodb(None)
     result = {}
     for item in templates:
         key = list(item.keys())[0]
         prompt = item[key]
         prompt = prompt.replace("{transcript}", transcript)
+        prompt = apply_language(prompt, language)
         print("Prompt:", prompt)
         response = call_bedrock(prompt)
         print("API Response:", response)
@@ -271,7 +355,14 @@ def handler(event, context):
         prompt_override = None
         if "Prompt" in event:
             prompt_override = event["Prompt"]
-        summary = generate_summary(transcript, prompt_override)
+        # Per-meeting summary profile ("technical-client", "startup", "team-weekly",
+        # ...) and output language, set at meeting-creation time and carried
+        # through the END call event. Both optional; absent means today's
+        # stack-wide Default+Custom templates, in whatever language they're
+        # written in — unchanged behavior for meetings that don't set them.
+        summary_profile = event.get("SummaryProfile") or None
+        summary_language = event.get("SummaryLanguage") or None
+        summary = generate_summary(transcript, prompt_override, summary_profile, summary_language)
         if not prompt_override:
             # only write to S3 when using default summary prompt
             write_to_s3(callId, metadata, transcript, summary)

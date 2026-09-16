@@ -38,11 +38,33 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         # Extract input from AppSync event
         input_data = event["arguments"]["input"]
         template_id = input_data["LLMPromptTemplateId"]
-        template_config_str = input_data["TemplateConfig"]
+        should_delete = bool(input_data.get("Delete"))
 
-        # Only allow updating the Custom templates
-        if template_id != "CustomSummaryPromptTemplates":
-            raise ValueError("Only CustomSummaryPromptTemplates can be updated")
+        # Allow updating: the Custom templates (unchanged), the profile
+        # catalog (the list of named summary profiles the UI offers), or a
+        # named profile's own template set ("Profile#<slug>"). Anything else
+        # is rejected — this allowlist is what stops the mutation being used
+        # to write arbitrary DynamoDB items.
+        profile_pattern = re.compile(r"^Profile#[A-Za-z0-9_-]+$")
+        is_profile_id = bool(profile_pattern.match(template_id))
+        if template_id not in ("CustomSummaryPromptTemplates", "SummaryProfileCatalog") and not is_profile_id:
+            raise ValueError(
+                "Only CustomSummaryPromptTemplates, SummaryProfileCatalog, or Profile#<slug> can be updated"
+            )
+
+        if should_delete:
+            # Hard delete is only ever appropriate for a single named
+            # profile's own item — never the Custom templates or the catalog
+            # itself, which every meeting/UI page depends on.
+            if not is_profile_id:
+                raise ValueError("Only a Profile#<slug> item can be deleted")
+            table.delete_item(Key={"LLMPromptTemplateId": template_id})
+            print(f"Successfully deleted LLM prompt template: {template_id}")
+            return {"LLMPromptTemplateId": template_id, "Success": True}
+
+        template_config_str = input_data.get("TemplateConfig")
+        if template_config_str is None:
+            raise ValueError("TemplateConfig is required unless Delete is true")
 
         # Parse the JSON configuration
         try:

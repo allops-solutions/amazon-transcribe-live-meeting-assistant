@@ -42,9 +42,10 @@ def execute(
     if not meeting_id:
         raise ValueError("Meeting ID is required")
 
-    # Check permissions
-    if not can_access_meeting(meeting_id, user_id, is_admin):
-        raise PermissionError(f"Access denied to meeting {meeting_id}")
+    # allOps policy: every authenticated user (Admin or User) can access every
+    # meeting's summary — no Owner check. See getCall.response.vtl for the
+    # rationale. is_admin/user_id kept as params so callers don't need
+    # updating.
 
     # Query DynamoDB for meeting data
     dynamodb = boto3.resource("dynamodb")
@@ -92,31 +93,6 @@ def execute(
     except Exception as e:
         logger.error(f"Error retrieving meeting summary: {e}")
         raise ValueError(f"Failed to retrieve summary: {str(e)}")
-
-
-def can_access_meeting(meeting_id: str, user_id: str, is_admin: bool) -> bool:
-    """
-    Check if user has permission to access meeting.
-    Admins can access all meetings, users can access only their own.
-    """
-    if is_admin:
-        return True
-
-    dynamodb = boto3.resource("dynamodb")
-    table_name = os.environ.get("CALLS_TABLE")
-    table = dynamodb.Table(table_name)
-
-    try:
-        response = table.get_item(Key={"PK": f"c#{meeting_id}", "SK": f"c#{meeting_id}"})
-
-        meeting = response.get("Item", {})
-        owner = meeting.get("Owner", meeting.get("AgentId", ""))
-
-        return owner == user_id
-
-    except Exception as e:
-        logger.error(f"Error checking meeting access: {e}")
-        return False
 
 
 def parse_action_items(meeting: Dict[str, Any]) -> list:

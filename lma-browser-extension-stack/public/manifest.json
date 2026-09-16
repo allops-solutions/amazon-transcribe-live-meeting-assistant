@@ -1,11 +1,20 @@
 {
-  "name": "Amazon Live Meeting Assistant",
-  "description": "Amazon Live Meeting Assistant, powered by Amazon Transcribe and Amazon Bedrock",
+  "name": "ALMA",
+  "description": "ALMA (allOps Live Meeting Assistant), powered by Amazon Transcribe and Amazon Bedrock",
   "version": "<VERSION_TOKEN>",
   "manifest_version": 3,
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon.png"
+  },
   "action": {
-    "default_title": "Click to open Amazon Live Meeting Assistant",
-    "default_icon": "icon.png"
+    "default_title": "Click to open ALMA",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon.png"
+    }
   },
   "permissions": [
     "storage",

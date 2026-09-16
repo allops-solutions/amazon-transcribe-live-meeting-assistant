@@ -55,6 +55,11 @@ type Call implements DynamoDbBase @aws_cognito_user_pools
 	CallSummaryText: String
 	Owner: String
 	SharedWith: String
+	# Named summary profile / output language this meeting was launched with
+	# (see VirtualParticipant.summaryProfile / summaryLanguage). Persisted at
+	# call start so regenerateSummary can reuse the same settings later.
+	SummaryProfile: String
+	SummaryLanguage: String
 }
 
 type CallList @aws_cognito_user_pools
@@ -99,6 +104,9 @@ input CreateCallInput {
 	ExpiresAfter: AWSTimestamp
 	Owner: String
 	SharedWith: String
+	# See Call.SummaryProfile / SummaryLanguage. Both optional.
+	SummaryProfile: String
+	SummaryLanguage: String
 }
 
 type CreateCallOutput @aws_iam {
@@ -182,6 +190,13 @@ type Mutation @aws_iam {
 	addCallCategory(input: AddCallCategoryInput!): Call
 	addIssuesDetected(input: AddIssuesDetectedInput!): Call
 	addCallSummaryText(input: AddCallSummaryTextInput!): Call
+	# Re-runs summary generation for an already-ended meeting (e.g. after a
+	# transient Bedrock error, or just to try again). Reuses the SummaryProfile
+	# / SummaryLanguage the meeting was originally launched with. Fires async;
+	# the new CallSummaryText arrives via the existing onUpdateCall
+	# subscription once generation finishes, same as the original summary.
+	regenerateSummary(input: RegenerateSummaryInput!): RegenerateSummaryOutput
+		@aws_cognito_user_pools
 	addTranscriptSegment(input: AddTranscriptSegmentInput!): TranscriptSegment
 	deleteCall(input: DeleteCallInput!): DeleteCallOutput
 	shareCall(input: ShareCallInput!): ShareCallOutput
@@ -301,6 +316,24 @@ type VirtualParticipant @aws_cognito_user_pools @aws_iam {
 	# to audio. Defaults to true; persisted on the row so the VPScheduler Lambda
 	# can plumb ENABLE_VIDEO_RECORDING to scheduled launches.
 	enableVideoRecording: Boolean
+	# Per-meeting Transcribe language mode: "en-US" (English only), "bs-BA"
+	# (Bosnian only), "identify-language" (auto-detect once, locks in early),
+	# or "identify-multiple-languages" (auto-detect, re-checks throughout —
+	# the default when not set). Persisted on the row so the VPScheduler
+	# Lambda can plumb TRANSCRIBE_LANGUAGE_CODE to scheduled launches;
+	# immediate launches also pass it via the Step Functions input.
+	transcribeLanguageMode: String
+	# Named summary profile ("technical-client", "startup", "team-weekly", ...)
+	# selecting which set of section templates to use for this meeting's
+	# summary. Blank/unset means today's stack-wide Default+Custom templates.
+	# Persisted on the row and carried through the END call event to the
+	# summary Lambda; see LLMPromptTemplate "Profile#<slug>" items.
+	summaryProfile: String
+	# Output language for this meeting's summary (e.g. "English", "Bosnian").
+	# Independent of summaryProfile — any profile can be generated in any
+	# language. Blank/unset means whatever language the chosen templates are
+	# already written in.
+	summaryLanguage: String
 	createdAt: AWSDateTime
 	updatedAt: AWSDateTime
 	CallId: ID
@@ -348,6 +381,12 @@ input CreateVirtualParticipantInput {
 	# scheduled launches can read it; immediate launches also pass it via the
 	# Step Functions input.
 	enableVideoRecording: Boolean
+	# Per-meeting Transcribe language mode. See VirtualParticipant.transcribeLanguageMode.
+	# Defaults to "identify-multiple-languages" when omitted.
+	transcribeLanguageMode: String
+	# See VirtualParticipant.summaryProfile / summaryLanguage. Both optional.
+	summaryProfile: String
+	summaryLanguage: String
 }
 
 input UpdateVirtualParticipantInput {
@@ -581,6 +620,15 @@ input AddCallSummaryTextInput {
 	SharedWith: String
 }
 
+input RegenerateSummaryInput {
+	CallId: ID!
+}
+
+type RegenerateSummaryOutput @aws_cognito_user_pools {
+	CallId: ID!
+	Success: Boolean!
+}
+
 input UpdateCallAggregationInput {
 	CallId: ID!
 	UpdatedAt: AWSDateTime
@@ -787,7 +835,12 @@ type LLMPromptTemplate @aws_cognito_user_pools @aws_iam {
 
 input UpdateLLMPromptTemplateInput {
 	LLMPromptTemplateId: ID!
-	TemplateConfig: String!
+	# Required unless Delete is true.
+	TemplateConfig: String
+	# True: delete the item entirely (DeleteItem) instead of replacing it
+	# (PutItem). Used to hard-delete a removed summary profile's own
+	# "Profile#<slug>" item; TemplateConfig is ignored when set.
+	Delete: Boolean
 }
 
 type UpdateLLMPromptTemplateOutput @aws_cognito_user_pools @aws_iam {
