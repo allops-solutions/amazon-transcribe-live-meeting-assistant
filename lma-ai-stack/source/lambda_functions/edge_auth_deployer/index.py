@@ -55,11 +55,15 @@ def send(
 EDGE_FUNCTION_CODE = '''
 import json
 import base64
+import hashlib
 import urllib.request
 from datetime import datetime
 
 # Cache for JWKS keys (in-memory, persists across warm starts)
 jwks_cache = {}
+
+# DER-encoded DigestInfo prefix for SHA-256, per RFC 3447 / PKCS#1 v1.5.
+SHA256_DIGESTINFO_PREFIX = bytes.fromhex('3031300d060960864801650304020105000420')
 
 def get_jwks(region, user_pool_id):
     """Fetch JWKS from Cognito User Pool"""
@@ -78,6 +82,13 @@ def get_jwks(region, user_pool_id):
         print(f"Error fetching JWKS: {e}")
         return None
 
+def base64url_decode(data):
+    """Base64url-decode a JWT segment, adding padding as needed"""
+    padding = 4 - len(data) % 4
+    if padding != 4:
+        data += '=' * padding
+    return base64.urlsafe_b64decode(data)
+
 def decode_token(token):
     """Decode JWT token without verification (just to extract claims)"""
     try:
@@ -85,30 +96,111 @@ def decode_token(token):
         parts = token.split('.')
         if len(parts) != 3:
             return None
-        
-        # Decode payload (add padding if needed)
-        payload = parts[1]
-        padding = 4 - len(payload) % 4
-        if padding != 4:
-            payload += '=' * padding
-        
-        decoded = base64.urlsafe_b64decode(payload)
+
+        decoded = base64url_decode(parts[1])
         return json.loads(decoded)
     except Exception as e:
         print(f"Error decoding token: {e}")
         return None
 
+def decode_header(token):
+    """Decode JWT header (just to extract kid/alg, not verified yet)"""
+    try:
+        parts = token.split('.')
+        if len(parts) != 3:
+            return None
+        decoded = base64url_decode(parts[0])
+        return json.loads(decoded)
+    except Exception as e:
+        print(f"Error decoding header: {e}")
+        return None
+
+def verify_rs256_signature(token, jwk):
+    """
+    Verify a JWT's RS256 signature against an RSA JWK using only the stdlib
+    (textbook RSASSA-PKCS1-v1_5 over SHA-256: pow() for the modexp, then a
+    constant-shape comparison of the recovered EM block). No third-party
+    crypto package - Lambda@Edge has tight package size/replication limits.
+    """
+    try:
+        parts = token.split('.')
+        if len(parts) != 3:
+            return False
+        signing_input = (parts[0] + '.' + parts[1]).encode('ascii')
+        signature = base64url_decode(parts[2])
+
+        n = int.from_bytes(base64url_decode(jwk['n']), 'big')
+        e = int.from_bytes(base64url_decode(jwk['e']), 'big')
+
+        k = (n.bit_length() + 7) // 8
+        if len(signature) != k:
+            print("Signature length does not match RSA modulus size")
+            return False
+
+        sig_int = int.from_bytes(signature, 'big')
+        if sig_int >= n:
+            return False
+
+        em = pow(sig_int, e, n).to_bytes(k, 'big')
+
+        digest = hashlib.sha256(signing_input).digest()
+        digest_info = SHA256_DIGESTINFO_PREFIX + digest
+        ps_len = k - 3 - len(digest_info)
+        if ps_len < 8:
+            return False
+        expected_em = b'\\x00\\x01' + b'\\xff' * ps_len + b'\\x00' + digest_info
+
+        return em == expected_em
+    except Exception as ex:
+        print(f"Signature verification error: {ex}")
+        return False
+
 def validate_token(token, region, user_pool_id, client_id):
     """Validate Cognito JWT token"""
     try:
-        # Decode token to get claims
+        # Verify signature FIRST - claims are untrusted until the signature
+        # checks out, otherwise a hand-crafted token with valid-looking
+        # exp/iss/aud/token_use claims would pass with no Cognito account.
+        header = decode_header(token)
+        if not header:
+            print("Failed to decode token header")
+            return False
+
+        if header.get('alg') != 'RS256':
+            print(f"Unsupported/unexpected alg: {header.get('alg')}")
+            return False
+
+        kid = header.get('kid')
+        if not kid:
+            print("Token header missing kid")
+            return False
+
+        jwks = get_jwks(region, user_pool_id)
+        if not jwks:
+            print("Failed to fetch JWKS")
+            return False
+
+        jwk = next((key for key in jwks.get('keys', []) if key.get('kid') == kid), None)
+        if not jwk:
+            print(f"No matching JWK for kid: {kid}")
+            return False
+
+        if jwk.get('kty') != 'RSA':
+            print(f"Unsupported JWK kty: {jwk.get('kty')}")
+            return False
+
+        if not verify_rs256_signature(token, jwk):
+            print("Signature verification failed")
+            return False
+
+        # Decode token to get claims (now trusted - signature verified above)
         claims = decode_token(token)
         if not claims:
             print("Failed to decode token")
             return False
-        
+
         print(f"Token claims: {json.dumps(claims)}")
-        
+
         # Check expiration
         exp = claims.get('exp', 0)
         if exp < datetime.utcnow().timestamp():
