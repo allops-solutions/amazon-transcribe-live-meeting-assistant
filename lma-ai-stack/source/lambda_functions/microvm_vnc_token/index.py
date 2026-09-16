@@ -19,6 +19,8 @@ The VP id alone is not sufficient either — it appears in URLs and logs, so
 treating it as a bearer token would let an unauthenticated request through.
 """
 
+import hashlib
+import hmac
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -39,6 +41,29 @@ dynamodb = boto3.client("dynamodb")
 # (the app's own hook port 9000, for instance).
 NOVNC_PORT = 5901
 TOKEN_TTL_MINUTES = 60
+
+# Same host marker the frontend uses (vncConnection.js's isMicrovmEndpoint) to
+# tell a MicroVM endpoint apart from the CloudFront/ALB one used by ECS.
+MICROVM_HOST_MARKER = ".lambda-microvm."
+
+# Shared with EdgeAuthDeployerFunction's Lambda@Edge code (see
+# edge_auth_deployer/index.py) via VncHmacSecret in lma-ai-stack.yaml.
+VNC_HMAC_SECRET = os.environ.get("VNC_HMAC_SECRET", "")
+
+
+def mint_vp_scoped_token(vp_id):
+    """Mint a `<vpId>.<expiry>.<hmac-hex>` token for the ECS/Fargate VNC path.
+
+    Verified by the Lambda@Edge function gating /vnc/* on CloudFront (see
+    edge_auth_deployer/index.py). Binding the vpId into the signed payload -
+    not just checking "signed by us" - is what stops a token minted for one
+    VP (which required passing the owner/SharedWith/Admin check above) from
+    being replayed against a different VP's path.
+    """
+    expiry = int((datetime.now(timezone.utc) + timedelta(minutes=TOKEN_TTL_MINUTES)).timestamp())
+    signing_input = f"{vp_id}.{expiry}".encode("ascii")
+    mac = hmac.new(VNC_HMAC_SECRET.encode("utf-8"), signing_input, hashlib.sha256).hexdigest()
+    return f"{vp_id}.{expiry}.{mac}"
 
 
 def lambda_handler(event, context):
@@ -99,12 +124,30 @@ def lambda_handler(event, context):
     ).get("Item")
     microvm_id = (registry or {}).get("microvmId", {}).get("S", "")
     if not microvm_id:
-        # Either the VP is on ECS (where the ALB transport is used and no
-        # token is needed) or it has not started yet.
-        raise Exception(
-            f"No MicroVM is registered for {vp_id}; it may be starting, "
-            "or running on an ECS launch type"
-        )
+        # No MicroVM registered: either this VP is on ECS/Fargate (the ALB
+        # transport, gated by a VP-scoped HMAC token instead of a MicroVM
+        # auth token) or it has not started yet. vncEndpoint is set once the
+        # VP publishes its VNC readiness (see status-manager.ts:setVncReady),
+        # for either launch type, so its presence/shape is what tells the two
+        # apart here.
+        vnc_endpoint = vp.get("vncEndpoint", {}).get("S", "")
+        if vnc_endpoint and MICROVM_HOST_MARKER not in vnc_endpoint:
+            if not VNC_HMAC_SECRET:
+                # Deployed with VPLaunchType=MICROVM (VncHmacSecret intentionally
+                # left unset there) but this VP's own endpoint looks like ECS -
+                # a stack/data mismatch, not a normal "starting up" case.
+                raise Exception(
+                    f"VP {vp_id} has an ECS-shaped vncEndpoint but this deployment "
+                    "has no VNC_HMAC_SECRET configured"
+                )
+            token = mint_vp_scoped_token(vp_id)
+            expires_at = datetime.now(timezone.utc) + timedelta(minutes=TOKEN_TTL_MINUTES)
+            logger.info("Minted VP-scoped VNC token for VP %s (ECS/Fargate)", vp_id)
+            return {
+                "authToken": token,
+                "expiresAt": expires_at.isoformat().replace("+00:00", "Z"),
+            }
+        raise Exception(f"No MicroVM is registered for {vp_id}; it may be starting")
 
     try:
         response = microvms.create_microvm_auth_token(

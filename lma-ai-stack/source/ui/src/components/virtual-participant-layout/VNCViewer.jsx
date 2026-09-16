@@ -22,7 +22,6 @@
  * noVNC source files; noVNC is consumed as an unmodified library dependency.
  * ---------------------------------------------------------------------------
  */
-import { fetchAuthSession } from 'aws-amplify/auth';
 import React, { useEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 // noVNC (@novnc/novnc) is distributed under the Mozilla Public License, v. 2.0.
@@ -44,9 +43,9 @@ import {
   Toggle,
   Badge,
 } from '@cloudscape-design/components';
-import { buildVncConnection, isMicrovmEndpoint, fetchMicrovmAuthToken } from './vncConnection';
+import { buildVncConnection, isMicrovmEndpoint, fetchVncAuthToken } from './vncConnection';
 
-// Used only on the MicroVM transport, to mint a short-lived VNC auth token.
+// Mints a short-lived, server-authorized VNC auth token (see vncConnection.js).
 const gqlClient = generateClient();
 
 const VNCViewer = ({
@@ -127,28 +126,19 @@ const VNCViewer = ({
     setConnecting(true);
     setError(null);
 
-    // Get Cognito token and connect
+    // Mint a VNC auth token and connect
     const connectWithAuth = async () => {
       try {
-        // Get current Cognito session
-        const session = await fetchAuthSession();
-        const idToken = session?.tokens?.idToken?.toString();
-        if (!idToken) {
-          throw new Error('No Cognito ID token available');
-        }
-
         // Two transports, depending on VPLaunchType (see vncConnection.js):
-        //  - ECS: wss://<cloudfront>/vnc/<vpId>?token=<cognito id token>
+        //  - ECS: wss://<cloudfront>/vnc/<vpId>?token=<VP-scoped HMAC token>
         //  - MicroVM: the VM's own endpoint, with a short-lived port-scoped
-        //    token passed as a WebSocket subprotocol (browsers can't set the
-        //    X-aws-proxy-auth header that Lambda would otherwise expect).
-        let authToken;
-        if (isMicrovmEndpoint(vncEndpoint)) {
-          authToken = await fetchMicrovmAuthToken(gqlClient, vpId);
-        }
+        //    JWE token passed as a WebSocket subprotocol (browsers can't set
+        //    the X-aws-proxy-auth header that Lambda would otherwise expect).
+        // Both are minted by the same resolver, which decides which kind of
+        // token to hand back based on how this VP is actually running.
+        const authToken = await fetchVncAuthToken(gqlClient, vpId);
         const { url: wsUrl, wsProtocols } = buildVncConnection({
           endpoint: vncEndpoint,
-          idToken,
           authToken,
         });
 

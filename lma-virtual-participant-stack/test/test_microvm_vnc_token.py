@@ -25,6 +25,8 @@ No AWS calls: the MicroVM client and DynamoDB lookup are stubbed.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import re
 import sys
 from datetime import datetime, timezone
@@ -133,3 +135,119 @@ def test_expires_at_is_never_the_string_none() -> None:
     """A regression guard on the exact observed bad value."""
     src = _code_only(TOKEN_DIR / "index.py")
     assert "str(expires_at)" not in src
+
+
+def test_ecs_launch_type_mints_a_vp_scoped_hmac_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No MicroVM registered + an ECS-shaped vncEndpoint -> HMAC token, not an error.
+
+    Before this branch existed, this was the "may be starting, or running on
+    an ECS launch type" exception path for every ECS/Fargate VP - the viewer
+    fell back to the caller's own raw Cognito ID token instead (vncConnection.js),
+    which is the cross-user VNC escalation this change closes. See
+    LMA-HANDOFF.md's VNC section.
+    """
+    monkeypatch.setenv("VP_TABLE_NAME", "vp-table")
+    monkeypatch.setenv("VP_TASK_REGISTRY_TABLE_NAME", "registry-table")
+    monkeypatch.setenv("VNC_HMAC_SECRET", "unit-test-secret")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    import importlib
+
+    import index as token_index
+
+    importlib.reload(token_index)  # pick up VNC_HMAC_SECRET set just above
+
+    class _FakeDynamo:
+        def get_item(self, TableName, Key):  # noqa: N803 - boto3 kwarg names
+            if TableName == "vp-table":
+                return {
+                    "Item": {
+                        "Owner": {"S": "bob@example.com"},
+                        "vncEndpoint": {"S": "wss://d123abc.cloudfront.net/vnc/vp-1"},
+                    }
+                }
+            return {"Item": {}}  # no microvmId registered - ECS/Fargate case
+
+    monkeypatch.setattr(token_index, "dynamodb", _FakeDynamo())
+
+    result = token_index.lambda_handler(
+        {
+            "arguments": {"vpId": "vp-1"},
+            "identity": {"username": "bob@example.com", "claims": {}},
+        },
+        None,
+    )
+
+    assert ISO_Z.match(result["expiresAt"])
+    parts = result["authToken"].split(".")
+    assert len(parts) == 3, f"expected <vpId>.<expiry>.<hmac>, got {result['authToken']!r}"
+    token_vp_id, expiry_str, mac_hex = parts
+    assert token_vp_id == "vp-1"
+    expected_mac = hmac.new(
+        b"unit-test-secret", f"{token_vp_id}.{expiry_str}".encode(), hashlib.sha256
+    ).hexdigest()
+    assert mac_hex == expected_mac, "token must verify against the same scheme the edge function uses"
+
+
+def test_ecs_token_denied_for_non_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The owner/SharedWith/Admin check applies before the ECS branch is even reached."""
+    monkeypatch.setenv("VP_TABLE_NAME", "vp-table")
+    monkeypatch.setenv("VP_TASK_REGISTRY_TABLE_NAME", "registry-table")
+    monkeypatch.setenv("VNC_HMAC_SECRET", "unit-test-secret")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    import importlib
+
+    import index as token_index
+
+    importlib.reload(token_index)
+
+    class _FakeDynamo:
+        def get_item(self, TableName, Key):  # noqa: N803 - boto3 kwarg names
+            if TableName == "vp-table":
+                return {
+                    "Item": {
+                        "Owner": {"S": "bob@example.com"},
+                        "vncEndpoint": {"S": "wss://d123abc.cloudfront.net/vnc/vp-1"},
+                    }
+                }
+            return {"Item": {}}
+
+    monkeypatch.setattr(token_index, "dynamodb", _FakeDynamo())
+
+    with pytest.raises(Exception, match="Not authorized"):
+        token_index.lambda_handler(
+            {
+                "arguments": {"vpId": "vp-1"},
+                "identity": {"username": "eve@example.com", "claims": {}},
+            },
+            None,
+        )
+
+
+def test_vp_not_started_still_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No microvmId and no vncEndpoint yet -> still the "may be starting" error, not a token."""
+    monkeypatch.setenv("VP_TABLE_NAME", "vp-table")
+    monkeypatch.setenv("VP_TASK_REGISTRY_TABLE_NAME", "registry-table")
+    monkeypatch.setenv("VNC_HMAC_SECRET", "unit-test-secret")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    import importlib
+
+    import index as token_index
+
+    importlib.reload(token_index)
+
+    class _FakeDynamo:
+        def get_item(self, TableName, Key):  # noqa: N803 - boto3 kwarg names
+            if TableName == "vp-table":
+                return {"Item": {"Owner": {"S": "bob@example.com"}}}  # no vncEndpoint yet
+            return {"Item": {}}
+
+    monkeypatch.setattr(token_index, "dynamodb", _FakeDynamo())
+
+    with pytest.raises(Exception, match="may be starting"):
+        token_index.lambda_handler(
+            {
+                "arguments": {"vpId": "vp-1"},
+                "identity": {"username": "bob@example.com", "claims": {}},
+            },
+            None,
+        )

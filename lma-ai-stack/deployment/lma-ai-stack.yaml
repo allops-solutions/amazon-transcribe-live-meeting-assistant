@@ -4824,7 +4824,33 @@ Resources:
   # Created unconditionally: this stack does not receive VPLaunchType, and an
   # unused Lambda + resolver costs nothing. The mutation simply returns an error
   # for VPs that are not running on a MicroVM.
+  #
+  # This Lambda also mints VNC auth tokens for the ECS/Fargate launch type
+  # (VNC_HMAC_SECRET below) — the field/mutation name (createMicrovmVncToken)
+  # predates that and is kept as-is rather than renamed across schema +
+  # frontend for a purely cosmetic change.
   ##########################################################################
+
+  # Shared secret for VP-scoped HMAC VNC tokens on the ECS/Fargate launch
+  # type: minted here (MicrovmVncTokenFunction, after the owner/SharedWith/
+  # Admin check below) and verified by the Lambda@Edge function gating
+  # /vnc/* on CloudFront (EdgeAuthFunction / edge_auth_deployer/index.py).
+  # Both sides get it via CloudFormation dynamic references at deploy time
+  # ({{resolve:secretsmanager:...}}), so its value never needs to be typed
+  # into a parameter or passed through a custom resource's logged event.
+  #
+  # Created unconditionally, like MicrovmVncTokenFunction itself: cheap
+  # (~$0.40/month) relative to what ShouldCreateVNCALB actually guards
+  # against (a $16-20/month ALB), so not worth the same conditional wiring.
+  VncHmacSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: !Sub "VP-scoped VNC auth token HMAC key for ${AWS::StackName}"
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+      GenerateSecretString:
+        PasswordLength: 40
+        ExcludePunctuation: true
+    # checkov:skip=CKV_AWS_149: "Encrypted with the stack's own customer-managed key (KmsKeyId above), not the default aws/secretsmanager key"
 
   MicrovmVncTokenFunctionRole:
     Type: AWS::IAM::Role
@@ -4902,7 +4928,7 @@ Resources:
     # checkov:skip=CKV_AWS_115: "Reserved concurrency not required"
     # checkov:skip=CKV_AWS_116: "DLQ not required for a synchronous AppSync resolver"
     # checkov:skip=CKV_AWS_117: "VPC access not required; AWS public APIs only"
-    # checkov:skip=CKV_AWS_173: "Environment contains only table names"
+    # checkov:skip=CKV_AWS_173: "VNC_HMAC_SECRET is encrypted at rest by Lambda's default service key, matching every other secret-bearing function in this stack (grep CKV_AWS_173 for the others) - none use a customer KMS key for env var encryption"
     Properties:
       Handler: index.lambda_handler
       Runtime: python3.12
@@ -4913,6 +4939,9 @@ Resources:
         Variables:
           VP_TASK_REGISTRY_TABLE_NAME: !Ref VPTaskRegistry
           VP_TABLE_NAME: !Ref VirtualParticipantTable
+          # Resolved by CloudFormation at deploy time; never passed through a
+          # custom resource or typed into a parameter. See VncHmacSecret above.
+          VNC_HMAC_SECRET: !Sub "{{resolve:secretsmanager:${VncHmacSecret}}}"
       CodeUri: ../source/lambda_functions/microvm_vnc_token
       LoggingConfig:
         LogGroup: !Ref MicrovmVncTokenFunctionLogGroup
@@ -7342,6 +7371,21 @@ Resources:
                 Action:
                   - iam:PassRole
                 Resource: !GetAtt EdgeAuthFunctionRole.Arn
+              - Effect: Allow
+                # Fetches the HMAC secret value once at deploy time and embeds
+                # it into the Lambda@Edge code (see edge_auth_deployer/index.py)
+                # - only the secret's ARN travels through the custom resource's
+                # (logged) event, never the value itself.
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref VncHmacSecret
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: !Ref CustomerManagedEncryptionKeyArn
+                Condition:
+                  StringEquals:
+                    "kms:ViaService": !Sub "secretsmanager.${AWS::Region}.amazonaws.com"
 
   EdgeAuthDeployerFunction:
     Type: AWS::Serverless::Function
@@ -7381,6 +7425,9 @@ Resources:
   # ECS launch types. Under MICROVM the viewer authenticates with a port-scoped
   # MicroVM auth token instead (see MicrovmVncTokenFunction), and this
   # replicated edge function would otherwise linger in us-east-1 unused.
+  #
+  # Verifies a VP-scoped HMAC token (VncHmacSecret) rather than a raw Cognito
+  # token - see the module docstring in edge_auth_deployer/index.py for why.
   EdgeAuthFunction:
     Type: Custom::EdgeAuthFunction
     Condition: ShouldCreateVNCALB
@@ -7388,9 +7435,7 @@ Resources:
       ServiceToken: !GetAtt EdgeAuthDeployerFunction.Arn
       FunctionName: !Sub '${AWS::StackName}-VNCEdgeAuth'
       RoleArn: !GetAtt EdgeAuthFunctionRole.Arn
-      UserPoolId: !Ref UserPoolId
-      Region: !Ref AWS::Region
-      ClientId: !Ref CognitoClientId
+      HmacSecretArn: !Ref VncHmacSecret
       # Hash of the Lambda@Edge code - changing this forces the custom resource to update
       # This value is replaced during the build process by the Makefile
       CodeHash: "EDGE_AUTH_CODE_HASH_PLACEHOLDER"

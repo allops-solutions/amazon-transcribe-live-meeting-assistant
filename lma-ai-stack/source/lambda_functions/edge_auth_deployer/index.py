@@ -1,7 +1,9 @@
 """
 Custom Resource Lambda to deploy Lambda@Edge function in us-east-1.
 This function creates, updates, and deletes the Lambda@Edge function
-that validates Cognito tokens for VNC WebSocket connections.
+that authenticates VNC WebSocket connections for the ECS/Fargate launch
+type, using a VP-scoped HMAC token minted by MicrovmVncTokenFunction
+(see lma_ai_stack.yaml and source/lambda_functions/microvm_vnc_token).
 """
 
 import io
@@ -51,244 +53,117 @@ def send(
         print(f"send(..) failed executing request: {e}")
 
 
-# Lambda@Edge function code
+# Lambda@Edge function code.
+#
+# Auth model: the token is a VP-scoped HMAC, not a raw Cognito credential.
+# MicrovmVncTokenFunction (a regular, non-edge Lambda behind AppSync) already
+# does the real authorization check - caller is the VP's Owner/SharedWith or
+# an Admin - before it mints one, binding it to this specific vpId with a
+# short TTL. This function's only job is to verify that binding: that the
+# token in the URL was produced by someone holding VNC_HMAC_SECRET for THIS
+# vpId and hasn't expired. It deliberately does not re-derive caller
+# identity from a Cognito token - there is no per-request Cognito check here
+# at all, because the token itself already proves the caller passed one
+# upstream, for this specific VP, not just some VP.
+#
+# Previously (until 2026-09-16) this function decoded a raw Cognito ID token
+# and checked exp/iss/aud/token_use, but never verified the JWT signature -
+# get_jwks() was defined and never called, and all three checked claim
+# values are public, so anyone reaching the CloudFront URL could hand-craft
+# a fake token with no Cognito account at all. Signature verification was
+# added the same day, but even a genuine, correctly-signed token from ANY
+# authenticated user still worked for ANY vpId - the check never looked at
+# which VP the token was for. This HMAC scheme fixes both: forging a token
+# requires the secret (never leaves AWS - see EdgeAuthDeployerFunction /
+# MicrovmVncTokenFunction), and a genuine token only works for the one VP it
+# was minted for.
 EDGE_FUNCTION_CODE = '''
-import json
-import base64
 import hashlib
-import urllib.request
-from datetime import datetime
+import hmac
+import time
 
-# Cache for JWKS keys (in-memory, persists across warm starts)
-jwks_cache = {}
+HMAC_SECRET = "HMAC_SECRET_PLACEHOLDER"
 
-# DER-encoded DigestInfo prefix for SHA-256, per RFC 3447 / PKCS#1 v1.5.
-SHA256_DIGESTINFO_PREFIX = bytes.fromhex('3031300d060960864801650304020105000420')
+def verify_vp_scoped_token(token, vp_id):
+    """Verify a `<vpId>.<expiry>.<hmac-hex>` token against HMAC_SECRET.
 
-def get_jwks(region, user_pool_id):
-    """Fetch JWKS from Cognito User Pool"""
-    cache_key = f"{region}:{user_pool_id}"
-    if cache_key in jwks_cache:
-        return jwks_cache[cache_key]
-    
-    jwks_url = f"https://cognito-idp.{region}.amazonaws.com/{user_pool_id}/.well-known/jwks.json"
-    
-    try:
-        with urllib.request.urlopen(jwks_url) as response:
-            jwks = json.loads(response.read().decode())
-            jwks_cache[cache_key] = jwks
-            return jwks
-    except Exception as e:
-        print(f"Error fetching JWKS: {e}")
-        return None
-
-def base64url_decode(data):
-    """Base64url-decode a JWT segment, adding padding as needed"""
-    padding = 4 - len(data) % 4
-    if padding != 4:
-        data += '=' * padding
-    return base64.urlsafe_b64decode(data)
-
-def decode_token(token):
-    """Decode JWT token without verification (just to extract claims)"""
-    try:
-        # Split token into parts
-        parts = token.split('.')
-        if len(parts) != 3:
-            return None
-
-        decoded = base64url_decode(parts[1])
-        return json.loads(decoded)
-    except Exception as e:
-        print(f"Error decoding token: {e}")
-        return None
-
-def decode_header(token):
-    """Decode JWT header (just to extract kid/alg, not verified yet)"""
-    try:
-        parts = token.split('.')
-        if len(parts) != 3:
-            return None
-        decoded = base64url_decode(parts[0])
-        return json.loads(decoded)
-    except Exception as e:
-        print(f"Error decoding header: {e}")
-        return None
-
-def verify_rs256_signature(token, jwk):
-    """
-    Verify a JWT's RS256 signature against an RSA JWK using only the stdlib
-    (textbook RSASSA-PKCS1-v1_5 over SHA-256: pow() for the modexp, then a
-    constant-shape comparison of the recovered EM block). No third-party
-    crypto package - Lambda@Edge has tight package size/replication limits.
+    Constant-time comparison (hmac.compare_digest) so response timing can't
+    be used to brute-force the MAC byte by byte.
     """
     try:
         parts = token.split('.')
         if len(parts) != 3:
+            print("Malformed token (expected 3 dot-separated parts)")
             return False
-        signing_input = (parts[0] + '.' + parts[1]).encode('ascii')
-        signature = base64url_decode(parts[2])
+        token_vp_id, expiry_str, mac_hex = parts
 
-        n = int.from_bytes(base64url_decode(jwk['n']), 'big')
-        e = int.from_bytes(base64url_decode(jwk['e']), 'big')
-
-        k = (n.bit_length() + 7) // 8
-        if len(signature) != k:
-            print("Signature length does not match RSA modulus size")
+        # Bind to the vpId in the request path, not just the URL's own token.
+        # Without this, a token minted for one VP would work for any other.
+        if token_vp_id != vp_id:
+            print(f"Token vpId {token_vp_id!r} does not match path vpId {vp_id!r}")
             return False
 
-        sig_int = int.from_bytes(signature, 'big')
-        if sig_int >= n:
+        try:
+            expiry = int(expiry_str)
+        except ValueError:
+            print(f"Non-numeric expiry: {expiry_str!r}")
+            return False
+        if expiry < int(time.time()):
+            print(f"Token expired: {expiry}")
             return False
 
-        em = pow(sig_int, e, n).to_bytes(k, 'big')
-
-        digest = hashlib.sha256(signing_input).digest()
-        digest_info = SHA256_DIGESTINFO_PREFIX + digest
-        ps_len = k - 3 - len(digest_info)
-        if ps_len < 8:
-            return False
-        expected_em = b'\\x00\\x01' + b'\\xff' * ps_len + b'\\x00' + digest_info
-
-        return em == expected_em
-    except Exception as ex:
-        print(f"Signature verification error: {ex}")
-        return False
-
-def validate_token(token, region, user_pool_id, client_id):
-    """Validate Cognito JWT token"""
-    try:
-        # Verify signature FIRST - claims are untrusted until the signature
-        # checks out, otherwise a hand-crafted token with valid-looking
-        # exp/iss/aud/token_use claims would pass with no Cognito account.
-        header = decode_header(token)
-        if not header:
-            print("Failed to decode token header")
+        signing_input = f"{token_vp_id}.{expiry_str}".encode('ascii')
+        expected_mac = hmac.new(HMAC_SECRET.encode('utf-8'), signing_input, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(mac_hex, expected_mac):
+            print("HMAC mismatch")
             return False
 
-        if header.get('alg') != 'RS256':
-            print(f"Unsupported/unexpected alg: {header.get('alg')}")
-            return False
-
-        kid = header.get('kid')
-        if not kid:
-            print("Token header missing kid")
-            return False
-
-        jwks = get_jwks(region, user_pool_id)
-        if not jwks:
-            print("Failed to fetch JWKS")
-            return False
-
-        jwk = next((key for key in jwks.get('keys', []) if key.get('kid') == kid), None)
-        if not jwk:
-            print(f"No matching JWK for kid: {kid}")
-            return False
-
-        if jwk.get('kty') != 'RSA':
-            print(f"Unsupported JWK kty: {jwk.get('kty')}")
-            return False
-
-        if not verify_rs256_signature(token, jwk):
-            print("Signature verification failed")
-            return False
-
-        # Decode token to get claims (now trusted - signature verified above)
-        claims = decode_token(token)
-        if not claims:
-            print("Failed to decode token")
-            return False
-
-        print(f"Token claims: {json.dumps(claims)}")
-
-        # Check expiration
-        exp = claims.get('exp', 0)
-        if exp < datetime.utcnow().timestamp():
-            print(f"Token expired: {exp}")
-            return False
-        
-        # Check issuer
-        expected_issuer = f"https://cognito-idp.{region}.amazonaws.com/{user_pool_id}"
-        if claims.get('iss') != expected_issuer:
-            print(f"Invalid issuer: {claims.get('iss')}")
-            return False
-        
-        # Check token_use (should be 'id' or 'access')
-        token_use = claims.get('token_use')
-        if token_use not in ['id', 'access']:
-            print(f"Invalid token_use: {token_use}")
-            return False
-        
-        # For ID tokens, check client_id
-        if token_use == 'id':
-            aud = claims.get('aud')
-            if aud != client_id:
-                print(f"Invalid audience: {aud}")
-                return False
-        
-        # For access tokens, check client_id in claims
-        if token_use == 'access':
-            token_client_id = claims.get('client_id')
-            if token_client_id != client_id:
-                print(f"Invalid client_id: {token_client_id}")
-                return False
-        
-        print("Token validation successful")
         return True
-        
-    except Exception as e:
-        print(f"Token validation error: {e}")
+    except Exception as ex:
+        print(f"Token verification error: {ex}")
         return False
-
-def extract_token_from_cookies(cookies):
-    """Extract Cognito token from cookies"""
-    if not cookies:
-        return None
-    
-    # Look for common Cognito cookie patterns
-    cookie_names = [
-        'CognitoIdentityServiceProvider',
-        'idToken',
-        'accessToken',
-    ]
-    
-    for cookie in cookies:
-        cookie_str = cookie.get('value', '')
-        # Try to find token-like strings (JWT format: xxx.yyy.zzz)
-        parts = cookie_str.split('.')
-        if len(parts) == 3:
-            return cookie_str
-    
-    return None
 
 def lambda_handler(event, context):
     """Lambda@Edge handler for viewer request"""
     request = event['Records'][0]['cf']['request']
     uri = request.get('uri', '')
     querystring = request.get('querystring', '')
-    
+
     print(f"Request URI: {uri}")
-    print(f"Query string: {querystring}")
-    
-    # Only validate /vnc/* paths
+
+    # Only validate /vnc/<vpId> paths
     if not uri.startswith('/vnc/'):
         print("Not a VNC path, allowing through")
         return request
-    
+
+    # /vnc/<vpId> - the ALB listener rule for this vpId is what actually
+    # routes to the right ECS task (see status-manager.ts), so the vpId
+    # segment here is load-bearing for auth, not just routing: it is what
+    # ties the token to this specific VP.
+    vp_id = uri[len('/vnc/'):].split('/')[0]
+    if not vp_id:
+        print("No vpId in path")
+        return {
+            'status': '400',
+            'statusDescription': 'Bad Request',
+            'body': 'Missing Virtual Participant id in path',
+            'headers': {
+                'content-type': [{'key': 'Content-Type', 'value': 'text/plain'}]
+            }
+        }
+
     # Extract token from query string parameter
     token = None
     if querystring:
-        # Parse query string to find token parameter
+        import urllib.parse
         params = querystring.split('&')
         for param in params:
             if '=' in param:
                 key, value = param.split('=', 1)
                 if key == 'token':
-                    # URL decode the token
-                    import urllib.parse
                     token = urllib.parse.unquote(value)
                     break
-    
+
     if not token:
         print("No token found in query string")
         return {
@@ -299,14 +174,9 @@ def lambda_handler(event, context):
                 'content-type': [{'key': 'Content-Type', 'value': 'text/plain'}]
             }
         }
-    
-    # Validate token (config injected at deployment time)
-    region = "REGION_PLACEHOLDER"
-    user_pool_id = "USER_POOL_ID_PLACEHOLDER"
-    client_id = "CLIENT_ID_PLACEHOLDER"
-    
-    if not validate_token(token, region, user_pool_id, client_id):
-        print("Token validation failed")
+
+    if not verify_vp_scoped_token(token, vp_id):
+        print("Token verification failed")
         return {
             'status': '403',
             'statusDescription': 'Forbidden',
@@ -315,7 +185,7 @@ def lambda_handler(event, context):
                 'content-type': [{'key': 'Content-Type', 'value': 'text/plain'}]
             }
         }
-    
+
     print("Authentication successful, allowing request")
     return request
 '''
@@ -366,14 +236,9 @@ def wait_for_version_active(lambda_client, function_name, version):
         raise
 
 
-def create_edge_function(
-    lambda_client, iam_client, function_name, role_arn, user_pool_id, region, client_id
-):
+def create_edge_function(lambda_client, function_name, role_arn, hmac_secret):
     """Create Lambda@Edge function in us-east-1"""
-    # Replace placeholders in code
-    code = EDGE_FUNCTION_CODE.replace("REGION_PLACEHOLDER", region)
-    code = code.replace("USER_POOL_ID_PLACEHOLDER", user_pool_id)
-    code = code.replace("CLIENT_ID_PLACEHOLDER", client_id)
+    code = EDGE_FUNCTION_CODE.replace("HMAC_SECRET_PLACEHOLDER", hmac_secret)
 
     # Create zip file
     zip_content = create_zip_file(code)
@@ -414,17 +279,13 @@ def create_edge_function(
     except ClientError as e:
         if e.response["Error"]["Code"] == "ResourceConflictException":
             # Function already exists, update it
-            return update_edge_function(
-                lambda_client, function_name, user_pool_id, region, client_id
-            )
+            return update_edge_function(lambda_client, function_name, hmac_secret)
         raise
 
 
-def update_edge_function(lambda_client, function_name, user_pool_id, region, client_id):
+def update_edge_function(lambda_client, function_name, hmac_secret):
     """Update existing Lambda@Edge function"""
-    code = EDGE_FUNCTION_CODE.replace("REGION_PLACEHOLDER", region)
-    code = code.replace("USER_POOL_ID_PLACEHOLDER", user_pool_id)
-    code = code.replace("CLIENT_ID_PLACEHOLDER", client_id)
+    code = EDGE_FUNCTION_CODE.replace("HMAC_SECRET_PLACEHOLDER", hmac_secret)
 
     # Create zip file
     zip_content = create_zip_file(code)
@@ -517,6 +378,10 @@ def delete_edge_function(lambda_client, function_name):
 
 def handler(event, context):
     """Custom resource handler"""
+    # ResourceProperties only ever holds the secret's ARN, never its value -
+    # that value is fetched below via get_secret_value() and embedded
+    # straight into the zip, so it never appears in this event and never
+    # gets logged here.
     print(f"Event: {json.dumps(event)}")
 
     response_data = {}
@@ -527,19 +392,21 @@ def handler(event, context):
         props = event["ResourceProperties"]
         function_name = props["FunctionName"]
         role_arn = props["RoleArn"]
-        user_pool_id = props["UserPoolId"]
-        region = props["Region"]
-        client_id = props["ClientId"]
+        hmac_secret_arn = props["HmacSecretArn"]
 
-        # Create clients for us-east-1
+        # Create clients for us-east-1 (this custom resource, the Lambda@Edge
+        # function it deploys, and VncHmacSecret all live in the same
+        # us-east-1 stack - see "Locked decisions" in LMA-HANDOFF.md).
         lambda_client = boto3.client("lambda", region_name="us-east-1")
-        iam_client = boto3.client("iam", region_name="us-east-1")
+        secretsmanager_client = boto3.client("secretsmanager", region_name="us-east-1")
 
         if event["RequestType"] in ["Create", "Update"]:
+            hmac_secret = secretsmanager_client.get_secret_value(SecretId=hmac_secret_arn)[
+                "SecretString"
+            ]
+
             # Create or update function
-            function_arn = create_edge_function(
-                lambda_client, iam_client, function_name, role_arn, user_pool_id, region, client_id
-            )
+            function_arn = create_edge_function(lambda_client, function_name, role_arn, hmac_secret)
 
             # Return the versioned ARN (required for Lambda@Edge)
             response_data["FunctionArn"] = function_arn

@@ -8,14 +8,24 @@
  * platforms (see VPLaunchType in the VP stack):
  *
  *   ECS (EC2/FARGATE) — the VP registers itself with an ALB behind CloudFront,
- *     and the browser connects to `wss://<cloudfront>/vnc/<vpId>` with the
- *     Cognito ID token as a `token` query parameter.
+ *     and the browser connects to `wss://<cloudfront>/vnc/<vpId>` with a
+ *     short-lived, VP-scoped auth token as a `token` query parameter.
  *
  *   Lambda MicroVMs — each MicroVM has its own endpoint
  *     (`wss://<id>.lambda-microvm.<region>.on.aws`) and there is no path-based
  *     routing. Auth is a short-lived, port-scoped JWE that Lambda requires in
  *     the `X-aws-proxy-auth` header — but browsers cannot set headers on a
  *     WebSocket, so it is passed as a WebSocket subprotocol instead.
+ *
+ * Both auth tokens are minted server-side by the same createMicrovmVncToken
+ * mutation (see fetchVncAuthToken below) only after the resolver checks the
+ * caller owns, was shared, or is Admin for this VP — never a raw Cognito
+ * token passed straight through. Before 2026-09-16 the ECS transport used
+ * the caller's own Cognito ID token directly: any authenticated user's
+ * (real, valid) token worked for any VP's /vnc/<vpId> path, because nothing
+ * checked which VP the token was actually for. The VP-scoped token this
+ * transport uses now is minted specifically for the vpId being connected to
+ * and verified as such at the edge (see edge_auth_deployer/index.py).
  *
  * Kept as a pure function so the transport choice is unit-testable without a
  * browser, a live VP, or AWS.
@@ -42,11 +52,12 @@ export const isMicrovmEndpoint = (endpoint) => typeof endpoint === 'string' && e
  *
  * @param {object} args
  * @param {string} args.endpoint   Value published by the backend (vncEndpoint).
- * @param {string} [args.idToken]  Cognito ID token (ECS transport).
- * @param {string} [args.authToken] MicroVM JWE auth token (MicroVM transport).
+ * @param {string} args.authToken  Server-minted auth token (see fetchVncAuthToken)
+ *                                 — a MicroVM JWE on the MicroVM transport, a
+ *                                 VP-scoped HMAC token on the ECS transport.
  * @returns {{url: string, wsProtocols: string[]}}
  */
-export const buildVncConnection = ({ endpoint, idToken, authToken }) => {
+export const buildVncConnection = ({ endpoint, authToken }) => {
   if (!endpoint) {
     throw new Error('No VNC endpoint available');
   }
@@ -72,20 +83,23 @@ export const buildVncConnection = ({ endpoint, idToken, authToken }) => {
     };
   }
 
-  if (!idToken) {
-    throw new Error('No Cognito ID token available');
+  if (!authToken) {
+    throw new Error('No VNC auth token available');
   }
   const url = new URL(endpoint);
-  url.searchParams.append('token', idToken);
+  url.searchParams.append('token', authToken);
   return { url: url.toString(), wsProtocols: [] };
 };
 
 /**
- * GraphQL mutation that mints a MicroVM auth token for a VP's noVNC port.
+ * GraphQL mutation that mints a VNC auth token for a VP's noVNC port — a
+ * MicroVM JWE or a VP-scoped HMAC token, depending on which launch type the
+ * VP is actually running on (the resolver decides; the caller doesn't need
+ * to know).
  *
  * Minted on demand per viewer session rather than once at VP launch: the token
- * TTL is capped at 60 minutes by the service, while meetings can run up to 8
- * hours. The viewer's existing auto-reconnect re-mints on reconnect.
+ * TTL is capped at 60 minutes, while meetings can run up to 8 hours. The
+ * viewer's existing auto-reconnect re-mints on reconnect.
  */
 export const createMicrovmVncTokenMutation = `
   mutation CreateMicrovmVncToken($vpId: ID!) {
@@ -97,23 +111,24 @@ export const createMicrovmVncTokenMutation = `
 `;
 
 /**
- * Fetch a fresh MicroVM auth token for this VP.
+ * Fetch a fresh VNC auth token for this VP, for whichever transport it's
+ * actually running on.
  *
- * Minting requires IAM credentials (CreateMicrovmAuthToken), so it happens in a
- * resolver rather than the browser.
+ * Minting requires IAM credentials (CreateMicrovmAuthToken) or the shared
+ * HMAC secret, so it happens in a resolver rather than the browser.
  *
  * @param {object} client  Amplify GraphQL client.
  * @param {string} vpId
- * @returns {Promise<string>} the JWE auth token
+ * @returns {Promise<string>} the auth token
  */
-export const fetchMicrovmAuthToken = async (client, vpId) => {
+export const fetchVncAuthToken = async (client, vpId) => {
   const response = await client.graphql({
     query: createMicrovmVncTokenMutation,
     variables: { vpId },
   });
   const token = response?.data?.createMicrovmVncToken?.authToken;
   if (!token) {
-    throw new Error('Could not mint a MicroVM auth token for the VNC viewer');
+    throw new Error('Could not mint an auth token for the VNC viewer');
   }
   return token;
 };
