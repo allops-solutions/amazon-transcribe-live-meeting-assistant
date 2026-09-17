@@ -1006,12 +1006,19 @@ const VirtualParticipantList = () => {
                   {
                     value: 'en-US',
                     label: 'English only',
-                    description: 'Best accuracy for English-speaking calls. Bosnian speech will be transcribed incorrectly.',
+                    description:
+                      'Best accuracy for English-speaking calls. Bosnian/Croatian speech will be transcribed ' +
+                      'incorrectly.',
                   },
                   {
                     value: 'bs-BA',
                     label: 'Bosnian only',
                     description: 'Best accuracy for Bosnian-heavy calls, including occasional English terms.',
+                  },
+                  {
+                    value: 'hr-HR',
+                    label: 'Croatian only',
+                    description: 'Best accuracy for Croatian-heavy calls, including occasional English terms.',
                   },
                   {
                     value: 'identify-language',
@@ -1025,7 +1032,8 @@ const VirtualParticipantList = () => {
                     label: 'Auto-detect, mixed languages (default)',
                     description:
                       'Re-checks language throughout the call. May produce poor quality when a speaker switches ' +
-                      'languages mid-sentence — use English only / Bosnian only above for meetings like that.',
+                      'languages mid-sentence — use English only / Bosnian only / Croatian only above for meetings ' +
+                      'like that.',
                   },
                 ]}
               />

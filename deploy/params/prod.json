@@ -9,7 +9,7 @@
   },
   {
     "ParameterKey": "AllowedSignUpEmailDomain",
-    "ParameterValue": "allops.co"
+    "ParameterValue": ""
   },
   {
     "ParameterKey": "AppSyncApiCacheInstanceType",
