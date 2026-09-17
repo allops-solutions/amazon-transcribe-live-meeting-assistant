@@ -200,6 +200,17 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         return error_response(500, f"Internal error: {str(e)}")
 
 
+# IMPORTANT: MCPServerGatewayTarget's ToolSchema.InlinePayload in
+# lma-ai-stack.yaml is a SECOND, INDEPENDENT copy of this list, hand-typed
+# in CloudFormation's own schema format. The Bedrock AgentCore Gateway
+# (what Quick Desktop/Web actually connect to) serves that hardcoded
+# snapshot for tool discovery - it does not introspect this file at
+# request time - so a change here alone does not reach Quick no matter
+# how the Lambda itself behaves. Found 2026-09-17: schedule_meeting and
+# start_meeting_now had drifted (missing Google Meet, meetingLanguage,
+# summaryProfile, summaryLanguage) with nothing failing loudly; Quick just
+# told the user those features "aren't supported". Mirror any change to
+# this list into that CFN block by hand.
 MCP_TOOLS = [
     {
         "name": "search_lma_meetings",

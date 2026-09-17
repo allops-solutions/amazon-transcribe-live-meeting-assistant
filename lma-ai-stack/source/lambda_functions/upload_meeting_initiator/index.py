@@ -162,9 +162,27 @@ def _parse_and_validate_input(arguments: dict) -> dict:
         except ValueError as err:
             raise ValidationError("meetingDateTime must be an ISO-8601 timestamp") from err
 
+    # A BCP-47 tag or one of Transcribe's language-identification modes, the
+    # same per-meeting values the Virtual Participant form offers.
     language_code = (raw.get("languageCode") or "").strip() or None
-    if language_code and not re.match(r"^[a-zA-Z]{2,3}(-[a-zA-Z0-9]+)*$", language_code):
-        raise ValidationError("languageCode must look like a BCP-47 tag (e.g. en-US)")
+    if language_code and not re.match(
+        r"^([a-zA-Z]{2,3}(-[a-zA-Z0-9]+)*|identify-language|identify-multiple-languages)$",
+        language_code,
+    ):
+        raise ValidationError(
+            "languageCode must look like a BCP-47 tag (e.g. en-US), "
+            "'identify-language' or 'identify-multiple-languages'"
+        )
+
+    summary_profile = (raw.get("summaryProfile") or "").strip() or None
+    if summary_profile and not re.match(r"^[a-zA-Z0-9._-]{1,100}$", summary_profile):
+        raise ValidationError("summaryProfile must match [a-zA-Z0-9._-]{1,100}")
+
+    summary_language = (raw.get("summaryLanguage") or "").strip() or None
+    if summary_language and (
+        len(summary_language) > 50 or not re.match(r"^[^\x00-\x1f]+$", summary_language)
+    ):
+        raise ValidationError("summaryLanguage must be 50 printable characters or fewer")
 
     caller_supplied_call_id = (raw.get("callId") or "").strip() or None
     if caller_supplied_call_id and not re.match(
@@ -184,6 +202,8 @@ def _parse_and_validate_input(arguments: dict) -> dict:
         "maxSpeakers": max_speakers,
         "meetingDateTime": meeting_date_time,
         "languageCode": language_code,
+        "summaryProfile": summary_profile,
+        "summaryLanguage": summary_language,
         "callerSuppliedCallId": caller_supplied_call_id,
     }
 
@@ -254,6 +274,8 @@ def _write_upload_job(
         "EnableDiarization": normalized["enableDiarization"],
         "MaxSpeakers": normalized["maxSpeakers"],
         "LanguageCode": normalized.get("languageCode"),
+        "SummaryProfile": normalized.get("summaryProfile"),
+        "SummaryLanguage": normalized.get("summaryLanguage"),
         "MeetingDateTime": normalized.get("meetingDateTime"),
         "PendingObjectBucket": S3_BUCKET_NAME,
         "PendingObjectKey": object_key,

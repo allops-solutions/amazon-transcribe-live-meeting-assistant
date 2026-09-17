@@ -112,7 +112,7 @@ class DetailsManager {
     const virtualParticipantId = process.env.VIRTUAL_PARTICIPANT_ID || uuidv4();
 
     // LMA Configuration
-    const lmaIdentity = process.env.LMA_IDENTITY || 'ALMA ({LMA_USER})';
+    const lmaIdentity = process.env.LMA_IDENTITY || 'LMA ({LMA_USER})';
     const lmaUser = userName;
 
     // Replace {LMA_USER} placeholder in messages
@@ -123,17 +123,17 @@ class DetailsManager {
     // Messages Configuration
     const introMessage = replacePlaceholders(
       process.env.INTRO_MESSAGE ||
-      "Hello. I am ALMA, allOps's AI Live Meeting Assistant. I was invited by {LMA_USER} to join this call. " +
-      'Anyone here can ask me to leave at any time by typing "ALMA leave" (or "ALMA end") in chat.'
+      "Hello. I am LMA, allOps's AI Live Meeting Assistant. I was invited by {LMA_USER} to join this call. " +
+      'Anyone here can ask me to leave at any time by typing "LMA leave" (or "LMA end") in chat.'
     );
     const startRecordingMessage = replacePlaceholders(
-      process.env.START_RECORDING_MESSAGE || 'ALMA started.'
+      process.env.START_RECORDING_MESSAGE || 'Live Meeting Assistant started.'
     );
     const stopRecordingMessage = replacePlaceholders(
-      process.env.STOP_RECORDING_MESSAGE || 'ALMA stopped.'
+      process.env.STOP_RECORDING_MESSAGE || 'Live Meeting Assistant stopped.'
     );
     const exitMessage = replacePlaceholders(
-      process.env.EXIT_MESSAGE || 'ALMA has left the room.'
+      process.env.EXIT_MESSAGE || 'Live Meeting Assistant has left the room.'
     );
 
     const zoomSdkCredsPresent = !!((process.env.ZOOM_MEETING_SDK_CLIENT_ID || '').trim() && (process.env.ZOOM_MEETING_SDK_CLIENT_SECRET || '').trim());
@@ -254,24 +254,25 @@ export function resolveJoinMethod(override: string | undefined, credentialsPrese
  * The matcher is deliberately strict — it accepts only messages that consist
  * of exactly the addressee + verb (or verb + addressee), with optional
  * lightweight punctuation. This prevents false positives from prose that
- * happens to contain both "ALMA" and a dismissal verb — most importantly
+ * happens to contain both "LMA" and a dismissal verb — most importantly
  * the bot's own intro message (which itself reads
- *   '...typing "ALMA leave" (or "ALMA end") in chat.'
- * ), so a second ALMA bot in the same meeting can no longer end the first
+ *   '...typing "LMA leave" (or "LMA end") in chat.'
+ * ), so a second LMA bot in the same meeting can no longer end the first
  * one with its join announcement.
  *
  * Recognised verbs (case-insensitive): end, leave, stop, quit, exit, goodbye, bye.
- * The addressee may be "ALMA" or "@ALMA" — "LMA"/"@LMA" also still match, so
- * anyone used to the old name isn't suddenly unable to dismiss the bot.
+ * The addressee may be "LMA" or "@LMA" — "ALMA"/"@ALMA" (the bot's former
+ * name) also still match, so anyone used to it isn't suddenly unable to
+ * dismiss the bot.
  *
  * Examples that match:
- *   "ALMA end", "ALMA, leave!", "@ALMA stop", "alma quit", "LMA end",
- *   "Goodbye ALMA", "bye, ALMA!", "exit ALMA"
+ *   "LMA end", "LMA, leave!", "@LMA stop", "lma quit", "ALMA end",
+ *   "Goodbye LMA", "bye, LMA!", "exit LMA"
  *
  * Examples that do NOT match:
- *   "the meeting will end at 3pm", "I have to leave, but ALMA looks great",
+ *   "the meeting will end at 3pm", "I have to leave, but LMA looks great",
  *   any message that quotes the command in a longer sentence (including the
- *   bot's own intro), "Hello ALMA", "endpoint", "ending soon".
+ *   bot's own intro), "Hello LMA", "endpoint", "ending soon".
  */
 export function matchesEndCommand(message: string): boolean {
   if (!message) return false;

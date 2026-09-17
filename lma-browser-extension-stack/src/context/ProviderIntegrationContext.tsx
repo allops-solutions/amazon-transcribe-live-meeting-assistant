@@ -10,6 +10,16 @@ import { useSettings } from './SettingsContext';
 import { useUserContext } from './UserContext';
 import { WebSocketHook } from 'react-use-websocket/dist/lib/types';
 
+// Per-meeting options chosen on the Capture screen, sent in the START frame.
+// Same fields the web UI's Stream Audio page and the Virtual Participant send;
+// the summary ones are omitted when blank so the backend falls back to the
+// stack-wide templates.
+export type MeetingOptions = {
+  transcribeLanguageMode: string,
+  summaryProfile?: string,
+  summaryLanguage?: string,
+}
+
 type Call = {
   callEvent: string,
   agentId: string,
@@ -18,6 +28,9 @@ type Call = {
   callId: string,
   samplingRate: number,
   activeSpeaker: string,
+  transcribeLanguageMode?: string,
+  summaryProfile?: string,
+  summaryLanguage?: string,
 }
 
 const initialIntegration = {
@@ -28,7 +41,7 @@ const initialIntegration = {
   paused: false,
   setPaused: (pauseValue: boolean) => { },
   fetchMetadata: () => { },
-  startTranscription: (user: any, userName: string, meetingTopic: string) => { },
+  startTranscription: (user: any, userName: string, meetingTopic: string, options?: MeetingOptions) => { },
   stopTranscription: () => { },
   metadata: {
     userName: "",
@@ -179,21 +192,24 @@ function IntegrationProvider({ children }: any) {
     return formattedDate;
   }
 
-  const startTranscription = useCallback(async (user: any, userName: string, meetingTopic: string) => {
+  const startTranscription = useCallback(async (user: any, userName: string, meetingTopic: string, options?: MeetingOptions) => {
     if (await checkTokenExpired(user)) {
       login();
       return;
     }
 
     setShouldConnect(true);
-    const callMetadata = {
+    const callMetadata: Call = {
       callEvent: 'START',
       agentId: userName,
       fromNumber: '+9165551234',
       toNumber: '+8001112222',
       callId: `${meetingTopic} - ${getTimestampStr()}`,
       samplingRate: 8000,
-      activeSpeaker: 'n/a'
+      activeSpeaker: 'n/a',
+      ...(options?.transcribeLanguageMode ? { transcribeLanguageMode: options.transcribeLanguageMode } : {}),
+      ...(options?.summaryProfile ? { summaryProfile: options.summaryProfile } : {}),
+      ...(options?.summaryLanguage ? { summaryLanguage: options.summaryLanguage } : {}),
     }
 
     setCurrentCall(callMetadata);

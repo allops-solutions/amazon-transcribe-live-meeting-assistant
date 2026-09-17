@@ -394,5 +394,12 @@ def _emit_end_event(job: dict, call_id: str) -> None:
             "SystemPhoneNumber": job.get("ToNumber") or "System",
             "AgentId": owner,
             "CreatedAt": now,
+            # Per-meeting summary options chosen at upload time, carried through
+            # to BedrockSummaryLambda. Omitted when unset.
+            **{
+                k: job[k]
+                for k in ("SummaryProfile", "SummaryLanguage")
+                if job.get(k)
+            },
         },
     )

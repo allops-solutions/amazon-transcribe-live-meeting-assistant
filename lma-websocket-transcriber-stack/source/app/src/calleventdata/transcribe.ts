@@ -30,6 +30,7 @@ import { KinesisClient, PutRecordCommand } from '@aws-sdk/client-kinesis';
 import {
     CallStartEvent,
     CallEndEvent,
+    SummaryOptionFields,
     CallRecordingEvent,
     CallVideoRecordingEvent,
     AddTranscriptSegmentEvent,
@@ -170,6 +171,67 @@ export const diarizationSettingsFor = (callMetaData: CallMetaData): DiarizationS
     };
 };
 
+const LANGUAGE_MODE_PATTERN = /^([a-z]{2,3}-[A-Z]{2}|identify-language|identify-multiple-languages)$/;
+
+/**
+ * Which language mode Transcribe runs in for this call. A well-formed
+ * per-meeting override from the START frame wins; anything else (absent,
+ * blank, malformed) falls back to the deployment's TRANSCRIBE_LANGUAGE_CODE so
+ * a bad client value can never take a meeting down. Exported for tests.
+ */
+export const transcribeLanguageModeFor = (
+    callMetaData: Pick<CallMetaData, 'transcribeLanguageMode'>,
+    deploymentDefault: string = TRANSCRIBE_LANGUAGE_CODE
+): string => {
+    const requested = (callMetaData.transcribeLanguageMode || '').trim();
+    if (requested && LANGUAGE_MODE_PATTERN.test(requested)) {
+        return requested;
+    }
+    return deploymentDefault;
+};
+
+/**
+ * The subset of Transcribe streaming parameters that depend on the language
+ * mode. Identification modes carry the deployment's LanguageOptions and
+ * PreferredLanguage; an explicit code carries just LanguageCode. Exported for
+ * tests.
+ */
+export const languageParamsFor = (
+    languageMode: string,
+    languageOptions: string | undefined = TRANSCRIBE_LANGUAGE_OPTIONS,
+    preferredLanguage: string = TRANSCRIBE_PREFERRED_LANGUAGE
+): Partial<StartStreamTranscriptionCommandInput> => {
+    const params: Partial<StartStreamTranscriptionCommandInput> = {};
+    if (languageMode === 'identify-language' || languageMode === 'identify-multiple-languages') {
+        if (languageMode === 'identify-language') {
+            params.IdentifyLanguage = true;
+        } else {
+            params.IdentifyMultipleLanguages = true;
+        }
+        if (languageOptions) {
+            params.LanguageOptions = languageOptions.replace(/\s/g, '');
+            if (preferredLanguage !== 'None') {
+                params.PreferredLanguage = preferredLanguage as LanguageCode;
+            }
+        }
+    } else {
+        params.LanguageCode = languageMode as LanguageCode;
+    }
+    return params;
+};
+
+/**
+ * Per-meeting summary options, copied onto START/END events so they reach the
+ * Call record and BedrockSummaryLambda. Omitted entirely when unset, matching
+ * the Virtual Participant's convention.
+ */
+const summaryOptionFieldsFor = (
+    callMetaData: Pick<CallMetaData, 'summaryProfile' | 'summaryLanguage'>
+): SummaryOptionFields => ({
+    ...(callMetaData.summaryProfile ? { SummaryProfile: callMetaData.summaryProfile } : {}),
+    ...(callMetaData.summaryLanguage ? { SummaryLanguage: callMetaData.summaryLanguage } : {}),
+});
+
 export const writeCallEvent = async (
     callEvent: CallStartEvent | CallEndEvent | CallRecordingEvent | CallVideoRecordingEvent,
     server: FastifyInstance
@@ -217,6 +279,7 @@ export const writeCallStartEvent = async (
         AccessToken: callMetaData.accessToken,
         IdToken: callMetaData.idToken,
         RefreshToken: callMetaData.refreshToken,
+        ...summaryOptionFieldsFor(callMetaData),
     };
     await writeCallEvent(callStartEvent, server);
 };
@@ -233,6 +296,7 @@ export const writeCallEndEvent = async (
         AccessToken: callMetaData.accessToken,
         IdToken: callMetaData.idToken,
         RefreshToken: callMetaData.refreshToken,
+        ...summaryOptionFieldsFor(callMetaData),
     };
     await writeCallEvent(callEndEvent, server);
 };
@@ -508,34 +572,20 @@ export const startTranscribe = async (
                 );  
             }
 
-            if (TRANSCRIBE_LANGUAGE_CODE === 'identify-language') {
-                tsParams.IdentifyLanguage = true;
-                if (TRANSCRIBE_LANGUAGE_OPTIONS) {
-                    tsParams.LanguageOptions = TRANSCRIBE_LANGUAGE_OPTIONS.replace(/\s/g, '');
-                    if (TRANSCRIBE_PREFERRED_LANGUAGE !== 'None') {
-                        tsParams.PreferredLanguage =
-                            TRANSCRIBE_PREFERRED_LANGUAGE as LanguageCode;
-                    }
-                }
-            } else if (TRANSCRIBE_LANGUAGE_CODE === 'identify-multiple-languages') {
-                (tsParams as StartStreamTranscriptionCommandInput).IdentifyMultipleLanguages = true;
-                if (TRANSCRIBE_LANGUAGE_OPTIONS) {
-                    tsParams.LanguageOptions = TRANSCRIBE_LANGUAGE_OPTIONS.replace(/\s/g, '');
-                    if (TRANSCRIBE_PREFERRED_LANGUAGE !== 'None') {
-                        tsParams.PreferredLanguage =
-                            TRANSCRIBE_PREFERRED_LANGUAGE as LanguageCode;
-                    }
-                }
-            } else {
-                tsParams.LanguageCode = TRANSCRIBE_LANGUAGE_CODE as LanguageCode;
+            const languageMode = transcribeLanguageModeFor(callMetaData);
+            if (languageMode !== TRANSCRIBE_LANGUAGE_CODE) {
+                server.log.info(
+                    `[TRANSCRIBING]: [${callMetaData.callId}] - Per-meeting language mode '${languageMode}' overrides deployment default '${TRANSCRIBE_LANGUAGE_CODE}'`
+                );
             }
+            Object.assign(tsParams, languageParamsFor(languageMode));
 
             if (
                 IS_CONTENT_REDACTION_ENABLED &&
-            (TRANSCRIBE_LANGUAGE_CODE === 'en-US' ||
-              TRANSCRIBE_LANGUAGE_CODE === 'en-AU' ||
-              TRANSCRIBE_LANGUAGE_CODE === 'en-GB' ||
-              TRANSCRIBE_LANGUAGE_CODE === 'es-US')
+            (languageMode === 'en-US' ||
+              languageMode === 'en-AU' ||
+              languageMode === 'en-GB' ||
+              languageMode === 'es-US')
             ) {
                 tsParams.ContentRedactionType =
                     CONTENT_REDACTION_TYPE as ContentRedactionType;

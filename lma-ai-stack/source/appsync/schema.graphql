@@ -158,8 +158,14 @@ input CreateUploadMeetingInput {
 	fileSize: Float
 	enableDiarization: Boolean
 	maxSpeakers: Int
+	# A language code ('en-US', 'bs-BA', ...) or 'identify-language' /
+	# 'identify-multiple-languages', like the Virtual Participant's per-meeting
+	# language mode. Omit for the deployment default.
 	languageCode: String
 	meetingDateTime: AWSDateTime
+	# See Call.SummaryProfile / SummaryLanguage. Both optional.
+	summaryProfile: String
+	summaryLanguage: String
 }
 
 type CreateUploadMeetingOutput {
@@ -196,6 +202,13 @@ type Mutation @aws_iam {
 	# the new CallSummaryText arrives via the existing onUpdateCall
 	# subscription once generation finishes, same as the original summary.
 	regenerateSummary(input: RegenerateSummaryInput!): RegenerateSummaryOutput
+		@aws_cognito_user_pools
+	# Persists a manually edited summary (the Edit Summary UI on the meeting
+	# panel). Writes the S3 copy synchronously, then pushes the new text
+	# through the same Kinesis ADD_SUMMARY event / addCallSummaryText /
+	# onUpdateCall path regenerateSummary and the original end-of-call
+	# summary both use, so it stays the one place the UI needs to listen.
+	updateSummaryText(input: UpdateSummaryTextInput!): UpdateSummaryTextOutput
 		@aws_cognito_user_pools
 	addTranscriptSegment(input: AddTranscriptSegmentInput!): TranscriptSegment
 	deleteCall(input: DeleteCallInput!): DeleteCallOutput
@@ -625,6 +638,16 @@ input RegenerateSummaryInput {
 }
 
 type RegenerateSummaryOutput @aws_cognito_user_pools {
+	CallId: ID!
+	Success: Boolean!
+}
+
+input UpdateSummaryTextInput {
+	CallId: ID!
+	CallSummaryText: String!
+}
+
+type UpdateSummaryTextOutput @aws_cognito_user_pools {
 	CallId: ID!
 	Success: Boolean!
 }

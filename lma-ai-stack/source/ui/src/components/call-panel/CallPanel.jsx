@@ -78,6 +78,15 @@ const regenerateSummaryMutation = /* GraphQL */ `
   }
 `;
 
+const updateSummaryTextMutation = /* GraphQL */ `
+  mutation UpdateSummaryText($input: UpdateSummaryTextInput!) {
+    updateSummaryText(input: $input) {
+      CallId
+      Success
+    }
+  }
+`;
+
 // comprehend PII types
 const piiTypesSplitRegEx = new RegExp(`\\[(${COMPREHEND_PII_TYPES.join('|')})\\]`);
 
@@ -204,6 +213,93 @@ const CallSummary = ({ item }) => {
   // isn't rendered anywhere, so keep only the setter.
   const [, setCopySuccess] = useState(false);
   const [isRegenerating, setIsRegenerating] = useState(false);
+  // Separate from isRegenerating on purpose: the mutation call itself
+  // returns in well under a second (it just kicks off the async
+  // orchestrator - see regenerate_summary_resolver), so a spinner tied only
+  // to that call flashes and disappears immediately. The actual
+  // regeneration this is waiting on runs in the background for anywhere
+  // from ~1 to ~10 minutes (AsyncTranscriptSummaryOrchestrator's own
+  // timeout), with no other UI signal that anything is happening - which is
+  // exactly why clicking Regenerate looked like it did nothing.
+  // null | 'in-progress' | 'success' | 'timeout' | 'error'
+  const [regenerateStatus, setRegenerateStatus] = useState(null);
+  const [regenerateError, setRegenerateError] = useState('');
+  const regenerateBaselineRef = useRef(null);
+  const regenerateTimeoutRef = useRef(null);
+
+  // Detect completion by watching for callSummaryText to actually change -
+  // there's no dedicated "done" signal, the new text just arrives via the
+  // same onUpdateCall subscription the original end-of-call summary uses
+  // (see handleRegenerateSummary). Matches the resolver's own docstring on
+  // how this is supposed to work.
+  useEffect(() => {
+    if (regenerateStatus !== 'in-progress' || regenerateBaselineRef.current === null) return;
+    if (item.callSummaryText === regenerateBaselineRef.current) return;
+    if (regenerateTimeoutRef.current) {
+      clearTimeout(regenerateTimeoutRef.current);
+      regenerateTimeoutRef.current = null;
+    }
+    regenerateBaselineRef.current = null;
+    setRegenerateStatus('success');
+    setTimeout(() => setRegenerateStatus((current) => (current === 'success' ? null : current)), 5000);
+    // regenerateStatus is deliberately excluded - it's read at the top of this
+    // effect (not on every render) and including it would re-fire the effect
+    // whenever this same code just set it, without a new callSummaryText.
+  }, [item.callSummaryText]);
+
+  useEffect(
+    () => () => {
+      if (regenerateTimeoutRef.current) clearTimeout(regenerateTimeoutRef.current);
+    },
+    [],
+  );
+
+  // Edit Summary: a plain markdown textarea, not a rich editor - matches
+  // what was asked for. Edits the same flattened text getMarkdownSummary
+  // renders (see below), not the raw callSummaryText: when the stored value
+  // is a JSON dict of sections (SUMMARY/DETAILS/ACTIONS), getMarkdownSummary
+  // flattens it into "**key**\n\nvalue" blocks for display, and that same
+  // function returns non-JSON text unchanged - so saving the edited flat
+  // text back as the new callSummaryText round-trips safely either way,
+  // it just stops being a JSON dict after the first edit (same shape
+  // BedrockSummaryLambda already produces when there's only one template).
+  const [isEditingSummary, setIsEditingSummary] = useState(false);
+  const [editedSummaryText, setEditedSummaryText] = useState('');
+  const [isSavingSummary, setIsSavingSummary] = useState(false);
+  const [saveSummaryError, setSaveSummaryError] = useState('');
+
+  const handleStartEdit = () => {
+    setSaveSummaryError('');
+    setEditedSummaryText(getMarkdownSummary(item.callSummaryText));
+    setIsEditingSummary(true);
+  };
+
+  const handleCancelEdit = () => {
+    setIsEditingSummary(false);
+    setSaveSummaryError('');
+  };
+
+  const handleSaveSummary = async () => {
+    setIsSavingSummary(true);
+    setSaveSummaryError('');
+    try {
+      await client.graphql({
+        query: updateSummaryTextMutation,
+        variables: { input: { CallId: item.callId, CallSummaryText: editedSummaryText } },
+      });
+      // As with regenerate, no local state update here — the edited text
+      // arrives back via the same onUpdateCall subscription (updateSummaryText
+      // writes the same ADD_SUMMARY Kinesis event addCallSummaryText consumes).
+      // This mutation does its S3/KDS work synchronously (no LLM call), so
+      // that update is expected within a couple of seconds, not minutes.
+      setIsEditingSummary(false);
+    } catch (err) {
+      logger.error('Failed to save edited summary:', err);
+      setSaveSummaryError(err?.errors?.[0]?.message || err?.message || 'Could not save the summary.');
+    } finally {
+      setIsSavingSummary(false);
+    }
+  };
 
   const copyToClipboard = async () => {
     try {
@@ -232,6 +328,15 @@ const CallSummary = ({ item }) => {
 
   const handleRegenerateSummary = async () => {
     setIsRegenerating(true);
+    setRegenerateStatus('in-progress');
+    setRegenerateError('');
+    regenerateBaselineRef.current = item.callSummaryText ?? '';
+    if (regenerateTimeoutRef.current) clearTimeout(regenerateTimeoutRef.current);
+    // AsyncTranscriptSummaryOrchestrator's own Lambda timeout is 600s;
+    // give it a bit of margin before assuming something went wrong client-side.
+    regenerateTimeoutRef.current = setTimeout(() => {
+      setRegenerateStatus((current) => (current === 'in-progress' ? 'timeout' : current));
+    }, 11 * 60 * 1000);
     try {
       await client.graphql({
         query: regenerateSummaryMutation,
@@ -240,9 +345,17 @@ const CallSummary = ({ item }) => {
       // No local state update here on purpose — the new CallSummaryText
       // arrives via the existing onUpdateCall subscription (regenerateSummary
       // runs async and addCallSummaryText is one of its trigger mutations),
-      // the same path the original end-of-call summary uses.
+      // the same path the original end-of-call summary uses. The useEffect
+      // above watches for that arrival to clear regenerateStatus.
     } catch (err) {
       logger.error('Failed to regenerate summary:', err);
+      if (regenerateTimeoutRef.current) {
+        clearTimeout(regenerateTimeoutRef.current);
+        regenerateTimeoutRef.current = null;
+      }
+      regenerateBaselineRef.current = null;
+      setRegenerateStatus('error');
+      setRegenerateError(err?.errors?.[0]?.message || err?.message || 'Could not start regeneration.');
     } finally {
       setIsRegenerating(false);
     }
@@ -276,12 +389,22 @@ const CallSummary = ({ item }) => {
           }
           actions={
             <SpaceBetween size="xxs" direction="horizontal">
+              {item.callSummaryText && !isEditingSummary && (
+                <Button
+                  iconName="edit"
+                  variant="normal"
+                  disabled={isRegenerating || regenerateStatus === 'in-progress'}
+                  onClick={handleStartEdit}
+                >
+                  Edit
+                </Button>
+              )}
               {item.callSummaryText && (
                 <Button
                   iconName="refresh"
                   variant="normal"
                   loading={isRegenerating}
-                  disabled={isRegenerating}
+                  disabled={isRegenerating || regenerateStatus === 'in-progress' || isEditingSummary}
                   onClick={handleRegenerateSummary}
                 >
                   Regenerate
@@ -308,28 +431,87 @@ const CallSummary = ({ item }) => {
         </Header>
       }
     >
-      <Grid gridDefinition={[{ colspan: { default: 12 } }]}>
-        <Tabs
-          tabs={[
-            {
-              label: 'Transcript Summary',
-              id: 'summary',
-              content: (
-                <div>
-                  <div>
-                    {/* eslint-disable-next-line react/no-array-index-key */}
-                    <TextContent color="gray">
-                      <ReactMarkdown rehypePlugins={[rehypeRaw]}>
-                        {getMarkdownSummary(item.callSummaryText)}
-                      </ReactMarkdown>
-                    </TextContent>
-                  </div>
-                </div>
-              ),
-            },
-          ]}
-        />
-      </Grid>
+      <SpaceBetween size="s">
+        {regenerateStatus === 'in-progress' && (
+          <Alert type="info" header="Regenerating summary">
+            This can take a few minutes for longer meetings. Feel free to navigate away — the updated summary will
+            appear here automatically once it&apos;s ready.
+          </Alert>
+        )}
+        {regenerateStatus === 'success' && (
+          <Alert type="success" header="Summary regenerated" dismissible onDismiss={() => setRegenerateStatus(null)}>
+            The summary has been updated.
+          </Alert>
+        )}
+        {regenerateStatus === 'timeout' && (
+          <Alert
+            type="warning"
+            header="Still working, or it may have failed"
+            dismissible
+            onDismiss={() => setRegenerateStatus(null)}
+          >
+            Regeneration is taking longer than expected. It may still complete — check back shortly, or try again if
+            nothing changes.
+          </Alert>
+        )}
+        {regenerateStatus === 'error' && (
+          <Alert
+            type="error"
+            header="Couldn't start regeneration"
+            dismissible
+            onDismiss={() => setRegenerateStatus(null)}
+          >
+            {regenerateError}
+          </Alert>
+        )}
+        {saveSummaryError && (
+          <Alert type="error" header="Couldn't save summary" dismissible onDismiss={() => setSaveSummaryError('')}>
+            {saveSummaryError}
+          </Alert>
+        )}
+        {isEditingSummary ? (
+          <SpaceBetween size="s">
+            <Textarea
+              value={editedSummaryText}
+              onChange={({ detail }) => setEditedSummaryText(detail.value)}
+              rows={16}
+              disabled={isSavingSummary}
+              placeholder="Markdown supported"
+            />
+            <SpaceBetween size="xs" direction="horizontal">
+              <Button variant="primary" loading={isSavingSummary} onClick={handleSaveSummary}>
+                Save
+              </Button>
+              <Button variant="normal" disabled={isSavingSummary} onClick={handleCancelEdit}>
+                Cancel
+              </Button>
+            </SpaceBetween>
+          </SpaceBetween>
+        ) : (
+          <Grid gridDefinition={[{ colspan: { default: 12 } }]}>
+            <Tabs
+              tabs={[
+                {
+                  label: 'Transcript Summary',
+                  id: 'summary',
+                  content: (
+                    <div>
+                      <div>
+                        {/* eslint-disable-next-line react/no-array-index-key */}
+                        <TextContent color="gray">
+                          <ReactMarkdown rehypePlugins={[rehypeRaw]}>
+                            {getMarkdownSummary(item.callSummaryText)}
+                          </ReactMarkdown>
+                        </TextContent>
+                      </div>
+                    </div>
+                  ),
+                },
+              ]}
+            />
+          </Grid>
+        )}
+      </SpaceBetween>
     </Container>
   );
 };

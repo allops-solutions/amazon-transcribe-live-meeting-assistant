@@ -21,6 +21,9 @@
  *   autoStart    - Auto-start streaming (true/false)
  *   diarizeSystem - Identify separate speakers in the shared tab audio (true/false)
  *   diarizeMic    - Identify separate speakers on the microphone (true/false)
+ *   transcribeLanguageMode - Language code, identify-language or identify-multiple-languages
+ *   summaryProfile  - Named summary profile id (stream-audio)
+ *   summaryLanguage - Summary output language (stream-audio)
  *   authMode     - Authentication mode: cognito (default), token
  */
 import { ConsoleLogger } from 'aws-amplify/utils';
@@ -67,6 +70,9 @@ const useEmbedParams = () => {
       autoStart: searchParams.get('autoStart') === 'true',
       diarizeSystem: searchParams.get('diarizeSystem') === 'true',
       diarizeMic: searchParams.get('diarizeMic') === 'true',
+      transcribeLanguageMode: searchParams.get('transcribeLanguageMode') || '',
+      summaryProfile: searchParams.get('summaryProfile') || '',
+      summaryLanguage: searchParams.get('summaryLanguage') || '',
 
       // VP-loader parameters
       meetingName: searchParams.get('meetingName') || '',

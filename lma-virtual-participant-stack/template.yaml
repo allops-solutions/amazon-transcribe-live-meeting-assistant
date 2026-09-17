@@ -21,29 +21,29 @@ Parameters:
 
   LMAIdentity:
     Type: String
-    Default: ALMA ({LMA_USER})
+    Default: LMA ({LMA_USER})
 
   IntroMessage:
     Type: String
     Default: >-
-      Hello. I am ALMA, allOps's AI Live Meeting Assistant.
+      Hello. I am LMA, allOps's AI Live Meeting Assistant.
       I was invited by {LMA_USER} to join this call.
-      Anyone here can ask me to leave at any time by typing "ALMA leave" (or "ALMA end") in chat.
+      Anyone here can ask me to leave at any time by typing "LMA leave" (or "LMA end") in chat.
 
   StartRecordingMessage:
     Type: String
     Default: >-
-      ALMA started.
+      Live Meeting Assistant started.
 
   StopRecordingMessage:
     Type: String
     Default: >
-      ALMA stopped.
+      Live Meeting Assistant stopped.
 
   ExitMessage:
     Type: String
     Default: >
-      ALMA has left the room.
+      Live Meeting Assistant has left the room.
 
   # networking parameters
   VPC:

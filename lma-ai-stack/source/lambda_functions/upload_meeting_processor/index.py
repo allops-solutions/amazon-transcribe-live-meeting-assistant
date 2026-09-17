@@ -59,7 +59,11 @@ CALL_DATA_STREAM_NAME = os.environ["CALL_DATA_STREAM_NAME"]
 S3_BUCKET_NAME = os.environ["S3_BUCKET_NAME"]
 UPLOADS_PENDING_PREFIX = os.environ.get("UPLOADS_PENDING_PREFIX", "lma-uploads-pending/")
 TRANSCRIPTS_PREFIX = os.environ.get("TRANSCRIPTS_PREFIX", "lma-transcripts/")
+# Deployment-wide Transcribe language settings (the stack's TranscribeLanguageCode
+# / TranscribeLanguageOptions parameters), used when the upload didn't choose a
+# language mode of its own and as the candidate list for the identification modes.
 DEFAULT_LANGUAGE_CODE = os.environ.get("DEFAULT_LANGUAGE_CODE", "en-US")
+TRANSCRIBE_LANGUAGE_OPTIONS = os.environ.get("TRANSCRIBE_LANGUAGE_OPTIONS", "")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 # Transcribe job name == callId. Must be 1-200 chars, alphanumeric + ._-
@@ -132,6 +136,38 @@ def _mark_job(call_id: str, status: str, extra: dict | None = None) -> None:
         logger.error("DDB update_item failed for %s: %s", pk, err)
 
 
+def summary_option_fields(job: dict) -> dict:
+    """Per-meeting summary options for a START/END event, omitted when unset so
+    the summary Lambda falls back to the stack-wide templates. Same shape the
+    websocket transcriber and Virtual Participant emit."""
+    fields = {}
+    if job.get("SummaryProfile"):
+        fields["SummaryProfile"] = job["SummaryProfile"]
+    if job.get("SummaryLanguage"):
+        fields["SummaryLanguage"] = job["SummaryLanguage"]
+    return fields
+
+
+def language_params(language_mode: str, language_options: str = TRANSCRIBE_LANGUAGE_OPTIONS) -> dict:
+    """StartTranscriptionJob language parameters for a per-meeting language mode.
+
+    Mirrors the websocket transcriber's languageParamsFor(): the identification
+    modes carry the deployment's candidate languages, an explicit code sets
+    LanguageCode. (Batch Transcribe has no PreferredLanguage.)
+    """
+    if language_mode not in ("identify-language", "identify-multiple-languages"):
+        return {"LanguageCode": language_mode}
+    options = [code.strip() for code in language_options.split(",") if code.strip()]
+    params: dict[str, Any] = {}
+    if language_mode == "identify-language":
+        params["IdentifyLanguage"] = True
+    else:
+        params["IdentifyMultipleLanguages"] = True
+    if options:
+        params["LanguageOptions"] = options
+    return params
+
+
 def _emit_start_event(job: dict) -> None:
     """Put a ``START`` event on the Call Data Kinesis stream.
 
@@ -153,6 +189,7 @@ def _emit_start_event(job: dict) -> None:
         "SystemPhoneNumber": job.get("ToNumber") or "System",
         "AgentId": owner,
         "CreatedAt": created_at,
+        **summary_option_fields(job),
     }
     logger.info("Emitting START to Kinesis: %s", json.dumps(start_event, default=str))
     kinesis_client.put_record(
@@ -182,11 +219,11 @@ def _start_transcription_job(job: dict) -> str:
         settings["ShowSpeakerLabels"] = True
         settings["MaxSpeakerLabels"] = max_speakers
 
-    language_code = (job.get("LanguageCode") or DEFAULT_LANGUAGE_CODE).strip()
+    language_mode = (job.get("LanguageCode") or DEFAULT_LANGUAGE_CODE).strip()
 
     params: dict[str, Any] = {
         "TranscriptionJobName": call_id,
-        "LanguageCode": language_code,
+        **language_params(language_mode),
         "Media": {"MediaFileUri": media_file_uri},
         "OutputBucketName": bucket,
         "OutputKey": f"{TRANSCRIPTS_PREFIX}{call_id}.transcribe.json",

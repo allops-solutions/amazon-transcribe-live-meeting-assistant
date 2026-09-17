@@ -50,3 +50,46 @@ test('splitting loses no audio and preserves order', () => {
 test('an empty chunk yields one empty frame rather than nothing', () => {
     assert.deepEqual(frameAudioChunk(Buffer.alloc(0)), [Buffer.alloc(0)]);
 });
+
+// --- Per-meeting language mode ---------------------------------------------
+
+import { languageParamsFor, transcribeLanguageModeFor } from './transcribe';
+
+test('a well-formed per-meeting language mode overrides the deployment default', () => {
+    assert.equal(transcribeLanguageModeFor({ transcribeLanguageMode: 'bs-BA' }, 'en-US'), 'bs-BA');
+    assert.equal(
+        transcribeLanguageModeFor({ transcribeLanguageMode: 'identify-language' }, 'en-US'),
+        'identify-language'
+    );
+    assert.equal(
+        transcribeLanguageModeFor({ transcribeLanguageMode: 'identify-multiple-languages' }, 'en-US'),
+        'identify-multiple-languages'
+    );
+});
+
+test('an absent, blank or malformed per-meeting language mode falls back to the deployment default', () => {
+    assert.equal(transcribeLanguageModeFor({}, 'identify-multiple-languages'), 'identify-multiple-languages');
+    assert.equal(transcribeLanguageModeFor({ transcribeLanguageMode: '' }, 'en-US'), 'en-US');
+    assert.equal(transcribeLanguageModeFor({ transcribeLanguageMode: '   ' }, 'en-US'), 'en-US');
+    assert.equal(transcribeLanguageModeFor({ transcribeLanguageMode: 'english' }, 'en-US'), 'en-US');
+    assert.equal(transcribeLanguageModeFor({ transcribeLanguageMode: 'en-US; drop' }, 'en-US'), 'en-US');
+});
+
+test('an explicit language code sets only LanguageCode', () => {
+    assert.deepEqual(languageParamsFor('hr-HR', 'en-US, bs-BA', 'bs-BA'), { LanguageCode: 'hr-HR' });
+});
+
+test('identify-language carries the deployment language options and preferred language', () => {
+    assert.deepEqual(languageParamsFor('identify-language', 'en-US, bs-BA', 'bs-BA'), {
+        IdentifyLanguage: true,
+        LanguageOptions: 'en-US,bs-BA',
+        PreferredLanguage: 'bs-BA',
+    });
+});
+
+test('identify-multiple-languages omits PreferredLanguage when it is None', () => {
+    assert.deepEqual(languageParamsFor('identify-multiple-languages', 'en-US, es-US', 'None'), {
+        IdentifyMultipleLanguages: true,
+        LanguageOptions: 'en-US,es-US',
+    });
+});

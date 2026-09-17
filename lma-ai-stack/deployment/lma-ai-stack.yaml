@@ -77,6 +77,21 @@ Parameters:
     Description: >-
       The Amazon S3 prefix where the transript files will be saved (must end in "/")
 
+  TranscribeLanguageCode:
+    Type: String
+    Default: en-US
+    Description: >-
+      Deployment-wide Amazon Transcribe language mode (a language code,
+      'identify-language' or 'identify-multiple-languages'). Used by the Upload
+      Audio batch pipeline when an upload doesn't choose its own language mode.
+
+  TranscribeLanguageOptions:
+    Type: String
+    Default: "en-US, es-US"
+    Description: >-
+      Candidate languages for the language-identification modes, comma separated.
+      Used by the Upload Audio batch pipeline.
+
   TranscriptFileBucketName:
     Type: String
     Default: ""
@@ -2776,7 +2791,8 @@ Resources:
           S3_BUCKET_NAME: !Ref S3BucketName
           UPLOADS_PENDING_PREFIX: lma-uploads-pending/
           TRANSCRIPTS_PREFIX: !Ref TranscriptFilePrefix
-          DEFAULT_LANGUAGE_CODE: "en-US"
+          DEFAULT_LANGUAGE_CODE: !Ref TranscribeLanguageCode
+          TRANSCRIBE_LANGUAGE_OPTIONS: !Ref TranscribeLanguageOptions
       LoggingConfig:
         LogGroup:
           Fn::Sub: /${AWS::StackName}/lambda/UploadMeetingProcessorFunction
@@ -4496,6 +4512,118 @@ Resources:
       DataSourceName: !GetAtt RegenerateSummaryDataSource.Name
       TypeName: Mutation
       FieldName: regenerateSummary
+
+  ##############################################################################
+  # updateSummaryText — persist a manually edited summary (Edit Summary UI).
+  # Writes S3 directly, then reuses the same Kinesis ADD_SUMMARY event /
+  # addCallSummaryText / onUpdateCall path as the original end-of-call summary
+  # and regenerateSummary, so the UI only listens in one place. No KB action
+  # needed - the Bedrock KB S3 data source syncs on its own fixed schedule
+  # (lma-bedrockkb-stack/template.yaml), there is no on-demand trigger to call.
+  ##############################################################################
+
+  UpdateSummaryTextResolverFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/${AWS::StackName}/lambda/UpdateSummaryTextResolver"
+      RetentionInDays: !Ref CloudWatchLogsExpirationInDays
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+
+  UpdateSummaryTextResolverFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: Customer can use VPC if desired
+          - id: W92
+            reason: Customer can choose reserved concurrency based on their requirement.
+    # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency"
+    # checkov:skip=CKV_AWS_116: "DLQ not required for AppSync resolver"
+    # checkov:skip=CKV_AWS_117: "Function does not require VPC access"
+    # checkov:skip=CKV_AWS_173: "Environment variables do not contain sensitive data"
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-UpdateSummaryTextResolver"
+      Handler: index.handler
+      Runtime: python3.12
+      CodeUri: ../source/lambda_functions/update_summary_text_resolver
+      Description: AppSync resolver for updateSummaryText — persists a manually edited summary
+      MemorySize: 256
+      Timeout: 15
+      Environment:
+        Variables:
+          EVENT_SOURCING_TABLE_NAME: !Ref EventSourcingTable
+          CALL_DATA_STREAM_NAME: !Ref CallDataStream
+          S3_BUCKET_NAME: !Ref S3BucketName
+          S3_PREFIX: !Ref TranscriptFilePrefix
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref EventSourcingTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - kinesis:PutRecord
+              Resource: !Ref CallDataStreamArn
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource:
+                - !Sub "arn:aws:s3:::${S3BucketName}"
+                - !Sub "arn:aws:s3:::${S3BucketName}/*"
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:DescribeKey
+              Resource: !Ref CustomerManagedEncryptionKeyArn
+              Condition:
+                StringEquals:
+                  "kms:ViaService": !Sub "dynamodb.${AWS::Region}.amazonaws.com"
+      LoggingConfig:
+        LogGroup: !Ref UpdateSummaryTextResolverFunctionLogGroup
+    DependsOn:
+      - UpdateSummaryTextResolverFunctionLogGroup
+
+  AppSyncUpdateSummaryTextLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - appsync.amazonaws.com
+      Policies:
+        - PolicyName: lambda
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt UpdateSummaryTextResolverFunction.Arn
+
+  UpdateSummaryTextDataSource:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt AppSyncApiEncrypted.ApiId
+      Name: UpdateSummaryTextResolver
+      Description: Lambda resolver for updateSummaryText
+      Type: AWS_LAMBDA
+      ServiceRoleArn: !GetAtt AppSyncUpdateSummaryTextLambdaRole.Arn
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt UpdateSummaryTextResolverFunction.Arn
+
+  UpdateSummaryTextAppSyncResolver:
+    Type: AWS::AppSync::Resolver
+    DependsOn: AppSyncSchema
+    Properties:
+      ApiId: !GetAtt AppSyncApiEncrypted.ApiId
+      DataSourceName: !GetAtt UpdateSummaryTextDataSource.Name
+      TypeName: Mutation
+      FieldName: updateSummaryText
 
   GetTranscriptSegmentsAppSyncResolver:
     Type: AWS::AppSync::Resolver
@@ -7050,6 +7178,18 @@ Resources:
             # other branch as missing - 12 errors from one false positive. The Ref
             # keeps the same implicit dependency GetAtt gave us.
             LambdaArn: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${MCPServerAnalyticsFunction}"
+            # SECOND, INDEPENDENT copy of the tool schema Quick actually
+            # reads - the Gateway does not introspect MCPServerAnalyticsFunction
+            # at request time, it serves exactly this hardcoded snapshot. It is
+            # NOT kept in sync automatically with MCP_TOOLS in
+            # source/lambda_functions/mcp_analytics/index.py, and nothing
+            # fails loudly when they drift - Quick just tells the user a
+            # feature (found 2026-09-17: Google Meet, meetingLanguage,
+            # summaryProfile, summaryLanguage on schedule_meeting/
+            # start_meeting_now) "isn't supported" even though the Lambda
+            # already supports it. Any future change to MCP_TOOLS there
+            # must be mirrored here by hand, or Quick keeps quoting the old
+            # schema no matter how current the Lambda's own copy is.
             ToolSchema:
               InlinePayload:
                 - Name: search_lma_meetings
@@ -7130,16 +7270,41 @@ Resources:
                         Description: "Name/title of the meeting"
                       meetingPlatform:
                         Type: string
-                        Description: "Platform (Zoom, Teams, Chime, Webex)"
+                        Description: "Platform (Zoom, Teams, Chime, Webex, Google Meet)"
                       meetingId:
                         Type: string
-                        Description: "Meeting ID (numeric ID only)"
+                        Description: >-
+                          Meeting ID: numeric ID for Zoom/Teams/Chime/Webex, or the
+                          abc-defg-hij meeting code (or full URL) for Google Meet
                       scheduledTime:
                         Type: string
                         Description: "ISO 8601 datetime when meeting should start"
                       meetingPassword:
                         Type: string
                         Description: "Optional meeting password"
+                      meetingLanguage:
+                        Type: string
+                        Description: >-
+                          Optional transcription language mode: 'English only', 'Bosnian
+                          only', 'Croatian only', 'Auto-detect (locks in early)', or
+                          'Auto-detect (mixed languages)'. Omit for the stack default
+                          (auto-detect, mixed languages) - best for calls that mix
+                          languages within the same sentence only if you don't know the
+                          dominant language in advance; prefer 'English only', 'Bosnian
+                          only', or 'Croatian only' when you do, for much better accuracy.
+                      summaryProfile:
+                        Type: string
+                        Description: >-
+                          Optional name of a summary profile set up on the Transcript
+                          Summary page (e.g. 'Technical Client Call'). Omit to use the
+                          stack's Default/Custom summary templates. An unrecognized name
+                          falls back to Default/Custom rather than failing.
+                      summaryLanguage:
+                        Type: string
+                        Description: >-
+                          Optional output language for the summary (e.g. 'English',
+                          'Bosnian'), independent of summaryProfile. Omit to use whatever
+                          language the chosen templates are written in.
                     Required:
                       - meetingName
                       - meetingPlatform
@@ -7164,13 +7329,38 @@ Resources:
                         Description: "Name/title of the meeting"
                       meetingPlatform:
                         Type: string
-                        Description: "Platform (Zoom, Teams, Chime, Webex)"
+                        Description: "Platform (Zoom, Teams, Chime, Webex, Google Meet)"
                       meetingId:
                         Type: string
-                        Description: "Meeting ID (numeric ID only)"
+                        Description: >-
+                          Meeting ID: numeric ID for Zoom/Teams/Chime/Webex, or the
+                          abc-defg-hij meeting code (or full URL) for Google Meet
                       meetingPassword:
                         Type: string
                         Description: "Optional meeting password"
+                      meetingLanguage:
+                        Type: string
+                        Description: >-
+                          Optional transcription language mode: 'English only', 'Bosnian
+                          only', 'Croatian only', 'Auto-detect (locks in early)', or
+                          'Auto-detect (mixed languages)'. Omit for the stack default
+                          (auto-detect, mixed languages) - best for calls that mix
+                          languages within the same sentence only if you don't know the
+                          dominant language in advance; prefer 'English only', 'Bosnian
+                          only', or 'Croatian only' when you do, for much better accuracy.
+                      summaryProfile:
+                        Type: string
+                        Description: >-
+                          Optional name of a summary profile set up on the Transcript
+                          Summary page (e.g. 'Technical Client Call'). Omit to use the
+                          stack's Default/Custom summary templates. An unrecognized name
+                          falls back to Default/Custom rather than failing.
+                      summaryLanguage:
+                        Type: string
+                        Description: >-
+                          Optional output language for the summary (e.g. 'English',
+                          'Bosnian'), independent of summaryProfile. Omit to use whatever
+                          language the chosen templates are written in.
                       useStoredZoomCredentials:
                         Type: boolean
                         Description: >-

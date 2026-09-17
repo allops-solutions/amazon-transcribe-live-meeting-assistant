@@ -6,7 +6,7 @@
 import React, { useCallback, useEffect } from 'react';
 import logo from './logo.svg';
 import './Capture.css'
-import { Box, Button, Container, ContentLayout, CopyToClipboard, FormField, Grid, Header, Icon, Input, Link, Modal, SpaceBetween } from '@cloudscape-design/components';
+import { Box, Button, Container, ContentLayout, CopyToClipboard, FormField, Grid, Header, Icon, Input, Link, Modal, Select, SpaceBetween } from '@cloudscape-design/components';
 import UserMessage from '../views/UserMessage';
 import OtherMessage from '../views/OtherMessage';
 import { useNavigation } from '../../context/NavigationContext';
@@ -15,6 +15,13 @@ import ValueWithLabel from '../views/ValueWithLabel';
 import { useUserContext } from '../../context/UserContext';
 import { useIntegration } from '../../context/ProviderIntegrationContext';
 import { useSettings } from '../../context/SettingsContext';
+import {
+  DEFAULT_TRANSCRIBE_LANGUAGE_MODE,
+  SUMMARY_LANGUAGE_OPTIONS,
+  SummaryProfile,
+  TRANSCRIBE_LANGUAGE_MODE_OPTIONS,
+  fetchSummaryProfileCatalog,
+} from '../../context/meetingOptions';
 
 function Capture() {
   const { navigate } = useNavigation();
@@ -28,6 +35,20 @@ function Capture() {
   const [meetingTopicErrorText, setMeetingTopicErrorText] = React.useState("");
   const [formError, setFormError] = React.useState(false);
   const [showDisclaimer, setShowDisclaimer] = React.useState(false);
+
+  // Per-meeting options, same as the web UI's Stream Audio page.
+  const [transcribeLanguageMode, setTranscribeLanguageMode] = React.useState(DEFAULT_TRANSCRIBE_LANGUAGE_MODE);
+  const [summaryProfile, setSummaryProfile] = React.useState("");
+  const [summaryLanguage, setSummaryLanguage] = React.useState("");
+  const [summaryProfileCatalog, setSummaryProfileCatalog] = React.useState<SummaryProfile[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchSummaryProfileCatalog(settings.graphqlEndpoint, user?.id_token).then((catalog) => {
+      if (!cancelled) setSummaryProfileCatalog(catalog);
+    });
+    return () => { cancelled = true; };
+  }, [settings.graphqlEndpoint, user?.id_token]);
 
   // componentDidMount:
   useEffect(() => {
@@ -73,8 +94,8 @@ function Capture() {
   }, [settings, validateForm, showDisclaimer]);
 
   const disclaimerConfirmed = useCallback(() => {
-    startTranscription(user, agentName, topic);
-  }, [user, agentName, topic, startTranscription])
+    startTranscription(user, agentName, topic, { transcribeLanguageMode, summaryProfile, summaryLanguage });
+  }, [user, agentName, topic, transcribeLanguageMode, summaryProfile, summaryLanguage, startTranscription])
 
   const stopListening = useCallback(() => {
     stopTranscription();
@@ -111,7 +132,7 @@ function Capture() {
             variant="h1"
             description="allOps Live Meeting Assistant — powered by Amazon Transcribe and Amazon Bedrock"
           >
-            ALMA
+            Live Meeting Assistant
           </Header>
         </SpaceBetween>
       }
@@ -182,6 +203,34 @@ function Capture() {
                 label="Meeting Topic:"
               >
                 <Input value={topic} onChange={({ detail }) => setTopic(detail.value)} placeholder='Meeting room topic' inputMode='text'></Input>
+              </FormField>
+              <FormField stretch={true} label="Meeting language:">
+                <Select
+                  selectedOption={TRANSCRIBE_LANGUAGE_MODE_OPTIONS.find((o) => o.value === transcribeLanguageMode) || null}
+                  onChange={({ detail }) => setTranscribeLanguageMode(detail.selectedOption.value || DEFAULT_TRANSCRIBE_LANGUAGE_MODE)}
+                  options={TRANSCRIBE_LANGUAGE_MODE_OPTIONS}
+                />
+              </FormField>
+              <FormField stretch={true} label="Summary profile (optional):">
+                <Select
+                  selectedOption={
+                    summaryProfile
+                      ? { value: summaryProfile, label: summaryProfileCatalog.find((p) => p.id === summaryProfile)?.name || summaryProfile }
+                      : null
+                  }
+                  onChange={({ detail }) => setSummaryProfile(detail.selectedOption.value || "")}
+                  options={summaryProfileCatalog.map((p) => ({ value: p.id, label: p.name }))}
+                  placeholder="Default / Custom (stack-wide)"
+                  empty="No summary profiles created yet"
+                />
+              </FormField>
+              <FormField stretch={true} label="Summary language (optional):">
+                <Select
+                  selectedOption={summaryLanguage ? { value: summaryLanguage, label: summaryLanguage } : null}
+                  onChange={({ detail }) => setSummaryLanguage(detail.selectedOption.value || "")}
+                  options={SUMMARY_LANGUAGE_OPTIONS}
+                  placeholder="Whatever language the templates are written in"
+                />
               </FormField>
               <Button fullWidth={true} variant='primary' onClick={() => startListening()}>Start Listening</Button>
             </>

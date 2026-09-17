@@ -564,7 +564,10 @@ const onTextMessage = async (
                 // object is a WHITELIST copy, so a field omitted here is silently
                 // dropped and the feature would appear to do nothing.
                 diarizeSystemChannel: callMetaData.diarizeSystemChannel,
-                diarizeMicChannel: callMetaData.diarizeMicChannel
+                diarizeMicChannel: callMetaData.diarizeMicChannel,
+                transcribeLanguageMode: callMetaData.transcribeLanguageMode,
+                summaryProfile: callMetaData.summaryProfile,
+                summaryLanguage: callMetaData.summaryLanguage
             },
             audioInputStream: audioInputStream,
             writeRecordingStream: writeRecordingStream,
@@ -682,6 +685,10 @@ const onTextMessage = async (
             callMetaData.shouldRecordCall,
             socketData.callMetadata.shouldRecordCall ?? SHOULD_RECORD_CALL
         );
+        // The END frame is whatever the client sent; the summary options were
+        // chosen at START, so carry them from the stored metadata.
+        callMetaData.summaryProfile = callMetaData.summaryProfile ?? socketData.callMetadata.summaryProfile;
+        callMetaData.summaryLanguage = callMetaData.summaryLanguage ?? socketData.callMetadata.summaryLanguage;
         await endCall(ws, socketData, callMetaData);
     }
 };

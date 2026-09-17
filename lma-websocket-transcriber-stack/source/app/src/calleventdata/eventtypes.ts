@@ -30,7 +30,15 @@ export type CallEventBase<Type extends EventType = EventType> = {
     UpdatedAt?: string,
 };
 
-export type CallStartEvent = CallEventBase<'START'> & {
+// Per-meeting summary options. On START they land on the Call record (createCall
+// stores the whole input) so regenerateSummary can reuse them; on END they ride
+// through to BedrockSummaryLambda. Same shape the Virtual Participant emits.
+export type SummaryOptionFields = {
+    SummaryProfile?: string,
+    SummaryLanguage?: string,
+};
+
+export type CallStartEvent = CallEventBase<'START'> & SummaryOptionFields & {
     CustomerPhoneNumber: string,
     SystemPhoneNumber: string,
     AgentId: string | undefined,
@@ -39,7 +47,7 @@ export type CallStartEvent = CallEventBase<'START'> & {
     RefreshToken?: string,
 };
 
-export type CallEndEvent = CallEventBase<'END'> & {
+export type CallEndEvent = CallEventBase<'END'> & SummaryOptionFields & {
     CustomerPhoneNumber: string,
     SystemPhoneNumber: string,
     AccessToken?: string,
@@ -138,6 +146,17 @@ export type CallMetaData = {
      * means discover as many speakers as appear.
      */
     maxSpeakers?: number,
+    /**
+     * Per-meeting Amazon Transcribe language mode: a language code ('en-US',
+     * 'bs-BA', ...), 'identify-language' or 'identify-multiple-languages'.
+     * Absent means the deployment's TRANSCRIBE_LANGUAGE_CODE. Ignored by the
+     * MicroVM engine, which is English-only.
+     */
+    transcribeLanguageMode?: string,
+    /** Named summary profile for this meeting; absent means stack-wide templates. */
+    summaryProfile?: string,
+    /** Output language for this meeting's summary; absent means template language. */
+    summaryLanguage?: string,
     // START_VIDEO only: ms between audio-stream start and video-stream start,
     // applied as an offset when muxing so video aligns with audio/transcript.
     videoTimeOffsetMs?: number,

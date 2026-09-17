@@ -2539,6 +2539,8 @@ Resources:
           - ""
         AudioFilePrefix: "lma-audio-recordings/"
         TranscriptFilePrefix: "lma-transcripts/"
+        TranscribeLanguageCode: !Ref TranscribeLanguageCode
+        TranscribeLanguageOptions: !Ref TranscribeLanguageOptions
         IsSentimentAnalysisEnabled: "false"
         CloudFrontPriceClass: !Ref CloudFrontPriceClass
         CloudFrontAllowedGeos: !Ref CloudFrontAllowedGeos
@@ -2938,6 +2940,7 @@ Resources:
         CognitoClientId: !GetAtt COGNITOSTACK.Outputs.CognitoClientId
         CognitoLoginUrl: !GetAtt COGNITOSTACK.Outputs.CognitoLoginUrl
         CloudfrontEndpoint: !GetAtt AISTACK.Outputs.CloudfrontEndpoint
+        GraphQLEndpoint: !GetAtt AISTACK.Outputs.AppSyncGraphQLUrl
         WebAppCloudFrontDistribution: !GetAtt AISTACK.Outputs.CloudFrontDistributionId
         WebAppBucket: !GetAtt AISTACK.Outputs.WebAppBucket
         SourceCodeLocation: <BROWSER_EXTENSION_SRC_S3_LOCATION_TOKEN>

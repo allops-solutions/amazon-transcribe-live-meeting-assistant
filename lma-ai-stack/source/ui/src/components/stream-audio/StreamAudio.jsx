@@ -35,6 +35,12 @@ import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
 import { getTimestampStr } from '../common/utilities';
 import createUploadMeeting from '../../graphql/queries/createUploadMeeting';
+import {
+  DEFAULT_TRANSCRIBE_LANGUAGE_MODE,
+  SummaryOptionsFields,
+  TranscribeLanguageModeField,
+  useSummaryProfileCatalog,
+} from '../common/meeting-options';
 
 // react-use-websocket ships a CJS bundle. Vite 8 / rolldown exports the CJS
 // module.exports OBJECT as the ESM default (a "double-wrapped default"), so the
@@ -172,6 +178,9 @@ const StreamAudio = ({ mode: modeProp = undefined }) => {
   // explicit engine and the ASR Config page's deployment-wide default could never
   // apply, which is exactly what that switch claims to do.
   const [engineChosen, setEngineChosen] = useState(false);
+  // The on-demand engine is English-only with no language identification, so
+  // the per-meeting language picker only applies when Transcribe will run.
+  const effectiveStreamEngine = streamEngine || asrEngineDefault;
   // How many people share this microphone/tab. Nobody but the user can know it, so
   // it is asked for rather than guessed — the same question Upload Audio asks.
   // Blank means "discover as many speakers as appear".
@@ -187,6 +196,15 @@ const StreamAudio = ({ mode: modeProp = undefined }) => {
   const [uploadFiles, setUploadFiles] = useState([]);
   const [enableDiarization, setEnableDiarization] = useState(false);
   const [maxSpeakers, setMaxSpeakers] = useState('4');
+
+  // Per-meeting transcription language + summary options, shared by both
+  // modes. Same semantics as the Virtual Participant form: the summary
+  // fields are omitted from the START frame / upload input when blank so the
+  // backend falls back to the stack-wide templates.
+  const [transcribeLanguageMode, setTranscribeLanguageMode] = useState(DEFAULT_TRANSCRIBE_LANGUAGE_MODE);
+  const [summaryProfile, setSummaryProfile] = useState('');
+  const [summaryLanguage, setSummaryLanguage] = useState('');
+  const summaryProfileCatalog = useSummaryProfileCatalog();
   const [uploadPhase, setUploadPhase] = useState(UPLOAD_PHASE.IDLE);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState(null);
@@ -349,6 +367,9 @@ const StreamAudio = ({ mode: modeProp = undefined }) => {
       // default and the ASR Config table. Always sending it made that admin switch
       // inert for every web meeting.
       ...(engineChosen && streamEngine ? { asrEngine: streamEngine } : {}),
+      transcribeLanguageMode,
+      ...(summaryProfile ? { summaryProfile } : {}),
+      ...(summaryLanguage ? { summaryLanguage } : {}),
     };
     setCallMetaData(callMetaDataCopy);
     return callMetaDataCopy;
@@ -558,6 +579,9 @@ const StreamAudio = ({ mode: modeProp = undefined }) => {
         fileSize: file.size,
         enableDiarization,
         maxSpeakers: Number.parseInt(maxSpeakers, 10) || 4,
+        languageCode: transcribeLanguageMode,
+        ...(summaryProfile ? { summaryProfile } : {}),
+        ...(summaryLanguage ? { summaryLanguage } : {}),
       };
       const response = await appsyncClient.graphql({
         query: createUploadMeeting,
@@ -748,6 +772,26 @@ const StreamAudio = ({ mode: modeProp = undefined }) => {
                   </Grid>
                 </FormField>
               </ColumnLayout>
+
+              <Box margin={{ top: 'l' }}>
+                <SpaceBetween direction="vertical" size="l">
+                  {(mode === MODE_UPLOAD || effectiveStreamEngine === 'transcribe') && (
+                    <TranscribeLanguageModeField
+                      value={transcribeLanguageMode}
+                      onChange={setTranscribeLanguageMode}
+                      disabled={recording || uploadInProgress}
+                    />
+                  )}
+                  <SummaryOptionsFields
+                    summaryProfile={summaryProfile}
+                    onSummaryProfileChange={setSummaryProfile}
+                    summaryLanguage={summaryLanguage}
+                    onSummaryLanguageChange={setSummaryLanguage}
+                    summaryProfileCatalog={summaryProfileCatalog}
+                    disabled={recording || uploadInProgress}
+                  />
+                </SpaceBetween>
+              </Box>
 
               {mode === MODE_STREAM && asrEngineAvailable && (
                 <Box margin={{ top: 'l' }}>

@@ -10,6 +10,7 @@ type Settings = {
   clientId: string,
   cognitoDomain: string,
   cloudfrontEndpoint: string,
+  graphqlEndpoint: string,
   recordingDisclaimer: string,
   recordingMessage: string,
   stopRecordingMessage: string

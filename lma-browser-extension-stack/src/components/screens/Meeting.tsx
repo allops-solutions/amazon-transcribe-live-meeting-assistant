@@ -26,7 +26,7 @@ function Meeting() {
               variant="h1"
               description="With Amazon Q for Business"
             >
-              ALMA
+              Live Meeting Assistant
             </Header>
           </SpaceBetween>
 
