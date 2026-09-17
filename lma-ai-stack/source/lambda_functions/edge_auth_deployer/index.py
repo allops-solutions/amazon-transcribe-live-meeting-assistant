@@ -80,7 +80,13 @@ def send(
 EDGE_FUNCTION_CODE = '''
 import hashlib
 import hmac
+import re
 import time
+
+# vpId is a $util.autoId() UUID (hex + hyphens); this is deliberately a
+# little more permissive than that (also allows underscores) rather than
+# hardcoding UUID shape, but still anchored and printable-ASCII-only.
+VP_PATH_RE = re.compile(r'^/vnc/([A-Za-z0-9_-]+)$')
 
 HMAC_SECRET = "HMAC_SECRET_PLACEHOLDER"
 
@@ -140,17 +146,28 @@ def lambda_handler(event, context):
     # routes to the right ECS task (see status-manager.ts), so the vpId
     # segment here is load-bearing for auth, not just routing: it is what
     # ties the token to this specific VP.
-    vp_id = uri[len('/vnc/'):].split('/')[0]
-    if not vp_id:
-        print("No vpId in path")
+    #
+    # Deliberately strict: the path must be EXACTLY /vnc/<vpId>, nothing
+    # else - no trailing slash, no extra segments, no dot-segments. A looser
+    # extraction (e.g. taking only the first '/'-separated segment) would let
+    # a URI like /vnc/vpA/../vpB verify against a real vpA token (it still
+    # reads as vpId=vpA) while not matching the ALB's exact-path listener
+    # rule for vpA - CloudFront would then forward it to the shared default
+    # target group, which round-robins across every running VP's task,
+    # landing the (verified, but now-irrelevant) vpA token holder on an
+    # arbitrary VP's container instead of vpA's.
+    match = VP_PATH_RE.match(uri)
+    if not match:
+        print(f"Path does not match the exact /vnc/<vpId> shape: {uri!r}")
         return {
             'status': '400',
             'statusDescription': 'Bad Request',
-            'body': 'Missing Virtual Participant id in path',
+            'body': 'Invalid Virtual Participant path',
             'headers': {
                 'content-type': [{'key': 'Content-Type', 'value': 'text/plain'}]
             }
         }
+    vp_id = match.group(1)
 
     # Extract token from query string parameter
     token = None
