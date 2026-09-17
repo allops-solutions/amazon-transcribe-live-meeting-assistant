@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import time
 
 import boto3
 from botocore.config import Config
@@ -57,11 +58,36 @@ BEDROCK_ENDPOINT_URL = os.environ.get(
 # occurred." for the whole summary. Matches the bedrock client's config below.
 lambda_client = boto3.client("lambda", config=Config(retries={"max_attempts": 5, "mode": "adaptive"}))
 dynamodb_client = boto3.client("dynamodb")
+# Root cause of the 2026-09-16 incident, confirmed via CloudTrail: this
+# client had no explicit read_timeout, so it used botocore's 60s default.
+# Adaptive thinking (see build_inference_args) can legitimately take longer
+# than that to produce a full response, especially under load. When it did,
+# boto3 didn't get an error back FROM Bedrock - it just gave up waiting and
+# silently fired a brand-new Converse call as a "retry", while the first one
+# kept running server-side and (per CloudTrail) completed and was billed
+# anyway. That day CloudTrail shows 89 successful, billed Converse calls
+# from this function - all with errorCode=None, i.e. never rejected or
+# throttled - against roughly 11 calls the application code actually
+# initiated. The gap is boto3 silently duplicating work that was already
+# succeeding, not Bedrock refusing it. With max_attempts previously 50, that
+# duplication could run for the vast majority of this function's 900s
+# Timeout with nothing between "Bedrock inference args" and either a
+# response or an exception - the function just sat there until Lambda's
+# hard timeout killed it mid-retry.
+#
+# read_timeout=120 gives a real, legitimately-slow response a fair chance to
+# come back instead of being abandoned and duplicated at 60s. max_attempts
+# dropped from 50 to 3 to match - a longer, fairer per-attempt window needs
+# fewer attempts, and 3x120s=360s per model (720s worst case across both the
+# primary and BEDROCK_FALLBACK_MODEL_ID) still leaves real headroom inside
+# the 900s function Timeout for generate_summary()'s multiple template
+# calls, with call_bedrock()'s own try/except now actually able to log a
+# real exception and reach the fallback model instead of never returning.
 bedrock = boto3.client(
     service_name="bedrock-runtime",
     region_name=BEDROCK_REGION,
     endpoint_url=BEDROCK_ENDPOINT_URL,
-    config=Config(retries={"max_attempts": 50, "mode": "adaptive"}),
+    config=Config(retries={"max_attempts": 3, "mode": "adaptive"}, read_timeout=120),
 )
 
 
@@ -223,7 +249,18 @@ def _converse(modelId, prompt_data):
     message = {"role": "user", "content": [{"text": prompt_data}]}
     args = build_inference_args(modelId)
     print("Bedrock inference args:", json.dumps(args))
-    response = bedrock.converse(modelId=modelId, messages=[message], **args)
+    # Elapsed time around the call, printed on both success and failure - the
+    # 2026-09-16 incident's silent 900s hangs had NOTHING logged between this
+    # call and the function's hard timeout, which is what made them so hard
+    # to diagnose. A large gap here (even without an exception) now points
+    # straight at boto3's retry loop instead of looking like nothing ran.
+    started = time.monotonic()
+    try:
+        response = bedrock.converse(modelId=modelId, messages=[message], **args)
+    except Exception:
+        print(f"Bedrock converse for {modelId} failed after {time.monotonic() - started:.1f}s")
+        raise
+    print(f"Bedrock converse for {modelId} took {time.monotonic() - started:.1f}s")
     usage = response.get("usage", {})
     print(
         f"Bedrock usage - input: {usage.get('inputTokens')} output: {usage.get('outputTokens')} "
