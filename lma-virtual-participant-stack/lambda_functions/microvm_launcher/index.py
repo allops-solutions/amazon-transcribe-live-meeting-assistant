@@ -62,6 +62,18 @@ FIELD_MAP = {
     "USER_ID_TOKEN": ("idToken",),
     "ZOOM_CREDENTIALS_SECRET_NAME": ("zoomCredentialsSecretName",),
     "ENABLE_VIDEO_RECORDING": ("enableVideoRecording",),
+    # Per-meeting language/summary-profile choice (e19853e1). Added
+    # 2026-09-17: the scheduled-launch payload (template.yaml's scheduler
+    # Lambda) never carried these, so a candidate here was pointless until
+    # that payload was fixed too - without a FIELD_MAP entry, _extract()
+    # silently drops them and _static_config() falls back to whatever the
+    # ECS task definition bakes in as a stack-wide default, ignoring the
+    # user's actual per-meeting choice. The immediate ("start now") launch
+    # path already sent these in its Step Functions input; this FIELD_MAP
+    # gap alone was silently dropping them there too.
+    "TRANSCRIBE_LANGUAGE_CODE": ("transcribeLanguageMode",),
+    "SUMMARY_PROFILE": ("summaryProfile",),
+    "SUMMARY_LANGUAGE": ("summaryLanguage",),
 }
 
 SECRET_KEYS = {

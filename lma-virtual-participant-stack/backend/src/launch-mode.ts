@@ -46,6 +46,13 @@ export const PER_MEETING_KEYS = [
     'USER_REFRESH_TOKEN',
     'ZOOM_CREDENTIALS_SECRET_NAME',
     'ENABLE_VIDEO_RECORDING',
+    // Per-meeting language/summary-profile choice (e19853e1). Added
+    // 2026-09-17 along with the matching FIELD_MAP entries in
+    // microvm_launcher/index.py - test_launcher_field_map_matches_container_per_meeting_keys
+    // requires the two lists to stay in sync.
+    'TRANSCRIBE_LANGUAGE_CODE',
+    'SUMMARY_PROFILE',
+    'SUMMARY_LANGUAGE',
 ] as const;
 
 export type PerMeetingKey = (typeof PER_MEETING_KEYS)[number];

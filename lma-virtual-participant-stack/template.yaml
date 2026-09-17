@@ -3380,6 +3380,16 @@ Resources:
                                           'userSub': user_sub,
                                           'zoomCredentialsSecretName': zoom_secret_name,
                                           'enableVideoRecording': enable_video_recording_str,
+                                          # Per-meeting language/summary-profile choice. Same
+                                          # source fields and default as the ECS branch
+                                          # (_ecs_params, above) - added 2026-09-17, a
+                                          # regression from the per-meeting language/summary-
+                                          # profile feature (e19853e1) that never touched this
+                                          # branch: scheduled MICROVM meetings silently launched
+                                          # with the stack default instead of the user's choice.
+                                          'transcribeLanguageMode': new_image.get('transcribeLanguageMode', {}).get('S') or 'identify-multiple-languages',
+                                          'summaryProfile': new_image.get('summaryProfile', {}).get('S', ''),
+                                          'summaryLanguage': new_image.get('summaryLanguage', {}).get('S', ''),
                                       })
                                   }
                               else:
