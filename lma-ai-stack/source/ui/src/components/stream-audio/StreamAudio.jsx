@@ -35,12 +35,7 @@ import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
 import { getTimestampStr } from '../common/utilities';
 import createUploadMeeting from '../../graphql/queries/createUploadMeeting';
-import {
-  DEFAULT_TRANSCRIBE_LANGUAGE_MODE,
-  SummaryOptionsFields,
-  TranscribeLanguageModeField,
-  useSummaryProfileCatalog,
-} from '../common/meeting-options';
+import { DEFAULT_TRANSCRIBE_LANGUAGE_MODE, TranscribeLanguageModeField } from '../common/meeting-options';
 
 // react-use-websocket ships a CJS bundle. Vite 8 / rolldown exports the CJS
 // module.exports OBJECT as the ESM default (a "double-wrapped default"), so the
@@ -197,14 +192,10 @@ const StreamAudio = ({ mode: modeProp = undefined }) => {
   const [enableDiarization, setEnableDiarization] = useState(false);
   const [maxSpeakers, setMaxSpeakers] = useState('4');
 
-  // Per-meeting transcription language + summary options, shared by both
-  // modes. Same semantics as the Virtual Participant form: the summary
-  // fields are omitted from the START frame / upload input when blank so the
-  // backend falls back to the stack-wide templates.
+  // Per-meeting transcription language, shared by both modes (same radio as
+  // the Virtual Participant form). Summary profile/language are chosen later,
+  // on the meeting page, when a summary is generated.
   const [transcribeLanguageMode, setTranscribeLanguageMode] = useState(DEFAULT_TRANSCRIBE_LANGUAGE_MODE);
-  const [summaryProfile, setSummaryProfile] = useState('');
-  const [summaryLanguage, setSummaryLanguage] = useState('');
-  const summaryProfileCatalog = useSummaryProfileCatalog();
   const [uploadPhase, setUploadPhase] = useState(UPLOAD_PHASE.IDLE);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState(null);
@@ -368,8 +359,6 @@ const StreamAudio = ({ mode: modeProp = undefined }) => {
       // inert for every web meeting.
       ...(engineChosen && streamEngine ? { asrEngine: streamEngine } : {}),
       transcribeLanguageMode,
-      ...(summaryProfile ? { summaryProfile } : {}),
-      ...(summaryLanguage ? { summaryLanguage } : {}),
     };
     setCallMetaData(callMetaDataCopy);
     return callMetaDataCopy;
@@ -580,8 +569,6 @@ const StreamAudio = ({ mode: modeProp = undefined }) => {
         enableDiarization,
         maxSpeakers: Number.parseInt(maxSpeakers, 10) || 4,
         languageCode: transcribeLanguageMode,
-        ...(summaryProfile ? { summaryProfile } : {}),
-        ...(summaryLanguage ? { summaryLanguage } : {}),
       };
       const response = await appsyncClient.graphql({
         query: createUploadMeeting,
@@ -773,25 +760,15 @@ const StreamAudio = ({ mode: modeProp = undefined }) => {
                 </FormField>
               </ColumnLayout>
 
-              <Box margin={{ top: 'l' }}>
-                <SpaceBetween direction="vertical" size="l">
-                  {(mode === MODE_UPLOAD || effectiveStreamEngine === 'transcribe') && (
-                    <TranscribeLanguageModeField
-                      value={transcribeLanguageMode}
-                      onChange={setTranscribeLanguageMode}
-                      disabled={recording || uploadInProgress}
-                    />
-                  )}
-                  <SummaryOptionsFields
-                    summaryProfile={summaryProfile}
-                    onSummaryProfileChange={setSummaryProfile}
-                    summaryLanguage={summaryLanguage}
-                    onSummaryLanguageChange={setSummaryLanguage}
-                    summaryProfileCatalog={summaryProfileCatalog}
+              {(mode === MODE_UPLOAD || effectiveStreamEngine === 'transcribe') && (
+                <Box margin={{ top: 'l' }}>
+                  <TranscribeLanguageModeField
+                    value={transcribeLanguageMode}
+                    onChange={setTranscribeLanguageMode}
                     disabled={recording || uploadInProgress}
                   />
-                </SpaceBetween>
-              </Box>
+                </Box>
+              )}
 
               {mode === MODE_STREAM && asrEngineAvailable && (
                 <Box margin={{ top: 'l' }}>

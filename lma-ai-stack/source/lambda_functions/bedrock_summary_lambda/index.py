@@ -123,8 +123,22 @@ def get_templates_from_dynamodb(prompt_override):
             print("Default Prompt Template:", defaultPromptTemplates)
             print("Custom Template:", customPromptTemplates)
 
-            mergedPromptTemplates = {**defaultPromptTemplates, **customPromptTemplates}
-            print("Merged Prompt Template:", mergedPromptTemplates)
+            # Custom, when it has any sections, is the complete set — the same
+            # rule named profiles follow, and what the Transcript Summary page
+            # shows. Merging it over Default silently kept Default's other
+            # sections (and their Bedrock calls) running behind a page that
+            # showed only the custom one.
+            customSections = {
+                k: v
+                for k, v in customPromptTemplates.items()
+                if k not in ("LLMPromptTemplateId", "*Information*")
+            }
+            if customSections:
+                mergedPromptTemplates = customSections
+                print("Using custom templates as the complete set:", mergedPromptTemplates)
+            else:
+                mergedPromptTemplates = defaultPromptTemplates
+                print("No custom templates — using defaults:", mergedPromptTemplates)
 
             for k in sorted(mergedPromptTemplates):
                 if k != "LLMPromptTemplateId" and k != "*Information*":
@@ -358,11 +372,27 @@ def format_summary(summary, metadata):
     return json.dumps(summary_dict)
 
 
+def write_transcript_to_s3(callId, metadata, transcript):
+    """Archive the transcript (+ KB metadata) so the Knowledge Base ingests every
+    meeting, whether or not a summary is ever generated."""
+    s3 = boto3.client("s3")
+    filename = posixify_filename(f"{callId}")
+    transcript_file_key = f"{S3_PREFIX}{filename}-TRANSCRIPT.txt"
+    kbMetadata = getKBMetadata(metadata)
+    s3.put_object(Bucket=S3_BUCKET_NAME, Key=transcript_file_key, Body=transcript)
+    print(f"Wrote transcript to S3: s3://{S3_BUCKET_NAME}/{transcript_file_key}")
+    s3.put_object(
+        Bucket=S3_BUCKET_NAME, Key=f"{transcript_file_key}.metadata.json", Body=kbMetadata
+    )
+    print(
+        f"Wrote transcript metadata to S3: s3://{S3_BUCKET_NAME}/{transcript_file_key}.metadata.json"
+    )
+
+
 def write_to_s3(callId, metadata, transcript, summary):
     s3 = boto3.client("s3")
     filename = posixify_filename(f"{callId}")
     summary_file_key = f"{S3_PREFIX}{filename}-SUMMARY.txt"
-    transcript_file_key = f"{S3_PREFIX}{filename}-TRANSCRIPT.txt"
     summary = format_summary(summary, metadata)
     kbMetadata = getKBMetadata(metadata)
     print(f"KB Summary: {summary}")
@@ -371,14 +401,7 @@ def write_to_s3(callId, metadata, transcript, summary):
     print(f"Wrote summary to S3: s3://{S3_BUCKET_NAME}/{summary_file_key}")
     s3.put_object(Bucket=S3_BUCKET_NAME, Key=f"{summary_file_key}.metadata.json", Body=kbMetadata)
     print(f"Wrote summary metadata to S3: s3://{S3_BUCKET_NAME}/{summary_file_key}.metadata.json")
-    s3.put_object(Bucket=S3_BUCKET_NAME, Key=transcript_file_key, Body=transcript)
-    print(f"Wrote transcript to S3: s3://{S3_BUCKET_NAME}/{transcript_file_key}")
-    s3.put_object(
-        Bucket=S3_BUCKET_NAME, Key=f"{transcript_file_key}.metadata.json", Body=kbMetadata
-    )
-    print(
-        f"Wrote transcript metadata to S3: s3://{S3_BUCKET_NAME}/{summary_file_key}.metadata.json"
-    )
+    write_transcript_to_s3(callId, metadata, transcript)
 
 
 def handler(event, context):
@@ -388,6 +411,11 @@ def handler(event, context):
         transcript_json = get_transcripts(callId)
         transcript = transcript_json["transcript"]
         metadata = transcript_json["metadata"]
+        if event.get("TranscriptOnly"):
+            # End-of-call in ON_DEMAND mode: archive for the Knowledge Base,
+            # spend nothing on Bedrock. A summary comes later, if asked for.
+            write_transcript_to_s3(callId, metadata, transcript)
+            return {"summary": None}
         summary = "No summary available"
         prompt_override = None
         if "Prompt" in event:

@@ -15,13 +15,7 @@ import ValueWithLabel from '../views/ValueWithLabel';
 import { useUserContext } from '../../context/UserContext';
 import { useIntegration } from '../../context/ProviderIntegrationContext';
 import { useSettings } from '../../context/SettingsContext';
-import {
-  DEFAULT_TRANSCRIBE_LANGUAGE_MODE,
-  SUMMARY_LANGUAGE_OPTIONS,
-  SummaryProfile,
-  TRANSCRIBE_LANGUAGE_MODE_OPTIONS,
-  fetchSummaryProfileCatalog,
-} from '../../context/meetingOptions';
+import { DEFAULT_TRANSCRIBE_LANGUAGE_MODE, TRANSCRIBE_LANGUAGE_MODE_OPTIONS } from '../../context/meetingOptions';
 
 function Capture() {
   const { navigate } = useNavigation();
@@ -36,19 +30,9 @@ function Capture() {
   const [formError, setFormError] = React.useState(false);
   const [showDisclaimer, setShowDisclaimer] = React.useState(false);
 
-  // Per-meeting options, same as the web UI's Stream Audio page.
+  // Per-meeting language mode, same as the web UI's Stream Audio page. The
+  // summary profile/language are chosen later, on the meeting page in LMA.
   const [transcribeLanguageMode, setTranscribeLanguageMode] = React.useState(DEFAULT_TRANSCRIBE_LANGUAGE_MODE);
-  const [summaryProfile, setSummaryProfile] = React.useState("");
-  const [summaryLanguage, setSummaryLanguage] = React.useState("");
-  const [summaryProfileCatalog, setSummaryProfileCatalog] = React.useState<SummaryProfile[]>([]);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetchSummaryProfileCatalog(settings.graphqlEndpoint, user?.id_token).then((catalog) => {
-      if (!cancelled) setSummaryProfileCatalog(catalog);
-    });
-    return () => { cancelled = true; };
-  }, [settings.graphqlEndpoint, user?.id_token]);
 
   // componentDidMount:
   useEffect(() => {
@@ -94,8 +78,8 @@ function Capture() {
   }, [settings, validateForm, showDisclaimer]);
 
   const disclaimerConfirmed = useCallback(() => {
-    startTranscription(user, agentName, topic, { transcribeLanguageMode, summaryProfile, summaryLanguage });
-  }, [user, agentName, topic, transcribeLanguageMode, summaryProfile, summaryLanguage, startTranscription])
+    startTranscription(user, agentName, topic, { transcribeLanguageMode });
+  }, [user, agentName, topic, transcribeLanguageMode, startTranscription])
 
   const stopListening = useCallback(() => {
     stopTranscription();
@@ -209,27 +193,6 @@ function Capture() {
                   selectedOption={TRANSCRIBE_LANGUAGE_MODE_OPTIONS.find((o) => o.value === transcribeLanguageMode) || null}
                   onChange={({ detail }) => setTranscribeLanguageMode(detail.selectedOption.value || DEFAULT_TRANSCRIBE_LANGUAGE_MODE)}
                   options={TRANSCRIBE_LANGUAGE_MODE_OPTIONS}
-                />
-              </FormField>
-              <FormField stretch={true} label="Summary profile (optional):">
-                <Select
-                  selectedOption={
-                    summaryProfile
-                      ? { value: summaryProfile, label: summaryProfileCatalog.find((p) => p.id === summaryProfile)?.name || summaryProfile }
-                      : null
-                  }
-                  onChange={({ detail }) => setSummaryProfile(detail.selectedOption.value || "")}
-                  options={summaryProfileCatalog.map((p) => ({ value: p.id, label: p.name }))}
-                  placeholder="Default / Custom (stack-wide)"
-                  empty="No summary profiles created yet"
-                />
-              </FormField>
-              <FormField stretch={true} label="Summary language (optional):">
-                <Select
-                  selectedOption={summaryLanguage ? { value: summaryLanguage, label: summaryLanguage } : null}
-                  onChange={({ detail }) => setSummaryLanguage(detail.selectedOption.value || "")}
-                  options={SUMMARY_LANGUAGE_OPTIONS}
-                  placeholder="Whatever language the templates are written in"
                 />
               </FormField>
               <Button fullWidth={true} variant='primary' onClick={() => startListening()}>Start Listening</Button>

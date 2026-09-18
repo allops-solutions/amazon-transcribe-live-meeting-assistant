@@ -108,6 +108,10 @@
     "ParameterValue": "BEDROCK"
   },
   {
+    "ParameterKey": "SummaryGenerationMode",
+    "ParameterValue": "ON_DEMAND"
+  },
+  {
     "ParameterKey": "IsContentRedactionEnabled",
     "ParameterValue": "false"
   },

@@ -186,6 +186,18 @@ Parameters:
       list (BedrockModelId). The LAMBDA option requires you to provide a function
       ARN below.
 
+  SummaryGenerationMode:
+    Default: "ON_DEMAND"
+    Type: String
+    AllowedValues:
+      - "ON_DEMAND"
+      - "AUTOMATIC"
+    Description: >
+      ON_DEMAND: no summary is generated when a meeting ends (only the transcript
+      is archived for the Knowledge Base); users generate one from the meeting page,
+      choosing a summary profile and language, and pay for Bedrock only then.
+      AUTOMATIC: a summary is generated at the end of every meeting.
+
   BedrockModelId:
     Default: "global.anthropic.claude-haiku-4-5-20251001-v1:0"
     Type: String
@@ -1743,7 +1755,10 @@ Resources:
           LLM_PROMPT_TEMPLATE_TABLE_NAME: !Ref LLMPromptTemplateTableName
           S3_BUCKET_NAME: !Ref S3BucketName
           S3_PREFIX: !Ref TranscriptFilePrefix
-      Timeout: 900
+      # 600 covers a 3-section profile on a long transcript with one hung call
+      # retried (see the orchestrator's BOTO_READ_TIMEOUT); anything longer is
+      # a stuck run that is better surfaced than waited for.
+      Timeout: 600
       MemorySize: 512
       Handler: index.handler
       CodeUri: ../source/lambda_functions/bedrock_summary_lambda
@@ -2018,15 +2033,18 @@ Resources:
               !Ref EndOfCallLambdaHookFunctionArn,
             ]
           CALL_DATA_STREAM_NAME: !Ref CallDataStream
-          # Was 60/240: too tight a margin once real (15-90 min) client calls
-          # push transcript size up — BedrockSummaryLambda runs 3 sequential
-          # Bedrock calls (SUMMARY/DETAILS/ACTIONS) and can legitimately take
-          # a couple of minutes on a long transcript, and this orchestrator's
-          # own boto3 client (read_timeout) and function Timeout must both
-          # comfortably exceed that, or a summary that would have succeeded
-          # gets cut off here instead.
-          BOTO_READ_TIMEOUT: 300
+          # This function waits synchronously for BedrockSummaryLambda, which
+          # may run up to its own 600s Timeout. Waiting must cover that in a
+          # SINGLE attempt: with read_timeout 300 and boto retries, a slow
+          # summary was re-invoked every 5 min while the first was still
+          # running and being billed (see the 2026-09-16/17 cost spike).
+          BOTO_READ_TIMEOUT: 595
       Timeout: 600
+      # Lambda's default for async invocations is 2 retries — each one re-ran
+      # the whole summary after a timeout. A timed-out summary is surfaced in
+      # the UI (Regenerate banner) and the user can retry deliberately.
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0
       MemorySize: 128
       Handler: lambda_function.handler
       Layers:
@@ -2244,6 +2262,7 @@ Resources:
           TRANSCRIPT_LAMBDA_HOOK_FUNCTION_NONPARTIAL_ONLY: !Ref TranscriptLambdaHookFunctionNonPartialOnly
           IS_TRANSCRIPT_SUMMARY_ENABLED:
             !If [IsTranscriptSummaryEnabled, "true", "false"]
+          SUMMARY_GENERATION_MODE: !Ref SummaryGenerationMode
           ASYNC_TRANSCRIPT_SUMMARY_ORCHESTRATOR_ARN: !GetAtt AsyncTranscriptSummaryOrchestrator.Arn
           ASYNC_AGENT_ASSIST_ORCHESTRATOR_ARN: !GetAtt AsyncAgentAssistOrchestrator.Arn
           CALL_DATA_STREAM_NAME: !Ref CallDataStream
@@ -4450,8 +4469,12 @@ Resources:
         Variables:
           EVENT_SOURCING_TABLE_NAME: !Ref EventSourcingTable
           ASYNC_TRANSCRIPT_SUMMARY_ORCHESTRATOR_ARN: !GetAtt AsyncTranscriptSummaryOrchestrator.Arn
+          # Orchestrator Timeout (600) + margin: an IN_PROGRESS claim older
+          # than this is a dead run and may be replaced.
+          SUMMARY_IN_PROGRESS_TTL_SECONDS: "660"
       Policies:
-        - DynamoDBReadPolicy:
+        # Read the Call; write SummaryProfile/SummaryLanguage/SummaryStatus on it.
+        - DynamoDBCrudPolicy:
             TableName: !Ref EventSourcingTable
         - Statement:
             - Effect: Allow
@@ -4462,6 +4485,8 @@ Resources:
               Action:
                 - kms:Decrypt
                 - kms:DescribeKey
+                - kms:Encrypt
+                - kms:GenerateDataKey
               Resource: !Ref CustomerManagedEncryptionKeyArn
               Condition:
                 StringEquals:
@@ -7292,19 +7317,6 @@ Resources:
                           languages within the same sentence only if you don't know the
                           dominant language in advance; prefer 'English only', 'Bosnian
                           only', or 'Croatian only' when you do, for much better accuracy.
-                      summaryProfile:
-                        Type: string
-                        Description: >-
-                          Optional name of a summary profile set up on the Transcript
-                          Summary page (e.g. 'Technical Client Call'). Omit to use the
-                          stack's Default/Custom summary templates. An unrecognized name
-                          falls back to Default/Custom rather than failing.
-                      summaryLanguage:
-                        Type: string
-                        Description: >-
-                          Optional output language for the summary (e.g. 'English',
-                          'Bosnian'), independent of summaryProfile. Omit to use whatever
-                          language the chosen templates are written in.
                     Required:
                       - meetingName
                       - meetingPlatform
@@ -7348,19 +7360,6 @@ Resources:
                           languages within the same sentence only if you don't know the
                           dominant language in advance; prefer 'English only', 'Bosnian
                           only', or 'Croatian only' when you do, for much better accuracy.
-                      summaryProfile:
-                        Type: string
-                        Description: >-
-                          Optional name of a summary profile set up on the Transcript
-                          Summary page (e.g. 'Technical Client Call'). Omit to use the
-                          stack's Default/Custom summary templates. An unrecognized name
-                          falls back to Default/Custom rather than failing.
-                      summaryLanguage:
-                        Type: string
-                        Description: >-
-                          Optional output language for the summary (e.g. 'English',
-                          'Bosnian'), independent of summaryProfile. Omit to use whatever
-                          language the chosen templates are written in.
                       useStoredZoomCredentials:
                         Type: boolean
                         Description: >-

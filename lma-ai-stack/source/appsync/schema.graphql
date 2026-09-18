@@ -55,11 +55,16 @@ type Call implements DynamoDbBase @aws_cognito_user_pools
 	CallSummaryText: String
 	Owner: String
 	SharedWith: String
-	# Named summary profile / output language this meeting was launched with
-	# (see VirtualParticipant.summaryProfile / summaryLanguage). Persisted at
-	# call start so regenerateSummary can reuse the same settings later.
+	# Named summary profile / output language the summary was last generated
+	# with (chosen on the meeting panel's Generate/Regenerate form; may also be
+	# set at call start by a client that still sends them). Pre-fills the form.
 	SummaryProfile: String
 	SummaryLanguage: String
+	# IN_PROGRESS while a generation is running (set by regenerateSummary,
+	# cleared to DONE by the ADD_SUMMARY event). With SummaryRequestedAt this
+	# lets the resolver refuse a duplicate run and lets every tab show it.
+	SummaryStatus: String
+	SummaryRequestedAt: AWSDateTime
 }
 
 type CallList @aws_cognito_user_pools
@@ -196,9 +201,10 @@ type Mutation @aws_iam {
 	addCallCategory(input: AddCallCategoryInput!): Call
 	addIssuesDetected(input: AddIssuesDetectedInput!): Call
 	addCallSummaryText(input: AddCallSummaryTextInput!): Call
-	# Re-runs summary generation for an already-ended meeting (e.g. after a
-	# transient Bedrock error, or just to try again). Reuses the SummaryProfile
-	# / SummaryLanguage the meeting was originally launched with. Fires async;
+	# Generates (or regenerates) an ended meeting's summary on demand with the
+	# given SummaryProfile / SummaryLanguage. With SummaryGenerationMode
+	# ON_DEMAND nothing is generated at meeting end, so this is THE way a
+	# summary gets made. Refuses while one is already running. Fires async;
 	# the new CallSummaryText arrives via the existing onUpdateCall
 	# subscription once generation finishes, same as the original summary.
 	regenerateSummary(input: RegenerateSummaryInput!): RegenerateSummaryOutput
@@ -631,10 +637,17 @@ input AddCallSummaryTextInput {
 	UpdatedAt: AWSDateTime
 	Owner: String
 	SharedWith: String
+	SummaryStatus: String
 }
 
 input RegenerateSummaryInput {
 	CallId: ID!
+	# Which profile / output language to generate with. Sent by the meeting
+	# panel's form; an empty string means "stack-wide templates" / "template
+	# language". Persisted on the Call so the form and later runs reuse them.
+	# Omitted entirely means "whatever the Call already has".
+	SummaryProfile: String
+	SummaryLanguage: String
 }
 
 type RegenerateSummaryOutput @aws_cognito_user_pools {

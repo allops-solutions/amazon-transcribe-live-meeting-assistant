@@ -61,13 +61,6 @@ def _resolve_language_mode(meeting_language: Optional[str]) -> Optional[str]:
     return VALID_LANGUAGE_MODES[normalized]
 
 
-def _slugify(name: str) -> str:
-    """Mirror the UI's profile-id generation (TranscriptSummaryPage.jsx
-    slugify) so a summary_profile given by name matches the profile the
-    user created there."""
-    slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower())
-    return slug.strip("-")
-
 
 def execute(
     meeting_name: str,
@@ -76,8 +69,6 @@ def execute(
     scheduled_time: str,
     meeting_password: Optional[str] = None,
     meeting_language: Optional[str] = None,
-    summary_profile: Optional[str] = None,
-    summary_language: Optional[str] = None,
     user_id: str = None,
     is_admin: bool = False,
     use_stored_zoom_credentials: bool = True,
@@ -95,13 +86,6 @@ def execute(
             only", "Bosnian only", "Auto-detect (locks in early)", or
             "Auto-detect (mixed languages)". Omit to use the stack default
             (auto-detect, mixed languages).
-        summary_profile: Optional name of a summary profile configured on the
-            Transcript Summary page (e.g. "Technical Client Call"). Omit to
-            use the stack's Default/Custom summary templates. An unrecognized
-            name falls back to Default/Custom rather than failing.
-        summary_language: Optional output language for the summary (e.g.
-            "English", "Bosnian"), independent of summary_profile. Omit to
-            use whatever language the chosen templates are written in.
         user_id: User ID for access control
         is_admin: Whether user is admin
         use_stored_zoom_credentials: When the user has stored Zoom
@@ -144,7 +128,6 @@ def execute(
     # provided) passes through untouched and the resolver applies the stack
     # default.
     transcribe_language_mode = _resolve_language_mode(meeting_language)
-    summary_profile_id = _slugify(summary_profile) if summary_profile else None
 
     # Validate and parse scheduled time
     try:
@@ -221,8 +204,6 @@ def execute(
             **({"userSub": cognito_sub} if cognito_sub else {}),
             **({"userZoomSub": cognito_sub} if use_zoom_creds else {}),
             **({"transcribeLanguageMode": transcribe_language_mode} if transcribe_language_mode else {}),
-            **({"summaryProfile": summary_profile_id} if summary_profile_id else {}),
-            **({"summaryLanguage": summary_language} if summary_language else {}),
         }
     }
 

@@ -17,6 +17,10 @@ export default /* GraphQL */ `
         CallCategories
         IssuesDetected
         CallSummaryText
+        SummaryProfile
+        SummaryLanguage
+        SummaryStatus
+        SummaryRequestedAt
         CreatedAt
         CustomerPhoneNumber
         Status

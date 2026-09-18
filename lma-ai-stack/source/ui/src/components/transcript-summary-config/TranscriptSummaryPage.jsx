@@ -204,9 +204,13 @@ const TranscriptSummaryPage = () => {
     const profile = catalog.find((p) => p.id === selectedProfileId);
     const profileId = selectedProfileId;
     // eslint-disable-next-line no-alert
-    if (!window.confirm(`Permanently delete profile "${profile?.name || profileId}"? ` +
-      'This cannot be undone. A meeting already using it falls back to the Default templates ' +
-      'the next time its summary is generated.')) {
+    if (
+      !window.confirm(
+        `Permanently delete profile "${profile?.name || profileId}"? ` +
+          'This cannot be undone. A meeting already using it falls back to the Default templates ' +
+          'the next time its summary is generated.',
+      )
+    ) {
       return;
     }
     setSaving(true);
@@ -289,7 +293,9 @@ const TranscriptSummaryPage = () => {
 
       setSuccess(
         selectedProfileId
-          ? `Profile "${catalog.find((p) => p.id === selectedProfileId)?.name || selectedProfileId}" saved successfully.`
+          ? `Profile "${
+              catalog.find((p) => p.id === selectedProfileId)?.name || selectedProfileId
+            }" saved successfully.`
           : 'Summary prompt templates saved successfully.',
       );
       await loadConfig(selectedProfileId);
@@ -426,7 +432,9 @@ const TranscriptSummaryPage = () => {
 
           {templates.map((template, index) => (
             <Container
-              key={`template-${template.number}-${template.label}`}
+              // Not the label: keying on it remounted the row on every keystroke,
+              // dropping focus after each typed character.
+              key={`template-${template.number}`}
               header={
                 <Header
                   variant="h3"
@@ -456,7 +464,11 @@ const TranscriptSummaryPage = () => {
                 </FormField>
                 <FormField
                   label='Prompt (set to "NONE" to disable this section)'
-                  description="Use {transcript} for the meeting transcript. Use {language} to control exactly where the output-language instruction goes — otherwise it's appended automatically when a meeting requests one."
+                  description={
+                    'Use {transcript} for the meeting transcript. Use {language} to control exactly where the ' +
+                    "output-language instruction goes — otherwise it's appended automatically when a meeting " +
+                    'requests one.'
+                  }
                 >
                   <Textarea
                     value={template.prompt}

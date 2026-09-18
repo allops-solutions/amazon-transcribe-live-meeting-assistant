@@ -50,10 +50,6 @@ Parameters:
     Type: String
     Description: Cloudfront Endpoint
 
-  GraphQLEndpoint:
-    Type: String
-    Description: AppSync GraphQL endpoint, used by the extension to list summary profiles
-
   WebAppCloudFrontDistribution:
     Type: String
     Description: WebApp CloudFront Distribution
@@ -167,8 +163,6 @@ Resources:
           Value: !Ref CognitoLoginUrl
         - Name: CLOUDFRONT_ENDPOINT
           Value: !Ref CloudfrontEndpoint
-        - Name: GRAPHQL_ENDPOINT
-          Value: !Ref GraphQLEndpoint
         - Name: CLOUDFRONT_DISTRIBUTION_ID
           Value: !Ref WebAppCloudFrontDistribution
         - Name: WEBAPP_BUCKET
@@ -204,12 +198,11 @@ Resources:
                     "clientId": "%s",
                     "cognitoDomain": "%s",
                     "cloudfrontEndpoint": "%s",
-                    "graphqlEndpoint": "%s",
                     "recordingDisclaimer": "%s",
                     "recordingMessage": "%s",
                     "stopRecordingMessage": "%s"
                   }'
-                  $WEBSOCKET_ENDPOINT $COGNITO_CLIENT_ID $COGNITO_LOGIN_URL $CLOUDFRONT_ENDPOINT $GRAPHQL_ENDPOINT "$RECORDING_DISCLAIMER" "$START_RECORDING_MESSAGE" "$STOP_RECORDING_MESSAGE" > ./build/lma_config.json
+                  $WEBSOCKET_ENDPOINT $COGNITO_CLIENT_ID $COGNITO_LOGIN_URL $CLOUDFRONT_ENDPOINT "$RECORDING_DISCLAIMER" "$START_RECORDING_MESSAGE" "$STOP_RECORDING_MESSAGE" > ./build/lma_config.json
                 - echo Packaging extension for Chrome - other browsers to come later
                 - zipfile=lma-chrome-extension-v<VERSION_TOKEN>.zip
                 - (cd ./build && zip -r ../${zipfile} .)
@@ -341,7 +334,6 @@ Resources:
       CognitoClientId: !Ref CognitoClientId
       CognitoLoginUrl: !Ref CognitoLoginUrl
       CloudfrontEndpoint: !Ref CloudfrontEndpoint
-      GraphQLEndpoint: !Ref GraphQLEndpoint
       WebAppCloudFrontDistribution: !Ref WebAppCloudFrontDistribution
       WebAppBucket: !Ref WebAppBucket
       SourceCodeLocation: !Ref SourceCodeLocation

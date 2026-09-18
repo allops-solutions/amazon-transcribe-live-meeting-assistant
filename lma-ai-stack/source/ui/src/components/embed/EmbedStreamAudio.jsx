@@ -15,8 +15,6 @@
  *   diarizeMic    - Identify separate speakers on the microphone (true/false)
  *   transcribeLanguageMode - Language code (en-US, bs-BA, ...), identify-language
  *                   or identify-multiple-languages; omit for the deployment default
- *   summaryProfile  - Named summary profile id; omit for the stack-wide templates
- *   summaryLanguage - Summary output language; omit for the templates' own language
  */
 import { ConsoleLogger } from 'aws-amplify/utils';
 import React, { useState, useRef, useCallback, useEffect } from 'react';
@@ -79,11 +77,9 @@ const EmbedStreamAudio = ({ params, sendToParent }) => {
     toNumber: SYSTEM,
     diarizeSystemChannel: initialDiarizeSystem,
     diarizeMicChannel: initialDiarizeMic,
-    // Per-meeting language/summary options, host-supplied like the flags above.
-    // Omitted when blank so the backend applies its defaults.
+    // Per-meeting language mode, host-supplied like the flags above. Omitted
+    // when blank so the deployment default applies.
     ...(params.transcribeLanguageMode ? { transcribeLanguageMode: params.transcribeLanguageMode } : {}),
-    ...(params.summaryProfile ? { summaryProfile: params.summaryProfile } : {}),
-    ...(params.summaryLanguage ? { summaryLanguage: params.summaryLanguage } : {}),
   });
 
   const [recording, setRecording] = useState(false);
@@ -454,8 +450,6 @@ EmbedStreamAudio.propTypes = {
     diarizeSystem: PropTypes.bool,
     diarizeMic: PropTypes.bool,
     transcribeLanguageMode: PropTypes.string,
-    summaryProfile: PropTypes.string,
-    summaryLanguage: PropTypes.string,
   }).isRequired,
   sendToParent: PropTypes.func.isRequired,
 };

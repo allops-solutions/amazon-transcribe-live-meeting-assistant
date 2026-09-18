@@ -409,6 +409,18 @@ Parameters:
       list (BedrockModelId). The LAMBDA option requires you to provide a function
       ARN below.
 
+  SummaryGenerationMode:
+    Default: "ON_DEMAND"
+    Type: String
+    AllowedValues:
+      - "ON_DEMAND"
+      - "AUTOMATIC"
+    Description: >
+      ON_DEMAND: no summary is generated when a meeting ends (only the transcript
+      is archived for the Knowledge Base); users generate one from the meeting page,
+      choosing a summary profile and language, and pay for Bedrock only then.
+      AUTOMATIC: a summary is generated at the end of every meeting.
+
   BedrockModelId:
     Default: "global.anthropic.claude-haiku-4-5-20251001-v1:0"
     Type: String
@@ -929,6 +941,7 @@ Metadata:
           - TranscriptLambdaHookFunctionArn
           - TranscriptLambdaHookFunctionNonPartialOnly
           - EndOfCallTranscriptSummary
+          - SummaryGenerationMode
           - BedrockModelId
           - BedrockFallbackModelId
           - EndOfCallLambdaHookFunctionArn
@@ -2551,6 +2564,7 @@ Resources:
         TranscriptLambdaHookFunctionArn: !Ref TranscriptLambdaHookFunctionArn
         TranscriptLambdaHookFunctionNonPartialOnly: !Ref TranscriptLambdaHookFunctionNonPartialOnly
         EndOfCallTranscriptSummary: !Ref EndOfCallTranscriptSummary
+        SummaryGenerationMode: !Ref SummaryGenerationMode
         BedrockModelId: !Ref BedrockModelId
         BedrockFallbackModelId: !Ref BedrockFallbackModelId
         EndOfCallLambdaHookFunctionArn: !Ref EndOfCallLambdaHookFunctionArn
@@ -2888,7 +2902,6 @@ Resources:
         LMASettingsParameterName: !Ref LMASettingsParameter
         UpdateLMASettingsFunctionArn: !GetAtt UpdateLMASettingsFunction.Arn
         CustomerManagedEncryptionKeyArn: !GetAtt CustomerManagedEncryptionKey.Arn
-        GraphQLEndpoint: !GetAtt AISTACK.Outputs.AppSyncGraphQLUrl
         AppSyncEventApiUrl: !GetAtt AISTACK.Outputs.AppSyncEventApiUrl
         CloudFrontDomainName: !GetAtt AISTACK.Outputs.CloudFrontDomainName
         VPTaskRegistryTableName: !GetAtt AISTACK.Outputs.VPTaskRegistryTableName
@@ -2940,7 +2953,6 @@ Resources:
         CognitoClientId: !GetAtt COGNITOSTACK.Outputs.CognitoClientId
         CognitoLoginUrl: !GetAtt COGNITOSTACK.Outputs.CognitoLoginUrl
         CloudfrontEndpoint: !GetAtt AISTACK.Outputs.CloudfrontEndpoint
-        GraphQLEndpoint: !GetAtt AISTACK.Outputs.AppSyncGraphQLUrl
         WebAppCloudFrontDistribution: !GetAtt AISTACK.Outputs.CloudFrontDistributionId
         WebAppBucket: !GetAtt AISTACK.Outputs.WebAppBucket
         SourceCodeLocation: <BROWSER_EXTENSION_SRC_S3_LOCATION_TOKEN>

@@ -28,9 +28,11 @@ else:
     KinesisClient = object
 
 BOTO3_SESSION: Boto3Session = boto3.Session()
+# One attempt only: the summary Lambda has its own retries, and re-sending a
+# synchronous invoke that is merely slow just runs (and bills) it twice.
 CLIENT_CONFIG = BotoCoreConfig(
-    read_timeout=int(getenv("BOTO_READ_TIMEOUT", "60")),
-    retries={"mode": "adaptive", "max_attempts": 3},
+    read_timeout=int(getenv("BOTO_READ_TIMEOUT", "595")),
+    retries={"mode": "standard", "max_attempts": 1},
 )
 
 LAMBDA_CLIENT: LambdaClient = BOTO3_SESSION.client(
@@ -68,6 +70,8 @@ def write_call_summary_to_kds(message: Dict[str, Any]):
         EventType="ADD_SUMMARY",
         ExpiresAfter=expiresAfter,
         CallSummaryText=message["CallSummaryText"],
+        # Clears the IN_PROGRESS claim regenerateSummary put on the Call.
+        SummaryStatus="DONE",
     )
 
     if callId:
@@ -96,6 +100,11 @@ def handler(event, context: LambdaContext):
 
     LOGGER.debug("Call summary: ")
     LOGGER.debug(call_summary)
+    if data.get("TranscriptOnly"):
+        # End-of-call in ON_DEMAND mode: the summary Lambda only archived the
+        # transcript for the Knowledge Base. No summary, nothing to publish.
+        LOGGER.info("TranscriptOnly run finished for %s — no summary generated", data.get("CallId"))
+        return
     data["CallSummaryText"] = call_summary["summary"]
 
     write_call_summary_to_kds(data)

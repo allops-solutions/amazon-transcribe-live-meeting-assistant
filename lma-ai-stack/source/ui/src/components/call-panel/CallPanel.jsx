@@ -44,6 +44,7 @@ import useSettingsContext from '../../contexts/settings';
 import { DONE_STATUS, IN_PROGRESS_STATUS } from '../common/get-recording-status';
 import { InfoLink } from '../common/info-link';
 import { getWeightedSentimentLabel } from '../common/sentiment';
+import { SummaryOptionsFields, useSummaryProfileCatalog } from '../common/meeting-options';
 
 import { VoiceToneFluctuationChart, SentimentFluctuationChart, SentimentPerQuarterChart } from './sentiment-charts';
 
@@ -227,6 +228,29 @@ const CallSummary = ({ item }) => {
   const regenerateBaselineRef = useRef(null);
   const regenerateTimeoutRef = useRef(null);
 
+  // Summaries are generated on demand: the user picks a profile / output
+  // language here and clicks Generate. Pre-filled with whatever the summary
+  // was last generated with (persisted on the Call by regenerateSummary).
+  const [summaryProfile, setSummaryProfile] = useState(item.summaryProfile || '');
+  const [summaryLanguage, setSummaryLanguage] = useState(item.summaryLanguage || '');
+  const summaryProfileCatalog = useSummaryProfileCatalog();
+  useEffect(() => {
+    setSummaryProfile(item.summaryProfile || '');
+    setSummaryLanguage(item.summaryLanguage || '');
+  }, [item.callId, item.summaryProfile, item.summaryLanguage]);
+
+  // Server-side claim: regenerateSummary marks the Call IN_PROGRESS and
+  // refuses a second run while it's fresh, so every tab (and every user)
+  // sees the same thing and nobody can double-run a slow summary. A stale
+  // claim means the run died; the resolver ignores it and so do we.
+  const IN_PROGRESS_STALE_MS = 11 * 60 * 1000;
+  const serverInProgress =
+    item.summaryStatus === 'IN_PROGRESS' &&
+    !!item.summaryRequestedAt &&
+    Date.now() - Date.parse(item.summaryRequestedAt) < IN_PROGRESS_STALE_MS;
+  const generationInProgress = serverInProgress || regenerateStatus === 'in-progress';
+  const meetingEnded = item.recordingStatusLabel === DONE_STATUS;
+
   // Detect completion by watching for callSummaryText to actually change -
   // there's no dedicated "done" signal, the new text just arrives via the
   // same onUpdateCall subscription the original end-of-call summary uses
@@ -336,11 +360,15 @@ const CallSummary = ({ item }) => {
     // give it a bit of margin before assuming something went wrong client-side.
     regenerateTimeoutRef.current = setTimeout(() => {
       setRegenerateStatus((current) => (current === 'in-progress' ? 'timeout' : current));
-    }, 11 * 60 * 1000);
+    }, IN_PROGRESS_STALE_MS);
     try {
       await client.graphql({
         query: regenerateSummaryMutation,
-        variables: { input: { CallId: item.callId } },
+        // Both always sent: blank means "stack-wide templates" / "template
+        // language" and clears a previous choice on the Call.
+        variables: {
+          input: { CallId: item.callId, SummaryProfile: summaryProfile, SummaryLanguage: summaryLanguage },
+        },
       });
       // No local state update here on purpose — the new CallSummaryText
       // arrives via the existing onUpdateCall subscription (regenerateSummary
@@ -393,21 +421,10 @@ const CallSummary = ({ item }) => {
                 <Button
                   iconName="edit"
                   variant="normal"
-                  disabled={isRegenerating || regenerateStatus === 'in-progress'}
+                  disabled={isRegenerating || generationInProgress}
                   onClick={handleStartEdit}
                 >
                   Edit
-                </Button>
-              )}
-              {item.callSummaryText && (
-                <Button
-                  iconName="refresh"
-                  variant="normal"
-                  loading={isRegenerating}
-                  disabled={isRegenerating || regenerateStatus === 'in-progress' || isEditingSummary}
-                  onClick={handleRegenerateSummary}
-                >
-                  Regenerate
                 </Button>
               )}
               {item.callSummaryText && (
@@ -432,14 +449,37 @@ const CallSummary = ({ item }) => {
       }
     >
       <SpaceBetween size="s">
-        {regenerateStatus === 'in-progress' && (
-          <Alert type="info" header="Regenerating summary">
-            This can take a few minutes for longer meetings. Feel free to navigate away — the updated summary will
-            appear here automatically once it&apos;s ready.
+        {!isEditingSummary && (
+          <SpaceBetween size="s">
+            <ColumnLayout columns={2}>
+              <SummaryOptionsFields
+                summaryProfile={summaryProfile}
+                onSummaryProfileChange={setSummaryProfile}
+                summaryLanguage={summaryLanguage}
+                onSummaryLanguageChange={setSummaryLanguage}
+                summaryProfileCatalog={summaryProfileCatalog}
+                disabled={isRegenerating || generationInProgress || !meetingEnded}
+              />
+            </ColumnLayout>
+            <Button
+              iconName={item.callSummaryText ? 'refresh' : 'gen-ai'}
+              variant={item.callSummaryText ? 'normal' : 'primary'}
+              loading={isRegenerating}
+              disabled={isRegenerating || generationInProgress || !meetingEnded}
+              onClick={handleRegenerateSummary}
+            >
+              {item.callSummaryText ? 'Regenerate summary' : 'Generate summary'}
+            </Button>
+          </SpaceBetween>
+        )}
+        {generationInProgress && (
+          <Alert type="info" header="Generating summary">
+            This can take a few minutes for longer meetings. Feel free to navigate away — the summary will appear here
+            automatically once it&apos;s ready.
           </Alert>
         )}
         {regenerateStatus === 'success' && (
-          <Alert type="success" header="Summary regenerated" dismissible onDismiss={() => setRegenerateStatus(null)}>
+          <Alert type="success" header="Summary ready" dismissible onDismiss={() => setRegenerateStatus(null)}>
             The summary has been updated.
           </Alert>
         )}
@@ -450,19 +490,26 @@ const CallSummary = ({ item }) => {
             dismissible
             onDismiss={() => setRegenerateStatus(null)}
           >
-            Regeneration is taking longer than expected. It may still complete — check back shortly, or try again if
+            Generation is taking longer than expected. It may still complete — check back shortly, or try again if
             nothing changes.
           </Alert>
         )}
         {regenerateStatus === 'error' && (
           <Alert
             type="error"
-            header="Couldn't start regeneration"
+            header="Couldn't start generation"
             dismissible
             onDismiss={() => setRegenerateStatus(null)}
           >
             {regenerateError}
           </Alert>
+        )}
+        {!item.callSummaryText && !generationInProgress && (
+          <Box color="text-body-secondary">
+            {meetingEnded
+              ? 'No summary yet. Pick a summary profile and language above and click Generate summary.'
+              : 'The summary can be generated once the meeting has ended.'}
+          </Box>
         )}
         {saveSummaryError && (
           <Alert type="error" header="Couldn't save summary" dismissible onDismiss={() => setSaveSummaryError('')}>

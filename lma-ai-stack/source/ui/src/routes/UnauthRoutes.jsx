@@ -14,9 +14,15 @@ import OAuthCallback from '../components/mcp-servers/OAuthCallback';
 // Set at build time via the AllowedSignUpEmailDomain CloudFormation parameter.
 const VITE_SHOULD_HIDE_SIGN_UP = import.meta.env.VITE_SHOULD_HIDE_SIGN_UP ?? 'true';
 
+// White-background variant: the transparent logo used in the top navigation
+// has a white wordmark that vanishes on the light login card.
 const AuthHeader = () => (
   <div style={{ textAlign: 'center', margin: '2rem 0' }}>
-    <img src="/allops-logo.png" alt="allOps" style={{ height: '72px', maxWidth: '100%', marginBottom: '0.5rem' }} />
+    <img
+      src="/allops-logo-light.jpg"
+      alt="allOps"
+      style={{ height: '96px', maxWidth: '100%', marginBottom: '0.5rem' }}
+    />
     <h1>Welcome to Live Meeting Assistant!</h1>
   </div>
 );

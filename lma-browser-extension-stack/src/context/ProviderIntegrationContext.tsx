@@ -10,14 +10,10 @@ import { useSettings } from './SettingsContext';
 import { useUserContext } from './UserContext';
 import { WebSocketHook } from 'react-use-websocket/dist/lib/types';
 
-// Per-meeting options chosen on the Capture screen, sent in the START frame.
-// Same fields the web UI's Stream Audio page and the Virtual Participant send;
-// the summary ones are omitted when blank so the backend falls back to the
-// stack-wide templates.
+// Per-meeting options chosen on the Capture screen, sent in the START frame
+// (same field the web UI's Stream Audio page sends).
 export type MeetingOptions = {
   transcribeLanguageMode: string,
-  summaryProfile?: string,
-  summaryLanguage?: string,
 }
 
 type Call = {
@@ -29,8 +25,6 @@ type Call = {
   samplingRate: number,
   activeSpeaker: string,
   transcribeLanguageMode?: string,
-  summaryProfile?: string,
-  summaryLanguage?: string,
 }
 
 const initialIntegration = {
@@ -208,8 +202,6 @@ function IntegrationProvider({ children }: any) {
       samplingRate: 8000,
       activeSpeaker: 'n/a',
       ...(options?.transcribeLanguageMode ? { transcribeLanguageMode: options.transcribeLanguageMode } : {}),
-      ...(options?.summaryProfile ? { summaryProfile: options.summaryProfile } : {}),
-      ...(options?.summaryLanguage ? { summaryLanguage: options.summaryLanguage } : {}),
     }
 
     setCurrentCall(callMetadata);

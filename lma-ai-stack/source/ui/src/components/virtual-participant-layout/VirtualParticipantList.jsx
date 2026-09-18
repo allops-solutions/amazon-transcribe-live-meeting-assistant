@@ -36,12 +36,7 @@ import useSettingsContext from '../../contexts/settings';
 import useLocalStorage from '../common/local-storage';
 import { paginationLabels } from '../common/labels';
 import { getFilterCounterText, TableEmptyState, TableNoMatchState } from '../common/table';
-import {
-  DEFAULT_TRANSCRIBE_LANGUAGE_MODE,
-  SummaryOptionsFields,
-  TranscribeLanguageModeField,
-  useSummaryProfileCatalog,
-} from '../common/meeting-options';
+import { DEFAULT_TRANSCRIBE_LANGUAGE_MODE, TranscribeLanguageModeField } from '../common/meeting-options';
 
 import {
   VPCommonHeader,
@@ -132,9 +127,6 @@ const VirtualParticipantList = () => {
   // default (no per-profile default language) — a meeting that doesn't pick
   // either gets today's stack-wide Default/Custom templates, in whatever
   // language they're written in.
-  const [summaryProfile, setSummaryProfile] = useState('');
-  const [summaryLanguage, setSummaryLanguage] = useState('');
-  const summaryProfileCatalog = useSummaryProfileCatalog();
   const [notification, setNotification] = useState(null);
   const [isCreating, setIsCreating] = useState(false);
   const [creatingType, setCreatingType] = useState(null);
@@ -559,11 +551,6 @@ const VirtualParticipantList = () => {
         // carry it via the Step Functions input below.
         transcribeLanguageMode,
       };
-      // Optional — omitted entirely (not even blank) when not chosen, so the
-      // resolver leaves them unset and the summary Lambda falls back to
-      // today's stack-wide Default+Custom templates.
-      if (summaryProfile) vpInput.summaryProfile = summaryProfile;
-      if (summaryLanguage) vpInput.summaryLanguage = summaryLanguage;
 
       // Add scheduling fields if this is a scheduled VP
       if (isScheduled && meetingTimestamp) {
@@ -610,8 +597,6 @@ const VirtualParticipantList = () => {
               // ECS container Environment values must be strings, not booleans.
               enableVideoRecording: enableVideoRecording ? 'true' : 'false',
               transcribeLanguageMode,
-              summaryProfile,
-              summaryLanguage,
               accessToken: (await fetchAuthSession()).tokens?.accessToken?.toString() || '',
               idToken: (await fetchAuthSession()).tokens?.idToken?.toString() || '',
               rereshToken: '', // Amplify v6 does not expose refresh tokens directly
@@ -659,8 +644,6 @@ const VirtualParticipantList = () => {
       setConsentChecked(false);
       setEnableVideoRecording(true);
       setTranscribeLanguageMode(DEFAULT_TRANSCRIBE_LANGUAGE_MODE);
-      setSummaryProfile('');
-      setSummaryLanguage('');
 
       loadParticipants();
 
@@ -975,14 +958,6 @@ const VirtualParticipantList = () => {
             </FormField>
 
             <TranscribeLanguageModeField value={transcribeLanguageMode} onChange={setTranscribeLanguageMode} />
-
-            <SummaryOptionsFields
-              summaryProfile={summaryProfile}
-              onSummaryProfileChange={setSummaryProfile}
-              summaryLanguage={summaryLanguage}
-              onSummaryLanguageChange={setSummaryLanguage}
-              summaryProfileCatalog={summaryProfileCatalog}
-            />
 
             <Checkbox onChange={({ detail }) => setConsentChecked(detail.checked)} checked={consentChecked}>
               I will not violate legal, corporate, or ethical restrictions that apply to meeting transcription and

@@ -69,6 +69,10 @@ POST_CALL_SUMMARY_LAMBDA_HOOK_FUNCTION_ARN = getenv(
 
 ASYNC_TRANSCRIPT_SUMMARY_ORCHESTRATOR_ARN = getenv("ASYNC_TRANSCRIPT_SUMMARY_ORCHESTRATOR_ARN", "")
 IS_TRANSCRIPT_SUMMARY_ENABLED = getenv("IS_TRANSCRIPT_SUMMARY_ENABLED", "false").lower() == "true"
+# ON_DEMAND: meeting end only archives the transcript for the Knowledge Base;
+# summaries are generated when a user asks (regenerateSummary). AUTOMATIC is
+# upstream's behavior — a summary on every END.
+SUMMARY_GENERATION_MODE = getenv("SUMMARY_GENERATION_MODE", "AUTOMATIC").upper()
 
 ASYNC_AGENT_ASSIST_ORCHESTRATOR_ARN = getenv("ASYNC_AGENT_ASSIST_ORCHESTRATOR_ARN", "")
 
@@ -1421,12 +1425,18 @@ async def execute_process_event_api_mutation(
             return_value["successes"].append(response)
 
         if IS_TRANSCRIPT_SUMMARY_ENABLED:
+            summary_payload = dict(message)
+            if SUMMARY_GENERATION_MODE == "ON_DEMAND":
+                summary_payload["TranscriptOnly"] = True
             LAMBDA_HOOK_CLIENT.invoke(
                 FunctionName=ASYNC_TRANSCRIPT_SUMMARY_ORCHESTRATOR_ARN,
                 InvocationType="Event",
-                Payload=json.dumps(message),
+                Payload=json.dumps(summary_payload),
             )
-            LOGGER.debug("END Event: Invoked Async Transcript Summary Lambda")
+            LOGGER.debug(
+                "END Event: Invoked Async Transcript Summary Lambda (mode=%s)",
+                SUMMARY_GENERATION_MODE,
+            )
 
         if isinstance(response, Exception):
             return_value["errors"].append(response)
