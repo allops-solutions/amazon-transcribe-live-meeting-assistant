@@ -9,6 +9,35 @@ Transform: AWS::Serverless-2016-10-31
 Description: Amazon Transcribe Live Meeting Assist - Cognito Stack
 
 Parameters:
+  SsoCompatiblePool:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Use mutable email on a NEW pool only; never enable on a legacy pool.
+  EnableGoogleSso:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+  GoogleOAuthClientId:
+    Type: String
+    Default: ""
+  GoogleOAuthClientSecret:
+    Type: String
+    Default: ""
+    NoEcho: true
+  FederatedEmailDomain:
+    Type: String
+    Default: allops.co
+    AllowedPattern: '^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$'
+  GoogleAdminEmail:
+    Type: String
+    Default: ""
+    Description: Verified Google email explicitly granted Admin at token issuance.
+  PasswordSignInEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+
   # Required
   LMAStackName:
     Type: String
@@ -101,7 +130,25 @@ Parameters:
     Default: ""
     Description: LMA build date/time (used in welcome email footer)
 
+Rules:
+  GoogleConfiguration:
+    RuleCondition: !Equals [!Ref EnableGoogleSso, "true"]
+    Assertions:
+      - Assert: !Equals [!Ref SsoCompatiblePool, "true"]
+        AssertDescription: Google requires a newly created SSO-compatible pool.
+      - Assert: !Not [!Equals [!Ref GoogleOAuthClientId, ""]]
+        AssertDescription: Google client ID is required.
+      - Assert: !Not [!Equals [!Ref GoogleOAuthClientSecret, ""]]
+        AssertDescription: Google client secret is required.
+  PasswordConfiguration:
+    RuleCondition: !Equals [!Ref PasswordSignInEnabled, "false"]
+    Assertions:
+      - Assert: !Equals [!Ref EnableGoogleSso, "true"]
+        AssertDescription: Disabling passwords requires Google federation.
+
 Conditions:
+  IsSsoCompatiblePool: !Equals [!Ref SsoCompatiblePool, "true"]
+  ShouldEnablePasswordSignIn: !Equals [!Ref PasswordSignInEnabled, "true"]
   ShouldAllowSignUpEmailDomain:
     !Not [!Equals [!Ref AllowedSignUpEmailDomain, ""]]
   HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
@@ -135,12 +182,14 @@ Resources:
   ##########################################################################
   UserPool:
     Type: AWS::Cognito::UserPool
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       AdminCreateUserConfig:
         AllowAdminCreateUserOnly: !If
-          - ShouldAllowSignUpEmailDomain
-          - false
+          - IsSsoCompatiblePool
           - true
+          - !If [ShouldAllowSignUpEmailDomain, false, true]
         InviteMessageTemplate:
           EmailSubject: Welcome to Live Meeting Assistant!
           EmailMessage: !Sub |-
@@ -169,8 +218,12 @@ Resources:
           - !GetAtt CognitoUserPoolEmailDomainVerifyFunction.Arn
           - !Ref AWS::NoValue
         PreSignUp: !If
-          - ShouldAllowSignUpEmailDomain
-          - !GetAtt CognitoUserPoolEmailDomainVerifyFunction.Arn
+          - IsSsoCompatiblePool
+          - !GetAtt FederatedSignInGuard.Arn
+          - !If [ShouldAllowSignUpEmailDomain, !GetAtt CognitoUserPoolEmailDomainVerifyFunction.Arn, !Ref AWS::NoValue]
+        PreTokenGeneration: !If
+          - IsSsoCompatiblePool
+          - !GetAtt FederatedSignInGuard.Arn
           - !Ref AWS::NoValue
       Policies:
         PasswordPolicy:
@@ -182,7 +235,7 @@ Resources:
       Schema:
         - Name: email
           AttributeDataType: String
-          Mutable: false
+          Mutable: !If [IsSsoCompatiblePool, true, false]
           Required: true
       UsernameConfiguration:
         CaseSensitive: false
@@ -279,9 +332,10 @@ Resources:
       AccessTokenValidity: 1
       ClientName: !Sub "${AWS::StackName}-Client"
       EnableTokenRevocation: true
-      ExplicitAuthFlows:
-        - ALLOW_USER_SRP_AUTH
-        - ALLOW_REFRESH_TOKEN_AUTH
+      ExplicitAuthFlows: !If
+        - ShouldEnablePasswordSignIn
+        - [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+        - [ALLOW_REFRESH_TOKEN_AUTH]
       GenerateSecret: false  # pragma: allowlist secret
       IdTokenValidity: 1
       PreventUserExistenceErrors: ENABLED
@@ -290,8 +344,8 @@ Resources:
         - email_verified
         - preferred_username
       RefreshTokenValidity: 30
-      SupportedIdentityProviders:
-        - COGNITO
+      # AISTACK registers the CloudFront OIDC adapter after its endpoint exists.
+      SupportedIdentityProviders: [COGNITO]
       UserPoolId: !Ref UserPool
 
   IdentityPool:
@@ -379,6 +433,9 @@ Resources:
 
   AdminUser:
     Type: AWS::Cognito::UserPoolUser
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Condition: ShouldEnablePasswordSignIn
     DependsOn: CognitoUserPoolEmailDomainVerifyPermissionReady
     Properties:
       DesiredDeliveryMediums:
@@ -392,6 +449,7 @@ Resources:
   CognitoUserPoolEmailDomainVerifyPermissionReady:
     Type: AWS::CloudFormation::WaitConditionHandle
     Metadata:
+      FederatedGuardReady: !If [IsSsoCompatiblePool, !Ref FederatedSignInGuardPermission, "disabled"]
       SecondaryCIDRready:
         !If [
           ShouldAllowSignUpEmailDomain,
@@ -408,6 +466,9 @@ Resources:
 
   AdminUserToGroupAttachment:
     Type: AWS::Cognito::UserPoolUserToGroupAttachment
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Condition: ShouldEnablePasswordSignIn
     Properties:
       GroupName: !Ref AdminGroup
       Username: !Ref AdminUser
@@ -664,3 +725,125 @@ Resources:
       SourceAccount: !Ref AWS::AccountId
       SourceArn: !GetAtt UserPool.Arn
 
+
+  FederatedSignInGuardRole:
+    Type: AWS::IAM::Role
+    Condition: IsSsoCompatiblePool
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
+
+  # Separate policy breaks UserPool -> trigger -> role -> UserPool dependency.
+  FederatedSignInGuardAdminPolicy:
+    Type: AWS::IAM::Policy
+    Condition: IsSsoCompatiblePool
+    Properties:
+      PolicyName: GrantConfiguredGoogleAdmin
+      Roles: [!Ref FederatedSignInGuardRole]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: cognito-idp:AdminAddUserToGroup
+            Resource: !GetAtt UserPool.Arn
+
+  FederatedSignInGuardLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: IsSsoCompatiblePool
+    Properties:
+      LogGroupName: !Sub "/${AWS::StackName}/lambda/FederatedSignInGuard"
+      RetentionInDays: !Ref CloudWatchLogsExpirationInDays
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+
+  FederatedSignInGuard:
+    Type: AWS::Serverless::Function
+    Condition: IsSsoCompatiblePool
+    Properties:
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Timeout: 10
+      MemorySize: 128
+      Role: !GetAtt FederatedSignInGuardRole.Arn
+      Environment:
+        Variables:
+          ALLOWED_DOMAIN: !Ref FederatedEmailDomain
+          GOOGLE_ADMIN_EMAIL: !Ref GoogleAdminEmail
+          PASSWORD_SIGN_IN_ENABLED: !Ref PasswordSignInEnabled
+      LoggingConfig:
+        LogGroup: !Ref FederatedSignInGuardLogGroup
+      InlineCode: |
+        import json
+        import os
+        import boto3
+
+        cognito = boto3.client("cognito-idp")
+        ALLOWED_DOMAIN = os.environ["ALLOWED_DOMAIN"].strip().lower()
+        ADMIN_EMAIL = os.environ.get("GOOGLE_ADMIN_EMAIL", "").strip().lower()
+        SSO_ONLY = os.environ.get("PASSWORD_SIGN_IN_ENABLED", "true") != "true"
+
+
+        def verified_email(attributes):
+            email = attributes.get("email", "").strip().lower()
+            if (email.count("@") != 1 or not email.split("@")[0]
+                    or email.split("@")[1] != ALLOWED_DOMAIN
+                    or str(attributes.get("email_verified", "")).lower() != "true"):
+                raise ValueError("Use a verified company Google account to sign in.")
+            return email
+
+
+        def lambda_handler(event, context):
+            source = event.get("triggerSource", "")
+            attributes = event.get("request", {}).get("userAttributes", {})
+            if source == "PreSignUp_ExternalProvider":
+                if not event.get("userName", "").lower().startswith("googleworkspace_"):
+                    raise ValueError("Unsupported sign-in provider.")
+                verified_email(attributes)
+                return event
+            if source.startswith("PreSignUp_"):
+                # Admin invitations remain allowed; public password signup stays closed.
+                if source != "PreSignUp_AdminCreateUser":
+                    raise ValueError("Please use Google sign-in or an administrator invitation.")
+                return event
+            if source.startswith("TokenGeneration_"):
+                try:
+                    identities = json.loads(attributes.get("identities", "[]"))
+                except (ValueError, TypeError):
+                    raise ValueError("Invalid sign-in identity.") from None
+                is_google = any(i.get("providerName") == "GoogleWorkspace" for i in identities)
+                if not is_google:
+                    if SSO_ONLY:
+                        raise ValueError("Google sign-in is required.")
+                    return event
+                email = verified_email(attributes)
+                if ADMIN_EMAIL and email == ADMIN_EMAIL:
+                    # Explicit CFN bootstrap identity, never arbitrary email linking.
+                    cognito.admin_add_user_to_group(
+                        UserPoolId=event["userPoolId"], Username=event["userName"],
+                        GroupName="Admin")
+                    configuration = dict(event.get("request", {}).get("groupConfiguration") or {})
+                    groups = list(configuration.get("groupsToOverride") or [])
+                    if "Admin" not in groups:
+                        groups.append("Admin")
+                    configuration["groupsToOverride"] = groups
+                    event.setdefault("response", {}).setdefault("claimsOverrideDetails", {})[
+                        "groupOverrideDetails"] = configuration
+                return event
+            return event
+
+  FederatedSignInGuardPermission:
+    Type: AWS::Lambda::Permission
+    Condition: IsSsoCompatiblePool
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref FederatedSignInGuard
+      Principal: cognito-idp.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !GetAtt UserPool.Arn

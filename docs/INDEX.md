@@ -18,6 +18,7 @@ title: "LMA Documentation"
 
 - [Prerequisites & Deployment](prerequisites-and-deployment.md) — AWS account setup, Bedrock model access, CloudFormation deployment, initial login
 - [Quick Start Guide](quick-start-guide.md) — Your first meeting in 5 minutes using Stream Audio or Virtual Participant
+- [Google SSO](google-sso.md) — CloudFront OAuth callbacks, feature flags and staged rollout (local implementation; live validation pending)
 
 ### Core Features
 
@@ -88,5 +89,4 @@ title: "LMA Documentation"
 - [LMA CLI Reference](lma-cli.md) — Command-line interface for deploy, publish, status, logs, Virtual Participant, and the `lma load` plugin
 - [LMA SDK Reference](lma-sdk.md) — Python SDK for programmatic LMA operations (stack, publish, AppSync, Virtual Participant)
 - [LMA Load Simulator](../utilities/load-simulator/README.md) — Stress-test a deployed LMA stack (concurrent meetings, historical backfill, RBAC-at-scale, deterministic cleanup) — exposed as `lma load …` via the CLI plugin mechanism
-
 

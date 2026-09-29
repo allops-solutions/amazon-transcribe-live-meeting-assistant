@@ -282,5 +282,33 @@
   {
     "ParameterKey": "ZoomMeetingSdkClientSecret",
     "ParameterValue": "FILL_IN_FROM_SECRET_STORE"
+  },
+  {
+    "ParameterKey": "SsoPoolMode",
+    "ParameterValue": "LEGACY"
+  },
+  {
+    "ParameterKey": "EnableGoogleSso",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "GoogleOAuthClientId",
+    "ParameterValue": "946982280728-5ma8bt4h3ct1pihscgd8sa955puqlbae.apps.googleusercontent.com"
+  },
+  {
+    "ParameterKey": "GoogleOAuthClientSecret",
+    "ParameterValue": "FILL_IN_FROM_SECRET_STORE"
+  },
+  {
+    "ParameterKey": "FederatedEmailDomain",
+    "ParameterValue": "allops.co"
+  },
+  {
+    "ParameterKey": "GoogleAdminEmail",
+    "ParameterValue": "ismail.icanovic@allops.co"
+  },
+  {
+    "ParameterKey": "PasswordSignInEnabled",
+    "ParameterValue": "true"
   }
 ]

@@ -9,6 +9,36 @@ Transform: AWS::Serverless-2016-10-31
 Description: Amazon Transcribe Live Meeting Assist - LMA (v<VERSION_TOKEN>) (SO9497)
 
 Parameters:
+  SsoPoolMode:
+    Type: String
+    Default: LEGACY
+    AllowedValues: [LEGACY, PROVISION, ACTIVE]
+    Description: LEGACY keeps existing auth; PROVISION creates the new pool; ACTIVE switches LMA. Roll back to PROVISION to retain both pools.
+  EnableGoogleSso:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+  GoogleOAuthClientId:
+    Type: String
+    Default: ""
+  GoogleOAuthClientSecret:
+    Type: String
+    Default: ""
+    NoEcho: true
+  FederatedEmailDomain:
+    Type: String
+    Default: allops.co
+    AllowedPattern: '^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$'
+  GoogleAdminEmail:
+    Type: String
+    Default: ""
+    Description: Exact verified company Google account to bootstrap as Admin; empty grants no Google admin.
+  PasswordSignInEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Keep true in dev; false requires active Google SSO and blocks native token issuance.
+
   MeetingAssistService:
     Default: "STRANDS_BEDROCK"
     Type: String
@@ -1123,6 +1153,22 @@ Metadata:
         default: Enable Data Retention On Stack Deletion
 
 Rules:
+  GoogleSsoConfiguration:
+    RuleCondition: !Equals [!Ref EnableGoogleSso, "true"]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref SsoPoolMode, LEGACY]]
+        AssertDescription: Provision the new SSO pool before enabling Google.
+      - Assert: !Not [!Equals [!Ref GoogleOAuthClientId, ""]]
+        AssertDescription: Google client ID is required.
+      - Assert: !Not [!Equals [!Ref GoogleOAuthClientSecret, ""]]
+        AssertDescription: Google client secret is required.
+  SsoOnlyConfiguration:
+    RuleCondition: !Equals [!Ref PasswordSignInEnabled, "false"]
+    Assertions:
+      - Assert: !And [!Equals [!Ref SsoPoolMode, ACTIVE], !Equals [!Ref EnableGoogleSso, "true"]]
+        AssertDescription: Password sign-in can be disabled only with active Google SSO.
+      - Assert: !Not [!Equals [!Ref GoogleAdminEmail, ""]]
+        AssertDescription: Configure the Google administrator before disabling password login.
   # check required parameters
   StrandsBedrockKBUseExisting:
     RuleCondition:
@@ -1171,6 +1217,9 @@ Mappings:
       MaxOpenSegmentMs: "20000"
 
 Conditions:
+  ShouldProvisionSsoPool: !Not [!Equals [!Ref SsoPoolMode, LEGACY]]
+  ShouldUseSsoPool: !Equals [!Ref SsoPoolMode, ACTIVE]
+  ShouldUseGoogleSso: !And [!Equals [!Ref SsoPoolMode, ACTIVE], !Equals [!Ref EnableGoogleSso, "true"]]
   ShouldRetainDataOnDelete: !Equals [!Ref EnableDataRetentionOnDelete, "true"]
   ShouldDeleteDataOnDelete: !Equals [!Ref EnableDataRetentionOnDelete, "false"]
   ShouldCreateRecordingBucket: !Equals ["", ""]
@@ -2530,6 +2579,39 @@ Resources:
         LMAVersion: "<VERSION_TOKEN>"
         BuildDateTime: "<BUILD_DATE_TIME_TOKEN>"
 
+  SSOCOGNITOSTACK:
+    Condition: ShouldProvisionSsoPool
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - IsStacknameLengthOK
+      - ValidateParameters
+    Properties:
+      # yamllint disable rule:line-length
+      TemplateURL: https://s3.<REGION_TOKEN>.amazonaws.com/<ARTIFACT_BUCKET_TOKEN>/<ARTIFACT_PREFIX_TOKEN>/lma-cognito-stack/template.yaml
+      # yamllint enable rule:line-length
+      Parameters:
+        LMAStackName: !Ref AWS::StackName
+        S3BucketName: !If
+          - ShouldCreateRecordingBucket
+          - !Ref RecordingsBucket
+          - ""
+        AdminEmail: !Ref AdminEmail
+        AllowedSignUpEmailDomain: ""
+        SsoCompatiblePool: "true"
+        EnableGoogleSso: !Ref EnableGoogleSso
+        GoogleOAuthClientId: !Ref GoogleOAuthClientId
+        GoogleOAuthClientSecret: !Ref GoogleOAuthClientSecret
+        FederatedEmailDomain: !Ref FederatedEmailDomain
+        GoogleAdminEmail: !Ref GoogleAdminEmail
+        PasswordSignInEnabled: !Ref PasswordSignInEnabled
+        LMASettingsParameterName: !Ref LMASettingsParameter
+        CloudWatchLogsExpirationInDays: !Ref CloudWatchLogsExpirationInDays
+        CustomerManagedEncryptionKeyArn: !GetAtt CustomerManagedEncryptionKey.Arn
+        LMAVersion: "<VERSION_TOKEN>"
+        BuildDateTime: "<BUILD_DATE_TIME_TOKEN>"
+
   AISTACK:
     Type: AWS::CloudFormation::Stack
     DependsOn:
@@ -2587,9 +2669,9 @@ Resources:
         LMASettingsParameterName: !Ref LMASettingsParameter
         EnableAppSyncApiCache: !Ref EnableAppSyncApiCache
         AppSyncApiCacheInstanceType: !Ref AppSyncApiCacheInstanceType
-        UserPoolId: !GetAtt COGNITOSTACK.Outputs.UserPoolId
-        CognitoClientId: !GetAtt COGNITOSTACK.Outputs.CognitoClientId
-        AppIdentityPoolId: !GetAtt COGNITOSTACK.Outputs.AppIdentityPoolId
+        UserPoolId: !If [ShouldUseSsoPool, !GetAtt SSOCOGNITOSTACK.Outputs.UserPoolId, !GetAtt COGNITOSTACK.Outputs.UserPoolId]
+        CognitoClientId: !If [ShouldUseSsoPool, !GetAtt SSOCOGNITOSTACK.Outputs.CognitoClientId, !GetAtt COGNITOSTACK.Outputs.CognitoClientId]
+        AppIdentityPoolId: !If [ShouldUseSsoPool, !GetAtt SSOCOGNITOSTACK.Outputs.AppIdentityPoolId, !GetAtt COGNITOSTACK.Outputs.AppIdentityPoolId]
         UpdateLMASettingsFunctionArn: !GetAtt UpdateLMASettingsFunction.Arn
         CustomerManagedEncryptionKeyArn: !GetAtt CustomerManagedEncryptionKey.Arn
         LoggingBucketName: !Ref LoggingBucket
@@ -2618,7 +2700,11 @@ Resources:
           - ""
         EnableMCPServer: !Ref EnableMCP
         MCPServerCallbackURLs: !Ref MCPServerCallbackURLs
-        CognitoUserPoolDomain: !GetAtt COGNITOSTACK.Outputs.CognitoUserPoolDomain
+        EnableGoogleSso: !If [ShouldUseGoogleSso, "true", "false"]
+        GoogleOAuthClientId: !Ref GoogleOAuthClientId
+        GoogleOAuthClientSecret: !Ref GoogleOAuthClientSecret
+        PasswordSignInEnabled: !If [ShouldUseSsoPool, !Ref PasswordSignInEnabled, "true"]
+        CognitoUserPoolDomain: !If [ShouldUseSsoPool, !GetAtt SSOCOGNITOSTACK.Outputs.CognitoUserPoolDomain, !GetAtt COGNITOSTACK.Outputs.CognitoUserPoolDomain]
         VoiceAssistantActivationMode: !Ref VoiceAssistantActivationMode
         LogLevel: !Ref LogLevel
 
@@ -2661,7 +2747,7 @@ Resources:
       Parameters:
         LMAStackName: !Ref AWS::StackName
         AISTACK: !Ref AISTACK
-        COGNITOSTACK: !Ref COGNITOSTACK
+        COGNITOSTACK: !If [ShouldUseSsoPool, !Ref SSOCOGNITOSTACK, !Ref COGNITOSTACK]
         MeetingAssistService: !Ref MeetingAssistService
         BedrockKnowledgeBaseId: !If
           - ShouldUseStrandsBedrockWithKBExisting
@@ -2755,7 +2841,7 @@ Resources:
           - !Ref RecordingsBucket
           - ""
         AudioFilePrefix: "lma-audio-recordings/"
-        UserPoolId: !GetAtt COGNITOSTACK.Outputs.UserPoolId
+        UserPoolId: !If [ShouldUseSsoPool, !GetAtt SSOCOGNITOSTACK.Outputs.UserPoolId, !GetAtt COGNITOSTACK.Outputs.UserPoolId]
         CallDataStreamName: !Ref CallDataStream
         CallDataStreamArn: !GetAtt CallDataStream.Arn
         CloudFrontPriceClass: !Ref CloudFrontPriceClass
@@ -2951,8 +3037,8 @@ Resources:
       Parameters:
         LMAStackName: !Ref AWS::StackName
         WebSocketEndpoint: !GetAtt WEBSOCKETTRANSCRIBERSTACK.Outputs.WebSocketEndpoint
-        CognitoClientId: !GetAtt COGNITOSTACK.Outputs.CognitoClientId
-        CognitoLoginUrl: !GetAtt COGNITOSTACK.Outputs.CognitoLoginUrl
+        CognitoClientId: !If [ShouldUseSsoPool, !GetAtt SSOCOGNITOSTACK.Outputs.CognitoClientId, !GetAtt COGNITOSTACK.Outputs.CognitoClientId]
+        CognitoLoginUrl: !If [ShouldUseSsoPool, !GetAtt SSOCOGNITOSTACK.Outputs.CognitoLoginUrl, !GetAtt COGNITOSTACK.Outputs.CognitoLoginUrl]
         CloudfrontEndpoint: !GetAtt AISTACK.Outputs.CloudfrontEndpoint
         WebAppCloudFrontDistribution: !GetAtt AISTACK.Outputs.CloudFrontDistributionId
         WebAppBucket: !GetAtt AISTACK.Outputs.WebAppBucket
@@ -2969,8 +3055,8 @@ Resources:
       Parameters:
         LMAStackName: !Ref AWS::StackName
         WebSocketEndpoint: !GetAtt WEBSOCKETTRANSCRIBERSTACK.Outputs.WebSocketEndpoint
-        CognitoUserPoolId: !GetAtt COGNITOSTACK.Outputs.UserPoolId
-        CognitoClientId: !GetAtt COGNITOSTACK.Outputs.CognitoClientId
+        CognitoUserPoolId: !If [ShouldUseSsoPool, !GetAtt SSOCOGNITOSTACK.Outputs.UserPoolId, !GetAtt COGNITOSTACK.Outputs.UserPoolId]
+        CognitoClientId: !If [ShouldUseSsoPool, !GetAtt SSOCOGNITOSTACK.Outputs.CognitoClientId, !GetAtt COGNITOSTACK.Outputs.CognitoClientId]
         Region: !Ref AWS::Region
         CloudfrontEndpoint: !GetAtt AISTACK.Outputs.CloudfrontEndpoint
         WebAppCloudFrontDistribution: !GetAtt AISTACK.Outputs.CloudFrontDistributionId
@@ -3061,11 +3147,13 @@ Outputs:
 
   CognitoUserPoolTokenIssuerUrl:
     Description: Cognito User Pool Token Issuer URL
-    Value: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${COGNITOSTACK.Outputs.UserPoolId}
+    Value: !Sub
+      - "https://cognito-idp.${AWS::Region}.amazonaws.com/${ActivePoolId}"
+      - ActivePoolId: !If [ShouldUseSsoPool, !GetAtt SSOCOGNITOSTACK.Outputs.UserPoolId, !GetAtt COGNITOSTACK.Outputs.UserPoolId]
 
   CognitoUserPoolClientId:
     Description: Cognito User Pool Client Id
-    Value: !GetAtt COGNITOSTACK.Outputs.CognitoClientId
+    Value: !If [ShouldUseSsoPool, !GetAtt SSOCOGNITOSTACK.Outputs.CognitoClientId, !GetAtt COGNITOSTACK.Outputs.CognitoClientId]
 
   LocalUITestingEnv:
     Description: Copy to create .env file for local UI testing
@@ -3122,3 +3210,11 @@ Outputs:
       Users generate personal API keys in the LMA UI settings and pass them via x-api-key header.
     Value: !GetAtt AISTACK.Outputs.MCPServerApiKeyEndpoint
 
+
+  ActiveCognitoLoginUrl:
+    Description: Active Cognito domain; use this domain in the Google OAuth client.
+    Value: !If [ShouldUseSsoPool, !GetAtt SSOCOGNITOSTACK.Outputs.CognitoLoginUrl, !GetAtt COGNITOSTACK.Outputs.CognitoLoginUrl]
+  ProvisionedSsoCognitoLoginUrl:
+    Condition: ShouldProvisionSsoPool
+    Description: Configure Google origin and /oauth2/idpresponse on this domain before ACTIVE.
+    Value: !GetAtt SSOCOGNITOSTACK.Outputs.CognitoLoginUrl

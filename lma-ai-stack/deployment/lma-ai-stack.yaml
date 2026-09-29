@@ -9,6 +9,23 @@ Transform: AWS::Serverless-2016-10-31
 Description: Amazon Transcribe Live Meeting Assist - AI Stack
 
 Parameters:
+  GoogleOAuthClientId:
+    Type: String
+    Default: ""
+  GoogleOAuthClientSecret:
+    Type: String
+    Default: ""
+    NoEcho: true
+
+  EnableGoogleSso:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+  PasswordSignInEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+
   # Required
   LMAStackName:
     Type: String
@@ -666,6 +683,8 @@ Metadata:
           Transcript Summary is processed (existing)
 
 Conditions:
+  ShouldEnableGoogleSso: !Equals [!Ref EnableGoogleSso, "true"]
+  ShouldEnablePasswordSignIn: !Equals [!Ref PasswordSignInEnabled, "true"]
   ShouldRetainDataOnDelete: !Equals [!Ref EnableDataRetentionOnDelete, "true"]
   ShouldDeleteDataOnDelete: !Equals [!Ref EnableDataRetentionOnDelete, "false"]
   HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
@@ -762,6 +781,10 @@ Outputs:
         VITE_IDENTITY_POOL_ID=${AppIdentityPoolId}
         VITE_APPSYNC_GRAPHQL_URL=${AppSyncApiEncrypted.GraphQLUrl}
         VITE_AWS_REGION=${AWS::Region}
+        VITE_GOOGLE_SSO_ENABLED=${EnableGoogleSso}
+        VITE_PASSWORD_SIGN_IN_ENABLED=${PasswordSignInEnabled}
+        VITE_COGNITO_DOMAIN=${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com
+        VITE_CLOUDFRONT_DOMAIN=https://${WebAppCloudFrontDistribution.DomainName}/
         VITE_SETTINGS_PARAMETER=${LMASettingsParameterName}
         VITE_ENABLE_MCP_SERVER=${EnableMCPServer}
         VITE_MCP_SERVER_ENDPOINT=${McpServerEndpointValue}
@@ -1272,6 +1295,12 @@ Resources:
             # See: https://vite.dev/guide/env-and-mode
           - Name: VITE_SETTINGS_PARAMETER
             Value: !Ref LMASettingsParameterName
+          - Name: VITE_GOOGLE_SSO_ENABLED
+            Value: !Ref EnableGoogleSso
+          - Name: VITE_PASSWORD_SIGN_IN_ENABLED
+            Value: !Ref PasswordSignInEnabled
+          - Name: VITE_COGNITO_DOMAIN
+            Value: !Sub "${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com"
           - Name: VITE_USER_POOL_ID
             Value: !Ref UserPoolId
           - Name: VITE_USER_POOL_CLIENT_ID
@@ -1600,6 +1629,7 @@ Resources:
                   - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*"
 
   CodeBuildRun:
+    DependsOn: CognitoWebCallbackReady
     Type: Custom::CodeBuildRun
     Properties:
       ServiceToken: !GetAtt LambdaCodeBuildStartBuild.Arn
@@ -1608,6 +1638,7 @@ Resources:
       IsSentimentAnalysisEnabled: !Ref IsSentimentAnalysisEnabled
       LMASettingsParameterName: !Ref LMASettingsParameterName
       VoiceAssistantActivationMode: !Ref VoiceAssistantActivationMode
+      AuthConfiguration: !Sub "${UserPoolId}:${CognitoClientId}:${EnableGoogleSso}:${PasswordSignInEnabled}:${CognitoUserPoolDomain}"
       # Makefile calculates and substitute code hash in the filename here during package build
       # to force codebuild to rerun when source code changes, and to correctly roll back to
       # previous version if build fails.
@@ -6990,13 +7021,17 @@ Resources:
   MCPServerExternalAppClient:
     Type: AWS::Cognito::UserPoolClient
     Condition: ShouldEnableMCPServer
+    DependsOn: CognitoWebCallbackReady
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       ClientName: "LMA-MCPServer-ExternalApp-Client"
       UserPoolId: !Ref UserPoolId
       GenerateSecret: true  # pragma: allowlist secret
-      ExplicitAuthFlows:
-        - ALLOW_USER_PASSWORD_AUTH
-        - ALLOW_REFRESH_TOKEN_AUTH
+      ExplicitAuthFlows: !If
+        - ShouldEnablePasswordSignIn
+        - [ALLOW_USER_PASSWORD_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+        - [ALLOW_REFRESH_TOKEN_AUTH]
       AllowedOAuthFlows:
         - code
       AllowedOAuthFlowsUserPoolClient: true
@@ -7010,8 +7045,10 @@ Resources:
         - - !Sub "https://${WebAppCloudFrontDistribution.DomainName}/#/oauth/callback"
       LogoutURLs:
         - !Sub "https://${WebAppCloudFrontDistribution.DomainName}/"
-      SupportedIdentityProviders:
-        - COGNITO
+      SupportedIdentityProviders: !If
+        - ShouldEnableGoogleSso
+        - !If [ShouldEnablePasswordSignIn, [COGNITO, GoogleWorkspace], [GoogleWorkspace]]
+        - [COGNITO]
 
   # MCP Server Gateway Execution Role
   MCPServerGatewayExecutionRole:
@@ -8211,42 +8248,52 @@ Resources:
         # MicroVM's own HTTPS endpoint, so both are omitted -- CloudFormation
         # rejects a distribution whose origin references an ALB that the
         # ShouldCreateVNCALB condition did not create.
-        Origins: !If
-          - ShouldCreateVNCALB
-          - - Id: webapp-s3-bucket
-              DomainName: !GetAtt WebAppBucket.RegionalDomainName
-              S3OriginConfig:
-                OriginAccessIdentity: !Sub "origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}"
+        Origins:
+          - Id: webapp-s3-bucket
+            DomainName: !GetAtt WebAppBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub "origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}"
+          - !If
+            - ShouldCreateVNCALB
             - Id: vnc-alb
               DomainName: !GetAtt VNCALB.DNSName
               CustomOriginConfig:
                 HTTPPort: 80
                 HTTPSPort: 443
                 OriginProtocolPolicy: http-only
-          - - Id: webapp-s3-bucket
-              DomainName: !GetAtt WebAppBucket.RegionalDomainName
-              S3OriginConfig:
-                OriginAccessIdentity: !Sub "origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}"
-        CacheBehaviors: !If
-          - ShouldCreateVNCALB
-          - - PathPattern: /vnc/*
+            - !Ref AWS::NoValue
+          - !If
+            - ShouldEnableGoogleSso
+            - Id: google-oauth-bridge
+              DomainName: !Select [2, !Split ["/", !GetAtt GoogleOAuthBridgeApi.ApiEndpoint]]
+              CustomOriginConfig:
+                HTTPSPort: 443
+                OriginProtocolPolicy: https-only
+                OriginSSLProtocols: [TLSv1.2]
+            - !Ref AWS::NoValue
+        CacheBehaviors:
+          - !If
+            - ShouldEnableGoogleSso
+            - PathPattern: /oauth2/*
+              TargetOriginId: google-oauth-bridge
+              ViewerProtocolPolicy: https-only
+              AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+              CachedMethods: [GET, HEAD]
+              # AWS managed CachingDisabled / AllViewerExceptHostHeader policies.
+              CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+              OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+              Compress: false
+            - !Ref AWS::NoValue
+          - !If
+            - ShouldCreateVNCALB
+            - PathPattern: /vnc/*
               TargetOriginId: vnc-alb
               ViewerProtocolPolicy: https-only
-              AllowedMethods:
-                - GET
-                - HEAD
-                - OPTIONS
-                - PUT
-                - POST
-                - PATCH
-                - DELETE
-              CachedMethods:
-                - GET
-                - HEAD
+              AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+              CachedMethods: [GET, HEAD]
               ForwardedValues:
                 QueryString: true
-                Headers:
-                  - "*"
+                Headers: ["*"]
                 Cookies:
                   Forward: all
               Compress: false
@@ -8256,7 +8303,7 @@ Resources:
               LambdaFunctionAssociations:
                 - EventType: viewer-request
                   LambdaFunctionARN: !GetAtt EdgeAuthFunction.FunctionArn
-          - !Ref AWS::NoValue
+            - !Ref AWS::NoValue
         PriceClass: !Ref CloudFrontPriceClass
         Restrictions: !If
           - ShouldEnableGeoRestriction
@@ -8272,3 +8319,200 @@ Resources:
             reason:
               This is using Cloudfront default TLS, can be changed by customer
               if needed.
+
+  CognitoWebCallbackRole:
+    Type: AWS::IAM::Role
+    Condition: ShouldEnableGoogleSso
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
+      Policies:
+        - PolicyName: RegisterWebCallback
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cognito-idp:DescribeUserPoolClient
+                  - cognito-idp:UpdateUserPoolClient
+                Resource: !Sub "arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${UserPoolId}"
+
+  CognitoWebCallbackLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: ShouldEnableGoogleSso
+    Properties:
+      LogGroupName: !Sub "/${AWS::StackName}/lambda/CognitoWebCallback"
+      RetentionInDays: !Ref CloudWatchLogsExpirationInDays
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+
+  CognitoWebCallbackFunction:
+    Type: AWS::Serverless::Function
+    Condition: ShouldEnableGoogleSso
+    Properties:
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Timeout: 30
+      MemorySize: 128
+      Role: !GetAtt CognitoWebCallbackRole.Arn
+      LoggingConfig:
+        LogGroup: !Ref CognitoWebCallbackLogGroup
+      InlineCode: |
+        import boto3
+        import cfnresponse
+
+        cognito = boto3.client("cognito-idp")
+
+
+        def lambda_handler(event, context):
+            props = event["ResourceProperties"]
+            physical_id = props["UserPoolId"] + ":" + props["ClientId"] + ":web-callback"
+            try:
+                if event["RequestType"] == "Delete":
+                    try:
+                        current = cognito.describe_user_pool_client(
+                            UserPoolId=props["UserPoolId"], ClientId=props["ClientId"])["UserPoolClient"]
+                        allowed = cognito.meta.service_model.operation_model(
+                            "UpdateUserPoolClient").input_shape.members
+                        update = {key: value for key, value in current.items() if key in allowed}
+                        update.update(UserPoolId=props["UserPoolId"], ClientId=props["ClientId"])
+                        providers = [p for p in current.get("SupportedIdentityProviders", [])
+                                     if p != props["ProviderName"]]
+                        update["SupportedIdentityProviders"] = providers or ["COGNITO"]
+                        # Keep callbacks for recovery; detach provider before CFN deletes it.
+                        cognito.update_user_pool_client(**update)
+                    except cognito.exceptions.ResourceNotFoundException:
+                        pass
+                else:
+                    pool_id, client_id = props["UserPoolId"], props["ClientId"]
+                    current = cognito.describe_user_pool_client(
+                        UserPoolId=pool_id, ClientId=client_id)["UserPoolClient"]
+                    allowed = cognito.meta.service_model.operation_model(
+                        "UpdateUserPoolClient").input_shape.members
+                    update = {key: value for key, value in current.items() if key in allowed}
+                    update.update(UserPoolId=pool_id, ClientId=client_id)
+                    providers = [props["ProviderName"]]
+                    if props["PasswordSignInEnabled"] == "true":
+                        providers.insert(0, "COGNITO")
+                    update["SupportedIdentityProviders"] = providers
+                    previous = event.get("OldResourceProperties", {})
+                    for field in ("CallbackURLs", "LogoutURLs"):
+                        values = list(current.get(field, []))
+                        old_url = previous.get("WebUrl")
+                        if old_url and old_url != props["WebUrl"]:
+                            values = [v for v in values if v != old_url]
+                        if props["WebUrl"] not in values:
+                            values.append(props["WebUrl"])
+                        update[field] = values
+                    cognito.update_user_pool_client(**update)
+                cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, physical_id)
+            except Exception:
+                # Never expose describe-client data or credentials through CFN logs.
+                cfnresponse.send(event, context, cfnresponse.FAILED, {}, physical_id,
+                                 reason="Could not register the LMA web callback.")
+
+  CognitoWebCallback:
+    Type: Custom::CognitoWebCallback
+    Condition: ShouldEnableGoogleSso
+    Properties:
+      ServiceToken: !GetAtt CognitoWebCallbackFunction.Arn
+      UserPoolId: !Ref UserPoolId
+      ClientId: !Ref CognitoClientId
+      WebUrl: !Sub "https://${WebAppCloudFrontDistribution.DomainName}/"
+      # Reapply after CFN updates the provider/auth-flow settings on this client.
+      AuthPolicy: !Sub "${EnableGoogleSso}:${PasswordSignInEnabled}:${BootstrapVersion}"
+      BuildDateTime: "<BUILD_DATE_TIME>"
+      ProviderName: !Ref GoogleWorkspaceIdentityProvider
+      PasswordSignInEnabled: !Ref PasswordSignInEnabled
+
+  # Unconditional barrier allows disabled mode to build without an absent dependency.
+  CognitoWebCallbackReady:
+    Type: AWS::CloudFormation::WaitConditionHandle
+    Metadata:
+      CallbackReady: !If [ShouldEnableGoogleSso, !Ref CognitoWebCallback, "disabled"]
+
+  GoogleOAuthBridgeApi:
+    Type: AWS::Serverless::HttpApi
+    Condition: ShouldEnableGoogleSso
+    Properties:
+      StageName: $default
+
+  GoogleOAuthBridgeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: ShouldEnableGoogleSso
+    Properties:
+      LogGroupName: !Sub "/${AWS::StackName}/lambda/GoogleOAuthBridge"
+      RetentionInDays: !Ref CloudWatchLogsExpirationInDays
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+
+  GoogleOAuthBridge:
+    Type: AWS::Serverless::Function
+    Condition: ShouldEnableGoogleSso
+    Properties:
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      CodeUri: ../source/lambda_functions/google_oauth_bridge/
+      Timeout: 30
+      MemorySize: 128
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
+      LoggingConfig:
+        LogGroup: !Ref GoogleOAuthBridgeLogGroup
+      Environment:
+        Variables:
+          LMA_SETTINGS_PARAMETER: !Ref LMASettingsParameterName
+          COGNITO_LOGIN_URL: !Sub "https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com"
+          GOOGLE_CLIENT_ID: !Ref GoogleOAuthClientId
+          GOOGLE_CLIENT_SECRET: !Ref GoogleOAuthClientSecret
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${LMASettingsParameterName}"
+      Events:
+        Authorize:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref GoogleOAuthBridgeApi
+            Path: /oauth2/google/authorize
+            Method: GET
+        Callback:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref GoogleOAuthBridgeApi
+            Path: /oauth2/idpresponse
+            Method: GET
+        Token:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref GoogleOAuthBridgeApi
+            Path: /oauth2/google/token
+            Method: POST
+
+  GoogleWorkspaceIdentityProvider:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    Condition: ShouldEnableGoogleSso
+    Properties:
+      UserPoolId: !Ref UserPoolId
+      ProviderName: GoogleWorkspace
+      ProviderType: OIDC
+      ProviderDetails:
+        client_id: !Ref GoogleOAuthClientId
+        client_secret: !Ref GoogleOAuthClientSecret
+        oidc_issuer: https://accounts.google.com
+        authorize_scopes: "openid email profile"
+        attributes_request_method: GET
+        authorize_url: !Sub "https://${WebAppCloudFrontDistribution.DomainName}/oauth2/google/authorize"
+        token_url: !Sub "https://${WebAppCloudFrontDistribution.DomainName}/oauth2/google/token"
+        attributes_url: https://openidconnect.googleapis.com/v1/userinfo
+        jwks_uri: https://www.googleapis.com/oauth2/v3/certs
+      AttributeMapping:
+        email: email
+        email_verified: email_verified
