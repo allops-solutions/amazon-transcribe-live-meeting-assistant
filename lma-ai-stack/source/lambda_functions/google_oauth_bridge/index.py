@@ -59,9 +59,10 @@ def lambda_handler(event, context):
             if (params.get("client_id") != client_id
                     or params.get("redirect_uri") != cognito_callback
                     or params.get("response_type") != "code"
-                    or not params.get("state") or not params.get("nonce")):
+                    or not params.get("state")):
                 return response(400, "Invalid authorization request")
-            # Preserve Cognito's state, nonce, scopes and PKCE parameters.
+            # Cognito's upstream code-flow request can omit nonce. Preserve
+            # state and any nonce/PKCE values it supplies; never invent them.
             params["redirect_uri"] = redirect_uri
             return response(302, headers={
                 "Location": "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)

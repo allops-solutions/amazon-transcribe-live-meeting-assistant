@@ -1,7 +1,10 @@
 # Google SSO with CloudFront callbacks
 
-Local implementation, 2026-09-29. Not deployed or live-tested. Ahmed controls
-publishing and CloudFormation updates; agent AWS access remains read-only.
+Initial implementation deployed by Ahmed on 2026-09-29. Agent AWS access remains
+read-only. Google sign-in currently fails at the authorization adapter because
+the deployed handler requires nonce, which Cognito omits from its upstream
+authorization-code request. A local correction preserves nonce when supplied
+without requiring it; deployment and complete Google sign-in validation are pending.
 
 ## Google client configuration
 
@@ -75,8 +78,12 @@ turning passwords back on can require reconciling/importing these retained CFN
 resources before an update; do not treat that as an unreviewed one-click rollback.
 The PROVISION rollback below is intended for the dev test with passwords enabled.
 
-New identities have new Cognito sub IDs. Users must sign in again; old passwords
-do not transfer. Historical meetings remain in existing storage and are visible
+New identities have new Cognito sub IDs. ACTIVE removes old credentials as a way
+to sign in to the application: the original users remain in the legacy pool,
+but the application authenticates only against the selected new pool. The native
+administrator invitation is a separate new account, not a migration of the old
+administrator. Users must sign in again; old passwords do not transfer.
+Historical meetings remain in existing storage and are visible
 under current company-wide RBAC, but old VP ownership/user-specific settings do
 not automatically transfer. Existing MCP client consumers must use the newly
 selected client credentials when the pool changes. Old MCP client is retained.
@@ -85,23 +92,24 @@ selected client credentials when the pool changes. Old MCP client is retained.
 
 1. Preserve your existing untracked deployment parameter file and its current
    values; do not replace it wholesale with the redacted committed example.
-2. Add the seven SSO parameters from `deploy/params/dev.json` to that local file.
-   Enter the Google secret as `GoogleOAuthClientSecret` in an untracked
-   `*.local.json` file using your editor. Do not paste it into chat or shell
-   history. Check `git check-ignore <local-file>` before entering secrets.
+2. Ahmed selected AWS console parameter entry for the secret. Enter the actual
+   `GoogleOAuthClientSecret` while creating the CloudFormation change set;
+   do not put it in chat, shell history, or committed files. Local JSON secret
+   entry is optional, not required for this workflow.
 3. Keep secrets out of staged files. `NoEcho` masks the CloudFormation parameter
    but is not a substitute for restricting access to deployment files and Lambda
    configuration. Google client ID is public, not a secret.
-4. First rollout: `SsoPoolMode=PROVISION`, `EnableGoogleSso=false`,
-   `PasswordSignInEnabled=true`. Keep every other deployed setting unchanged.
+4. A single rollout may set `SsoPoolMode=ACTIVE`, `EnableGoogleSso=true`,
+   `PasswordSignInEnabled=true`, with valid credentials and administrator email.
+   Keep every other deployed setting unchanged. A separate PROVISION step is
+   optional; Ahmed chose the single update. ACTIVE switches away from old logins.
 5. Stage the new source files before `lma publish`; its source bundle uses
    `git ls-files`. Review git diff, commit/publish yourself.
 6. Create and inspect a change set including nested stacks before execution.
    Confirm no existing user pool or meeting-storage resource is removed or
    replaced, and arrange backups of important transcripts before proceeding.
-7. After the provision stage succeeds, test rollout is `ACTIVE`, Google `true`,
-   passwords `true`, with the client ID, real secret and intended admin email.
-   Review this second change set, including MCP client changes, before execution.
+7. Test Google login after the update. Keeping passwords enabled provides access
+   only to native users created/invited into the new pool, not to legacy accounts.
 
 For rollback after provisioning, use `PROVISION` with Google `false` and
 passwords `true`: application authentication returns to the legacy pool while

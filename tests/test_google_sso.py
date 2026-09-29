@@ -101,9 +101,23 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(params[key], [value])
         self.assertEqual(result["headers"]["Cache-Control"], "no-store")
 
-    def test_authorize_rejects_alternate_client_redirect_and_missing_nonce(self):
+    def test_authorize_accepts_actual_cognito_request_without_nonce(self):
+        # Captured upstream shape: Cognito sends state but no nonce or PKCE.
+        event = self.event("/oauth2/google/authorize", params={
+            "client_id": "test-client", "redirect_uri": self.callback,
+            "response_type": "code", "state": "cognito-state",
+            "scope": "openid email profile",
+        })
+        result = self.bridge.lambda_handler(event, None)
+        self.assertEqual(result["statusCode"], 302)
+        params = parse_qs(urlsplit(result["headers"]["Location"]).query)
+        self.assertEqual(params["state"], ["cognito-state"])
+        self.assertEqual(params["redirect_uri"], [self.web_callback])
+        self.assertNotIn("nonce", params)
+
+    def test_authorize_rejects_alternate_client_redirect_and_missing_state(self):
         for changes in ({"client_id": "other"}, {"redirect_uri": "https://evil.test"},
-                        {"nonce": ""}, {"state": ""}, {"response_type": "token"}):
+                        {"state": ""}, {"response_type": "token"}):
             with self.subTest(changes=changes):
                 self.assertEqual(self.authorize(**changes)["statusCode"], 400)
 
