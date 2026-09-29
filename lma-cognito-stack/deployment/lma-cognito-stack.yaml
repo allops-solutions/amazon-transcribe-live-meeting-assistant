@@ -833,8 +833,13 @@ Resources:
                     if "Admin" not in groups:
                         groups.append("Admin")
                     configuration["groupsToOverride"] = groups
-                    event.setdefault("response", {}).setdefault("claimsOverrideDetails", {})[
-                        "groupOverrideDetails"] = configuration
+                    # Cognito can supply an explicit null, which setdefault
+                    # does not replace. Preserve any existing claim overrides.
+                    response = event.get("response") or {}
+                    overrides = response.get("claimsOverrideDetails") or {}
+                    overrides["groupOverrideDetails"] = configuration
+                    response["claimsOverrideDetails"] = overrides
+                    event["response"] = response
                 return event
             return event
 

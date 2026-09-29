@@ -238,6 +238,29 @@ class GuardTests(unittest.TestCase):
         self.guard(self.event(source="TokenGeneration_HostedAuth"), None)
         self.client.admin_add_user_to_group.assert_not_called()
 
+    def test_admin_bootstrap_handles_cognito_null_response_fields(self):
+        for response in (None, {"claimsOverrideDetails": None}):
+            with self.subTest(response=response):
+                event = self.event(source="TokenGeneration_HostedAuth", email="admin@allops.co")
+                event["response"] = response
+                event["request"]["groupConfiguration"] = None
+                result = self.guard(event, None)
+                self.assertEqual(result["response"]["claimsOverrideDetails"][
+                    "groupOverrideDetails"]["groupsToOverride"], ["Admin"])
+
+    def test_admin_bootstrap_preserves_claims_and_role_overrides(self):
+        event = self.event(source="TokenGeneration_RefreshTokens", email="admin@allops.co")
+        event["response"] = {"claimsOverrideDetails": {
+            "claimsToAddOrOverride": {"custom:example": "keep"}, "claimsToSuppress": ["nickname"]}}
+        event["request"]["groupConfiguration"] = {
+            "groupsToOverride": ["Admin", "Existing"], "iamRolesToOverride": ["role"],
+            "preferredRole": "role"}
+        result = self.guard(event, None)
+        overrides = result["response"]["claimsOverrideDetails"]
+        self.assertEqual(overrides["claimsToAddOrOverride"], {"custom:example": "keep"})
+        self.assertEqual(overrides["claimsToSuppress"], ["nickname"])
+        self.assertEqual(overrides["groupOverrideDetails"], event["request"]["groupConfiguration"])
+
     def test_domain_check_also_applies_on_refresh(self):
         with self.assertRaises(ValueError):
             self.guard(self.event(source="TokenGeneration_RefreshTokens", email="user@gmail.com"), None)

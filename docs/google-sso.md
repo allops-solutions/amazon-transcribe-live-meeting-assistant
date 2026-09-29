@@ -1,10 +1,14 @@
 # Google SSO with CloudFront callbacks
 
 Initial implementation deployed by Ahmed on 2026-09-29. Agent AWS access remains
-read-only. Google sign-in currently fails at the authorization adapter because
-the deployed handler requires nonce, which Cognito omits from its upstream
-authorization-code request. A local correction preserves nonce when supplied
-without requiring it; deployment and complete Google sign-in validation are pending.
+read-only. The nonce correction has been deployed and Google authentication now
+reaches Cognito. The browser token exchange fails because the admin bootstrap
+guard assumes `claimsOverrideDetails` is a dictionary, but Cognito supplies null.
+A local correction handles null while preserving existing claim and role overrides.
+The UI also now configures Amplify once before App dependencies are evaluated,
+rather than in a React effect. Both corrections await publish and stack update;
+complete Google sign-in validation is still pending. These changes do not replace
+user pools or delete users or transcripts.
 
 ## Google client configuration
 
