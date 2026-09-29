@@ -6,7 +6,7 @@
 """
 MCP Analytics Lambda Function
 Implements MCP protocol tools for LMA meeting data access
-Provides 6 tools: search, get transcript, get summary, list meetings, schedule meeting, start meeting
+Provides meeting analytics, VP scheduling, calendar reconciliation and VP status tools.
 """
 
 import json
@@ -16,6 +16,7 @@ from typing import Any, Dict
 
 # Import tool implementations
 from tools import (
+    calendar_schedule,
     get_summary,
     get_transcript,
     get_virtual_participant_status,
@@ -80,7 +81,12 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         logger.info(f"User: {username}, ID: {user_id}, Admin: {is_admin}")
 
         # Determine which tool based on input parameters
-        if "virtualParticipantId" in tool_input and len(tool_input) <= 2:
+        if "scheduleAction" in tool_input:
+            if tool_input["scheduleAction"] not in {"UPDATE", "CANCEL"}:
+                raise ValueError("scheduleAction must be UPDATE or CANCEL")
+            tool_name = ("update_scheduled_meeting" if tool_input["scheduleAction"] == "UPDATE"
+                         else "cancel_scheduled_meeting")
+        elif "virtualParticipantId" in tool_input and len(tool_input) <= 2:
             tool_name = "get_virtual_participant_status"
         elif "query" in tool_input and "maxResults" in tool_input:
             tool_name = "search_lma_meetings"
@@ -107,7 +113,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         logger.info(f"Inferred tool: {tool_name}, Input: {json.dumps(tool_input)}")
 
         # Route to appropriate tool
-        if tool_name == "search_lma_meetings":
+        if tool_name in {"update_scheduled_meeting", "cancel_scheduled_meeting"}:
+            result = manage_calendar_tool(tool_name, tool_input, user_id, is_admin)
+        elif tool_name == "search_lma_meetings":
             result = search_meetings.execute(
                 query=tool_input.get("query"),
                 start_date=tool_input.get("startDate"),
@@ -151,6 +159,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 meeting_platform=tool_input.get("meetingPlatform"),
                 meeting_id=tool_input.get("meetingId"),
                 scheduled_time=tool_input.get("scheduledTime"),
+                calendar_event_uid=tool_input.get("calendarEventUid"),
+                calendar_occurrence_start=tool_input.get("calendarOccurrenceStart"),
                 meeting_password=tool_input.get("meetingPassword"),
                 meeting_language=tool_input.get("meetingLanguage"),
                 user_id=user_id,
@@ -267,7 +277,11 @@ MCP_TOOLS = [
     },
     {
         "name": "schedule_meeting",
-        "description": "Schedule a future meeting with virtual participant",
+        "description": (
+            "Schedule a future meeting with allOps LMA. Supported platforms: Google Meet, "
+            "Zoom, Teams, Chime and Webex. Google Meet IS supported; use the meet.google.com "
+            "URL or abc-defg-hij code. Host admission or bot Google sign-in may be required."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -284,6 +298,14 @@ MCP_TOOLS = [
                     ),
                 },
                 "scheduledTime": {"type": "string", "description": "ISO 8601 datetime"},
+                "calendarEventUid": {
+                    "type": "string",
+                    "description": "Google Calendar iCalUID (shared across attendees), NOT per-calendar event id. For recurring events also supply calendarOccurrenceStart; omit occurrence start for one-off events.",
+                },
+                "calendarOccurrenceStart": {
+                    "type": "string",
+                    "description": "Recurring events only: originalStartTime.dateTime with timezone, not the updated event start. Keep unchanged when rescheduling; omit for one-off events.",
+                },
                 "meetingPassword": {"type": "string", "description": "Optional meeting password"},
                 "meetingLanguage": {
                     "type": "string",
@@ -301,9 +323,97 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "update_scheduled_meeting",
+        "description": "Update an existing pending MCP-scheduled VP when its calendar occurrence changes. Owner/admin only; use virtualParticipantId or calendarEventUid (plus original start for recurring events). Never create another VP for a reschedule. Changes must arrive at least 3 minutes before the old and new meeting starts. No running meeting is interrupted.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scheduleAction": {
+                    "type": "string",
+                    "enum": [
+                        "UPDATE"
+                    ],
+                    "description": "Required routing marker: UPDATE."
+                },
+                "virtualParticipantId": {
+                    "type": "string",
+                    "description": "VP id returned by schedule_meeting; omit only when calendarEventUid is supplied (plus original start for recurring events)."
+                },
+                "calendarEventUid": {
+                    "type": "string",
+                    "description": "Google Calendar iCalUID (shared across attendees), NOT per-calendar event id. For recurring events also supply calendarOccurrenceStart; omit occurrence start for one-off events."
+                },
+                "calendarOccurrenceStart": {
+                    "type": "string",
+                    "description": "Recurring events only: originalStartTime.dateTime with timezone, not the updated event start. Keep unchanged when rescheduling; omit for one-off events."
+                },
+                "meetingName": {
+                    "type": "string",
+                    "description": "Updated event title."
+                },
+                "meetingPlatform": {
+                    "type": "string",
+                    "description": "Updated platform: Google Meet, Zoom, Teams, Chime, Webex."
+                },
+                "meetingId": {
+                    "type": "string",
+                    "description": "Updated meeting code/URL."
+                },
+                "scheduledTime": {
+                    "type": "string",
+                    "description": "Updated start datetime with timezone; NOT calendarOccurrenceStart."
+                },
+                "meetingPassword": {
+                    "type": "string",
+                    "description": "Updated password; empty string clears it."
+                },
+                "meetingLanguage": {
+                    "type": "string",
+                    "description": "Updated transcription language mode (same choices as schedule_meeting)."
+                }
+            },
+            "required": [
+                "scheduleAction"
+            ]
+        }
+    },
+    {
+        "name": "cancel_scheduled_meeting",
+        "description": "Cancel a pending MCP-scheduled VP when its calendar occurrence is cancelled or no longer requires LMA. Owner/admin only; use virtualParticipantId or calendarEventUid (plus original start for recurring events). Retrying cancellation is safe. Must arrive at least 3 minutes before meeting start. Does not delete transcripts or stop an already-running meeting.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scheduleAction": {
+                    "type": "string",
+                    "enum": [
+                        "CANCEL"
+                    ],
+                    "description": "Required routing marker: CANCEL."
+                },
+                "virtualParticipantId": {
+                    "type": "string",
+                    "description": "VP id returned by schedule_meeting; omit only when calendarEventUid is supplied (plus original start for recurring events)."
+                },
+                "calendarEventUid": {
+                    "type": "string",
+                    "description": "Google Calendar iCalUID (shared across attendees), NOT per-calendar event id. For recurring events also supply calendarOccurrenceStart; omit occurrence start for one-off events."
+                },
+                "calendarOccurrenceStart": {
+                    "type": "string",
+                    "description": "Recurring events only: originalStartTime.dateTime with timezone, not the updated event start. Keep unchanged when rescheduling; omit for one-off events."
+                }
+            },
+            "required": [
+                "scheduleAction"
+            ]
+        }
+    },
+    {
         "name": "start_meeting_now",
         "description": (
             "Start a meeting immediately with a virtual participant. "
+            "Supported platforms: Google Meet, Zoom, Teams, Chime and Webex. "
+            "Google Meet IS supported; host admission or bot Google sign-in may be required. "
             "When the user has stored Zoom credentials in LMA, the VP will "
             "sign in to Zoom with them by default for a more reliable "
             "join; pass useStoredZoomCredentials=false to force a guest "
@@ -380,6 +490,29 @@ MCP_TOOLS = [
 ]
 
 
+def manage_calendar_tool(tool_name, arguments, user_id, is_admin):
+    """Shared dispatch for AgentCore and JSON-RPC transports."""
+    action = "UPDATE" if tool_name == "update_scheduled_meeting" else "CANCEL"
+    if arguments.get("scheduleAction") != action:
+        raise ValueError(f"scheduleAction must be {action}")
+    changes = {}
+    if action == "UPDATE":
+        for source, target in (("meetingName", "meeting_name"),
+                               ("meetingPlatform", "meeting_platform"),
+                               ("meetingId", "meeting_id"), ("scheduledTime", "scheduled_time"),
+                               ("meetingPassword", "meeting_password")):
+            if source in arguments:
+                changes[target] = arguments[source]
+        if "meetingLanguage" in arguments:
+            changes["language"] = schedule_meeting._resolve_language_mode(arguments["meetingLanguage"])
+    return calendar_schedule.manage(
+        action, user_id=user_id, is_admin=is_admin,
+        virtual_participant_id=arguments.get("virtualParticipantId"),
+        calendar_event_uid=arguments.get("calendarEventUid"),
+        calendar_occurrence_start=arguments.get("calendarOccurrenceStart"), **changes,
+    )
+
+
 def handle_mcp_jsonrpc(msg, user_id, username, is_admin):
     """Handle MCP JSON-RPC 2.0 protocol messages."""
     method = msg.get("method")
@@ -419,7 +552,9 @@ def handle_mcp_jsonrpc(msg, user_id, username, is_admin):
 def execute_tool_call(msg_id, tool_name, arguments, user_id, username, is_admin):
     """Execute a tool call and return MCP JSON-RPC response."""
     try:
-        if tool_name == "search_lma_meetings":
+        if tool_name in {"update_scheduled_meeting", "cancel_scheduled_meeting"}:
+            result = manage_calendar_tool(tool_name, arguments, user_id, is_admin)
+        elif tool_name == "search_lma_meetings":
             result = search_meetings.execute(
                 query=arguments.get("query"),
                 start_date=arguments.get("startDate"),
@@ -459,6 +594,8 @@ def execute_tool_call(msg_id, tool_name, arguments, user_id, username, is_admin)
                 meeting_platform=arguments.get("meetingPlatform"),
                 meeting_id=arguments.get("meetingId"),
                 scheduled_time=arguments.get("scheduledTime"),
+                calendar_event_uid=arguments.get("calendarEventUid"),
+                calendar_occurrence_start=arguments.get("calendarOccurrenceStart"),
                 meeting_password=arguments.get("meetingPassword"),
                 meeting_language=arguments.get("meetingLanguage"),
                 user_id=user_id,

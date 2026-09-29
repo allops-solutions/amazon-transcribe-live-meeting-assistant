@@ -61,7 +61,7 @@ MCP client connects to REST API Gateway endpoint
     → Routes to MCP protocol handler:
       - initialize → returns server capabilities + protocolVersion
       - notifications/initialized → empty 200 acknowledgment
-      - tools/list → returns 6 tool definitions with inputSchema
+      - tools/list → returns 9 tool definitions with inputSchema
       - tools/call → routes to tool implementation, returns MCP result
       - ping → returns empty result
     → User context from authorizer enforces UBAC on tool calls

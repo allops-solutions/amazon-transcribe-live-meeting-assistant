@@ -45,6 +45,8 @@ import { DONE_STATUS, IN_PROGRESS_STATUS } from '../common/get-recording-status'
 import { InfoLink } from '../common/info-link';
 import { getWeightedSentimentLabel } from '../common/sentiment';
 import { SummaryOptionsFields, useSummaryProfileCatalog } from '../common/meeting-options';
+import SummaryGenerateButton from './SummaryGenerateButton';
+import summaryGenerationCompleted from './summary-generation';
 
 import { VoiceToneFluctuationChart, SentimentFluctuationChart, SentimentPerQuarterChart } from './sentiment-charts';
 
@@ -228,16 +230,12 @@ const CallSummary = ({ item }) => {
   const regenerateBaselineRef = useRef(null);
   const regenerateTimeoutRef = useRef(null);
 
-  // Summaries are generated on demand: the user picks a profile / output
-  // language here and clicks Generate. Pre-filled with whatever the summary
-  // was last generated with (persisted on the Call by regenerateSummary).
-  const [summaryProfile, setSummaryProfile] = useState(item.summaryProfile || '');
-  const [summaryLanguage, setSummaryLanguage] = useState(item.summaryLanguage || '');
+  // Require an explicit profile choice each time a meeting is opened.
+  const [summaryProfile, setSummaryProfile] = useState('');
   const summaryProfileCatalog = useSummaryProfileCatalog();
   useEffect(() => {
-    setSummaryProfile(item.summaryProfile || '');
-    setSummaryLanguage(item.summaryLanguage || '');
-  }, [item.callId, item.summaryProfile, item.summaryLanguage]);
+    setSummaryProfile('');
+  }, [item.callId]);
 
   // Server-side claim: regenerateSummary marks the Call IN_PROGRESS and
   // refuses a second run while it's fresh, so every tab (and every user)
@@ -251,14 +249,11 @@ const CallSummary = ({ item }) => {
   const generationInProgress = serverInProgress || regenerateStatus === 'in-progress';
   const meetingEnded = item.recordingStatusLabel === DONE_STATUS;
 
-  // Detect completion by watching for callSummaryText to actually change -
-  // there's no dedicated "done" signal, the new text just arrives via the
-  // same onUpdateCall subscription the original end-of-call summary uses
-  // (see handleRegenerateSummary). Matches the resolver's own docstring on
-  // how this is supposed to work.
+  // Detect new text or a completed newer request via onUpdateCall. The latter
+  // also handles a model regenerating exactly the same text as before.
   useEffect(() => {
     if (regenerateStatus !== 'in-progress' || regenerateBaselineRef.current === null) return;
-    if (item.callSummaryText === regenerateBaselineRef.current) return;
+    if (!summaryGenerationCompleted(item, regenerateBaselineRef.current)) return;
     if (regenerateTimeoutRef.current) {
       clearTimeout(regenerateTimeoutRef.current);
       regenerateTimeoutRef.current = null;
@@ -269,7 +264,7 @@ const CallSummary = ({ item }) => {
     // regenerateStatus is deliberately excluded - it's read at the top of this
     // effect (not on every render) and including it would re-fire the effect
     // whenever this same code just set it, without a new callSummaryText.
-  }, [item.callSummaryText]);
+  }, [item.callSummaryText, item.summaryStatus, item.summaryRequestedAt]);
 
   useEffect(
     () => () => {
@@ -351,10 +346,14 @@ const CallSummary = ({ item }) => {
   };
 
   const handleRegenerateSummary = async () => {
+    if (!summaryProfile || !summaryProfileCatalog.some((profile) => profile.id === summaryProfile)) return;
     setIsRegenerating(true);
     setRegenerateStatus('in-progress');
     setRegenerateError('');
-    regenerateBaselineRef.current = item.callSummaryText ?? '';
+    regenerateBaselineRef.current = {
+      text: item.callSummaryText ?? '',
+      requestedAt: item.summaryRequestedAt,
+    };
     if (regenerateTimeoutRef.current) clearTimeout(regenerateTimeoutRef.current);
     // AsyncTranscriptSummaryOrchestrator's own Lambda timeout is 600s;
     // give it a bit of margin before assuming something went wrong client-side.
@@ -364,10 +363,8 @@ const CallSummary = ({ item }) => {
     try {
       await client.graphql({
         query: regenerateSummaryMutation,
-        // Both always sent: blank means "stack-wide templates" / "template
-        // language" and clears a previous choice on the Call.
         variables: {
-          input: { CallId: item.callId, SummaryProfile: summaryProfile, SummaryLanguage: summaryLanguage },
+          input: { CallId: item.callId, SummaryProfile: summaryProfile },
         },
       });
       // No local state update here on purpose — the new CallSummaryText
@@ -451,25 +448,25 @@ const CallSummary = ({ item }) => {
       <SpaceBetween size="s">
         {!isEditingSummary && (
           <SpaceBetween size="s">
-            <ColumnLayout columns={2}>
+            <ColumnLayout columns={1}>
               <SummaryOptionsFields
                 summaryProfile={summaryProfile}
                 onSummaryProfileChange={setSummaryProfile}
-                summaryLanguage={summaryLanguage}
-                onSummaryLanguageChange={setSummaryLanguage}
                 summaryProfileCatalog={summaryProfileCatalog}
                 disabled={isRegenerating || generationInProgress || !meetingEnded}
               />
             </ColumnLayout>
-            <Button
-              iconName={item.callSummaryText ? 'refresh' : 'gen-ai'}
-              variant={item.callSummaryText ? 'normal' : 'primary'}
+            <SummaryGenerateButton
+              hasSummary={Boolean(item.callSummaryText)}
               loading={isRegenerating}
-              disabled={isRegenerating || generationInProgress || !meetingEnded}
-              onClick={handleRegenerateSummary}
-            >
-              {item.callSummaryText ? 'Regenerate summary' : 'Generate summary'}
-            </Button>
+              disabled={
+                isRegenerating ||
+                generationInProgress ||
+                !meetingEnded ||
+                !summaryProfileCatalog.some((profile) => profile.id === summaryProfile)
+              }
+              onGenerate={handleRegenerateSummary}
+            />
           </SpaceBetween>
         )}
         {generationInProgress && (

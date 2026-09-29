@@ -105,6 +105,15 @@ The Amazon Transcribe step is pluggable: when `TranscriptionEngine=MicrovmAsr`, 
 
 Full documentation lives in `./docs/` with the master entry point at `docs/INDEX.md`. Scattered .md files in stack subdirectories are redirect stubs pointing to the consolidated docs.
 
+Ahmed's current project status and decisions live in
+`/Users/ahmed/Documents/projects/live-meeting-assistant/PROJECT-STATUS.md`.
+Read it when resuming this project and update it after meaningful implementation,
+configuration decisions, verified test results, or user-confirmed deployments.
+Distinguish local changes from deployed state; never infer deployment from a
+publish. `dev.json` intentionally records normal dev settings with SSO disabled,
+even when the live dev stack temporarily enables SSO for testing. Parameter JSON
+files affect deployments only when explicitly supplied, not through publishing.
+
 ## Git Workflow
 
 - `main` branch: releases

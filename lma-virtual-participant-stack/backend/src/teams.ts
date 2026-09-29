@@ -333,6 +333,7 @@ export default class Teams {
     // Send button (data-tid="newMessageCommands-send", confirmed via DOM dump);
     // the anon light-meetings composer does not reliably submit on Enter.
     private async sendMessages(page: Page, messages: string[]): Promise<void> {
+        if (!messages.length) return;
         try {
             if (!(await this.chatInputVisible(page))) {
                 await this.openChatPanel(page);

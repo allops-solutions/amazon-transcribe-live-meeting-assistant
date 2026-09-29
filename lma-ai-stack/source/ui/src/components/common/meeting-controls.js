@@ -22,6 +22,7 @@ import {
 } from '@cloudscape-design/components';
 import shareMeetings from '../../graphql/queries/shareMeetings';
 import deleteMeetings from '../../graphql/queries/deleteMeetings';
+import useUserGroups from '../../hooks/use-user-groups';
 
 const client = generateClient();
 const getListKeys = (callId, createdAt) => {
@@ -284,6 +285,7 @@ export const shareModal = (props) => {
 };
 
 export const deleteModal = (props) => {
+  const { isAdmin } = useUserGroups();
   const [visible, setVisible] = useState(false);
   const [deleteDisabled, setDeleteDisabled] = useState(false);
   const [deleteResult, setDeleteResult] = useState(null);
@@ -340,6 +342,7 @@ export const deleteModal = (props) => {
 
   const handleDelete = async (e) => {
     e.preventDefault();
+    if (!isAdmin) return;
     setDeleteDisabled(true);
     setDeleteError(null);
     setDeletedCallIds(props.selectedItems.map((c) => c.callId));
@@ -361,10 +364,12 @@ export const deleteModal = (props) => {
     }
   };
 
+  if (!isAdmin) return null;
   return (
     <SpaceBetween size="xxs" direction="horizontal">
       <Button
         iconName="remove"
+        ariaLabel="Delete meetings"
         variant="normal"
         loading={props.loading}
         disabled={props.selectedItems.length === 0}

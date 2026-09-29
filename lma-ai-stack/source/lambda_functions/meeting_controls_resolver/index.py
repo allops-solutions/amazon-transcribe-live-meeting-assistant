@@ -186,7 +186,7 @@ def get_call_metadata(callid):
 def verify_permissions(event):
     request_owner = event["identity"]["username"]
     isAdminUser = False
-    groups = event["identity"].get("groups")
+    groups = event["identity"].get("groups") or (event["identity"].get("claims") or {}).get("cognito:groups", [])
     if groups:
         isAdminUser = "Admin" in groups
 
@@ -650,6 +650,12 @@ def delete_transcript_segment(appsync_session, schema, PK, SK):
 
 
 def lambda_handler(event, context):
+    action = event["info"]["fieldName"]
+    identity = event.get("identity") or {}
+    groups = identity.get("groups") or (identity.get("claims") or {}).get("cognito:groups") or []
+    # Reject before any metadata reads or destructive operations.
+    if action == "deleteMeetings" and (not isinstance(groups, list) or "Admin" not in groups):
+        raise PermissionError("Only administrators can delete meetings.")
     owner = event["identity"]["username"]
     if not verify_permissions(event):
         return {
@@ -658,7 +664,6 @@ def lambda_handler(event, context):
         }
 
     calls = event["arguments"]["input"]["Calls"]
-    action = event["info"]["fieldName"]
 
     if action == "shareMeetings":
         recipients = event["arguments"]["input"]["MeetingRecipients"]

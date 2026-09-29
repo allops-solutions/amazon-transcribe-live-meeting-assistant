@@ -52,6 +52,10 @@
     "ParameterValue": "global.anthropic.claude-sonnet-4-6"
   },
   {
+    "ParameterKey": "SummaryBedrockModelId",
+    "ParameterValue": "global.moonshotai.kimi-k3"
+  },
+  {
     "ParameterKey": "CloudFrontAllowedGeos",
     "ParameterValue": ""
   },

@@ -18,6 +18,7 @@ export default class Chime {
     }
 
     private async sendMessages(page: Page, messages: string[]): Promise<void> {
+        if (!messages.length) return;
         const found = await findElementWithFallback(
             page,
             ['textarea[placeholder="Message all attendees"]'],

@@ -3,6 +3,38 @@
 .idea
 .vscode/
 
+# Local credentials and environment overrides; keep secret-free examples visible.
+.env
+.env.*
+.envrc
+.envrc.local
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+.aws/
+credentials.json
+
+# Browser authentication state, local profiles and diagnostic request dumps.
+storage-state.json
+storageState.json
+auth-state.json
+**/playwright/.auth/
+chrome-profile/
+chromium-profile/
+chrome-user-data/
+cloakbrowser-profiles/
+.lma-load/
+profile.tar.gz
+*.har
+*.log
+.pytest_cache/
+
 **/opensearchpy_layer/python
 **/boto3_layer/python
 **/boto3_layer/boto3_lambda_layer.zip

@@ -18,7 +18,7 @@ title: "LMA Documentation"
 
 - [Prerequisites & Deployment](prerequisites-and-deployment.md) — AWS account setup, Bedrock model access, CloudFormation deployment, initial login
 - [Quick Start Guide](quick-start-guide.md) — Your first meeting in 5 minutes using Stream Audio or Virtual Participant
-- [Google SSO](google-sso.md) — CloudFront OAuth callbacks, feature flags and staged rollout (local implementation; live validation pending)
+- [Google SSO](google-sso.md) — CloudFront OAuth callbacks, feature flags and rollout (web and extension login confirmed working)
 
 ### Core Features
 
@@ -26,6 +26,7 @@ title: "LMA Documentation"
 - [On-demand ASR & Speaker Diarization (MicroVM)](microvm-asr.md) — Experimental alternative to Amazon Transcribe streaming: per-voice speaker labels from an ASR + diarization engine on AWS Lambda MicroVMs, with a swappable model
 - [Meeting Assistant](meeting-assistant.md) — Strands agent chat interface, built-in tools, Knowledge Base, Guardrails, model selection, wake phrase, custom prompts
 - [Transcript Summarization](transcript-summarization.md) — Automatic and on-demand summaries, custom prompt templates, Lambda-based summarization
+- [Dev Workflow Batch](dev-workflow-batch.md) — Required profiles, regeneration confirmation, Kimi summaries, admin deletion, table layout, quiet VPs and Google Meet MCP metadata
 - [Meetings Query Tool](meetings-query-tool.md) — Semantic search across past meetings via transcript knowledge base
 
 ### Meeting Sources
@@ -89,4 +90,3 @@ title: "LMA Documentation"
 - [LMA CLI Reference](lma-cli.md) — Command-line interface for deploy, publish, status, logs, Virtual Participant, and the `lma load` plugin
 - [LMA SDK Reference](lma-sdk.md) — Python SDK for programmatic LMA operations (stack, publish, AppSync, Virtual Participant)
 - [LMA Load Simulator](../utilities/load-simulator/README.md) — Stress-test a deployed LMA stack (concurrent meetings, historical backfill, RBAC-at-scale, deterministic cleanup) — exposed as `lma load …` via the CLI plugin mechanism
-

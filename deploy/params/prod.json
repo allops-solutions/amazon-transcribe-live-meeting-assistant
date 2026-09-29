@@ -21,7 +21,7 @@
   },
   {
     "ParameterKey": "AudioRecordingExpirationInDays",
-    "ParameterValue": "TODO_SET_RETENTION_POLICY_DAYS"
+    "ParameterValue": "180"
   },
   {
     "ParameterKey": "BedrockFallbackModelId",
@@ -52,6 +52,10 @@
     "ParameterValue": "global.anthropic.claude-sonnet-4-6"
   },
   {
+    "ParameterKey": "SummaryBedrockModelId",
+    "ParameterValue": "global.moonshotai.kimi-k3"
+  },
+  {
     "ParameterKey": "CloudFrontAllowedGeos",
     "ParameterValue": ""
   },
@@ -61,7 +65,7 @@
   },
   {
     "ParameterKey": "CloudWatchLogsExpirationInDays",
-    "ParameterValue": "TODO_SET_RETENTION_POLICY_DAYS"
+    "ParameterValue": "180"
   },
   {
     "ParameterKey": "CustomLanguageModelName",
@@ -137,7 +141,7 @@
   },
   {
     "ParameterKey": "MeetingRecordExpirationInDays",
-    "ParameterValue": "TODO_SET_RETENTION_POLICY_DAYS"
+    "ParameterValue": "180"
   },
   {
     "ParameterKey": "ModelValidation",
@@ -225,7 +229,7 @@
   },
   {
     "ParameterKey": "TranscriptionExpirationInDays",
-    "ParameterValue": "TODO_SET_RETENTION_POLICY_DAYS"
+    "ParameterValue": "180"
   },
   {
     "ParameterKey": "UseExistingVPC",

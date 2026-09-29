@@ -1,23 +1,28 @@
 # Stack parameter files
 
-Each `<env>.json` is a snapshot of the CloudFormation parameters for that
-stack, in the shape `aws cloudformation create-stack`/`update-stack --parameters
-file://deploy/params/<env>.json` expects directly.
+Each `<env>.json` records the chosen configuration for that environment. These
+files do not automatically configure a running LMA stack and are not consumed
+by `lma publish`. They use the format accepted by an explicit AWS CLI
+`--parameters file://deploy/params/<env>.json` deployment, at which point their
+values do affect the stack. Console updates use the values on the console's
+parameter page, not these local files.
 
-- `dev.json` — snapshot of the live `LMA-Dev` stack (`allops-genai-development`,
-  135755363077), pulled 2026-09-16. Regenerate after any parameter change made
-  through the console so this stays truthful:
-  ```
-  aws cloudformation describe-stacks --stack-name LMA-Dev \
-    --query "Stacks[0].Parameters" --output json \
-    | python3 -c "import json,sys; p=json.load(sys.stdin); json.dump(sorted(p,key=lambda x:x['ParameterKey']),sys.stdout,indent=2)" \
-    > deploy/params/dev.json
-  ```
-  Then re-apply the `FILL_IN_FROM_SECRET_STORE` redaction below before committing.
+- `dev.json` — intended normal dev settings, initially based on a live snapshot
+  from 2026-09-16. SSO is deliberately disabled here; dev was temporarily enabled
+  for testing through the console. Do not overwrite the normal configuration with
+  temporary test flags merely to mirror the live stack. For any CLI update,
+  deliberately choose and review the auth mode before passing this file.
 
 - `prod.json` — **draft**, not yet applied to a real stack. Filled in from the
-  locked decisions in `LMA-HANDOFF.md` where known; anything still open is
+  locked decisions in `/Users/ahmed/Documents/projects/live-meeting-assistant/PROJECT-STATUS.md` where known; anything still open is
   marked `TODO`. Review it fully before the first prod `create-stack`.
+  Meeting records, transcripts and audio/video recordings are configured for
+  180 days; summaries use the Kimi K3 override. CloudWatch logs are also set to
+  180 days. These are separate parameters, explicitly set here.
+
+The old ignored `dev-update.local.json` CLI update helper has been removed.
+Console updates and publishing never depended on it. Do not reuse an old CLI
+command that explicitly names that now-absent file.
 
 ## Secrets — never commit real values
 

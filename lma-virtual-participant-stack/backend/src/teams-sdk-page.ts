@@ -444,7 +444,7 @@ async function init(): Promise<void> {
         adapter = await createAzureCommunicationCallWithChatAdapter({
             endpoint: cfg.endpoint,
             userId: { communicationUserId: cfg.acsUserId },
-            displayName: cfg.displayName || 'LMA',
+            displayName: cfg.displayName || 'allOps LMA',
             credential,
             locator: locator as any,
         });

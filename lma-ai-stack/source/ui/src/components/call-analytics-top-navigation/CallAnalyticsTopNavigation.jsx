@@ -49,7 +49,8 @@ const SignOutModal = ({ visible, setVisible }) => {
 };
 
 const CallAnalyticsTopNavigation = () => {
-  const { user, authState } = useAppContext();
+  const { user, authState, currentSession } = useAppContext();
+  const sessionEmail = currentSession?.tokens?.idToken?.payload?.email;
   const { isAdmin } = useUserGroups();
   const [email, setEmail] = useState('');
   const [isSignOutModalVisible, setIsSignOutModalVisiblesetVisible] = useState(false);
@@ -66,16 +67,16 @@ const CallAnalyticsTopNavigation = () => {
         logger.error('error fetching user attributes: ', error);
       }
     };
-    if (authState === 'authenticated') {
+    if (authState === 'authenticated' && !sessionEmail) {
       loadEmail();
     }
     return () => {
       cancelled = true;
     };
-  }, [authState]);
+  }, [authState, sessionEmail, user?.userId]);
 
   const fallbackId = user?.signInDetails?.loginId || user?.username || 'user';
-  const displayEmail = email || fallbackId;
+  const displayEmail = sessionEmail || email || user?.attributes?.email || fallbackId;
   const roleLabel = isAdmin ? 'admin' : 'user';
   const userId = `${displayEmail} (${roleLabel})`;
   return (

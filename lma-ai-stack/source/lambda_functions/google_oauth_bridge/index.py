@@ -9,11 +9,46 @@ import json
 import os
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, unquote, urlencode, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import boto3
 
 ssm = boto3.client("ssm")
+
+
+class NoGoogleTokenRedirects(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Never forward client credentials to a redirected token endpoint.
+        raise HTTPError(req.full_url, code, "Token endpoint redirect rejected", headers, fp)
+
+
+google_http = build_opener(NoGoogleTokenRedirects())
+
+
+def workspace_domain():
+    domain = os.environ["ALLOWED_WORKSPACE_DOMAIN"].strip().lower()
+    if not domain:
+        raise ValueError("Workspace domain must be configured")
+    return domain
+
+
+def require_workspace_token(raw_response):
+    # Inspect ONLY Google's authenticated, direct HTTPS token response, never
+    # a browser-supplied JWT/hd parameter. Cognito subsequently validates the
+    # unchanged token's signature, issuer, audience, expiry and flow bindings.
+    token_response = json.loads(raw_response)
+    if not isinstance(token_response, dict):
+        raise ValueError("Invalid token response")
+    token = token_response.get("id_token")
+    if not isinstance(token, str):
+        raise ValueError("Missing Google identity token")
+    parts = token.split(".")
+    if len(parts) != 3 or not all(parts):
+        raise ValueError("Invalid Google identity token")
+    payload = parts[1] + "=" * (-len(parts[1]) % 4)
+    claims = json.loads(base64.b64decode(payload, altchars=b"-_", validate=True).decode("utf-8"))
+    if not isinstance(claims, dict) or claims.get("hd") != workspace_domain():
+        raise ValueError("Company Workspace membership is required")
 
 
 def response(status, body="", headers=None):
@@ -64,6 +99,8 @@ def lambda_handler(event, context):
             # Cognito's upstream code-flow request can omit nonce. Preserve
             # state and any nonce/PKCE values it supplies; never invent them.
             params["redirect_uri"] = redirect_uri
+            # Account-picker hint only; the returned token claim is enforced below.
+            params["hd"] = workspace_domain()
             return response(302, headers={
                 "Location": "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
             })
@@ -102,9 +139,15 @@ def lambda_handler(event, context):
             request = Request("https://oauth2.googleapis.com/token",
                               data=urlencode(params).encode("utf-8"),
                               headers={"Content-Type": "application/x-www-form-urlencoded"})
-            with urlopen(request, timeout=15) as upstream:
-                return response(200, upstream.read().decode("utf-8"),
+            with google_http.open(request, timeout=15) as upstream:
+                raw_response = upstream.read().decode("utf-8")
+            try:
+                require_workspace_token(raw_response)
+            except (ValueError, KeyError, UnicodeError):
+                # Do not expose rejected claims, authorization codes or tokens.
+                return response(400, '{"error":"invalid_grant"}',
                                 {"Content-Type": "application/json"})
+            return response(200, raw_response, {"Content-Type": "application/json"})
         return response(404, "Not found")
     except HTTPError:
         return response(400, '{"error":"invalid_grant"}', {"Content-Type": "application/json"})

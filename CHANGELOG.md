@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Calendar-aware MCP scheduling: atomic occurrence/meeting-slot claims prevent
+  duplicate VPs across flow retries and employees. New update/cancel tools
+  reconcile pending EventBridge launches without deleting meeting data.
+- Production parameter draft uses 180-day CloudWatch log retention.
+
 ## [0.3.8] - 2026-09-02
 
 ### Fixed

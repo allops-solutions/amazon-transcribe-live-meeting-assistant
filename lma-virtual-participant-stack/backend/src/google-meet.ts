@@ -80,6 +80,7 @@ export default class GoogleMeet {
     }
 
     private async sendMessages(page: Page, messages: string[]): Promise<void> {
+        if (!messages.length) return;
         if (!(await this.openChatPanel(page))) {
             console.log('Could not open Google Meet chat panel — skipping sendMessages');
             return;

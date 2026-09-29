@@ -83,19 +83,21 @@ class TestMCPToolsList(unittest.TestCase):
     """Test MCP tools/list method."""
 
     def test_tools_list_returns_all_tools(self):
-        """tools/list returns all 7 tools."""
+        """tools/list returns all 9 tools."""
         body = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
         result = index.lambda_handler(api_gw_event(body), None)
 
         resp = json.loads(result["body"])
         tools = resp["result"]["tools"]
-        self.assertEqual(len(tools), 7)
+        self.assertEqual(len(tools), 9)
         tool_names = [t["name"] for t in tools]
         self.assertIn("search_lma_meetings", tool_names)
         self.assertIn("get_meeting_transcript", tool_names)
         self.assertIn("get_meeting_summary", tool_names)
         self.assertIn("list_meetings", tool_names)
         self.assertIn("schedule_meeting", tool_names)
+        self.assertIn("update_scheduled_meeting", tool_names)
+        self.assertIn("cancel_scheduled_meeting", tool_names)
         self.assertIn("start_meeting_now", tool_names)
         self.assertIn("get_virtual_participant_status", tool_names)
 

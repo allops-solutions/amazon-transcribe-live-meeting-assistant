@@ -29,7 +29,7 @@ import CustomDateRangeModal from './CustomDateRangeModal';
 
 export const KEY_COLUMN_ID = 'callId';
 
-export const COLUMN_DEFINITIONS_MAIN = [
+const ALL_COLUMN_DEFINITIONS = [
   {
     id: KEY_COLUMN_ID,
     header: 'Meeting ID',
@@ -53,7 +53,14 @@ export const COLUMN_DEFINITIONS_MAIN = [
   {
     id: 'initiationTimeStamp',
     header: 'Initiation Timestamp',
-    cell: (item) => item.initiationTimeStamp,
+    cell: (item) => {
+      const date = new Date(item.initiationTimeStamp);
+      if (Number.isNaN(date.getTime())) return '-';
+      return `${String(date.getDate()).padStart(2, '0')}.${String(date.getMonth() + 1).padStart(
+        2,
+        '0',
+      )}.${date.getFullYear()}`;
+    },
     sortingField: 'initiationTimeStamp',
     isDescending: false,
     width: 225,
@@ -165,7 +172,18 @@ export const COLUMN_DEFINITIONS_MAIN = [
   },
 ];
 
-export const DEFAULT_SORT_COLUMN = COLUMN_DEFINITIONS_MAIN[3];
+export const MEETING_COLUMN_IDS = [
+  'callId',
+  'recordingStatus',
+  'agentId',
+  'summary',
+  'conversationDuration',
+  'initiationTimeStamp',
+];
+export const COLUMN_DEFINITIONS_MAIN = MEETING_COLUMN_IDS.map((id) =>
+  ALL_COLUMN_DEFINITIONS.find((column) => column.id === id),
+);
+export const DEFAULT_SORT_COLUMN = COLUMN_DEFINITIONS_MAIN.find((column) => column.id === 'initiationTimeStamp');
 
 export const SELECTION_LABELS = {
   itemSelectionLabel: (data, row) => `select ${row.callId}`,
@@ -184,26 +202,16 @@ const VISIBLE_CONTENT_OPTIONS = [
     label: 'Meeting list properties',
     options: [
       { id: 'callId', label: 'Meeting ID', editable: false },
-      { id: 'agentId', label: 'Name' },
-      { id: 'owner', label: 'Owner' },
-      { id: 'sharedWith', label: 'Shared With' },
-      { id: 'initiationTimeStamp', label: 'Initiation Timestamp' },
       { id: 'recordingStatus', label: 'Status' },
+      { id: 'agentId', label: 'Owner Name' },
       { id: 'summary', label: 'Summary' },
       { id: 'conversationDuration', label: 'Duration' },
+      { id: 'initiationTimeStamp', label: 'Initiation Timestamp' },
     ],
   },
 ];
 
-const VISIBLE_CONTENT = [
-  'agentId',
-  'owner',
-  'sharedWith',
-  'initiationTimeStamp',
-  'recordingStatus',
-  'summary',
-  'conversationDuration',
-];
+const VISIBLE_CONTENT = MEETING_COLUMN_IDS.filter((id) => id !== KEY_COLUMN_ID);
 
 export const DEFAULT_PREFERENCES = {
   pageSize: PAGE_SIZE_OPTIONS[0].value,

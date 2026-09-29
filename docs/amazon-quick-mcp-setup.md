@@ -76,11 +76,62 @@ agents) classify them correctly.
 | `list_meetings` | ✅ | Filter by date range, participant, or status |
 | `get_virtual_participant_status` | ✅ | Poll VP status (joining, active, manual-action-required, failed) |
 | `schedule_meeting` | — | Schedule a future meeting with the LMA virtual participant |
+| `update_scheduled_meeting` | — | Change one pending calendar-scheduled VP without creating another |
+| `cancel_scheduled_meeting` | — | Cancel one pending calendar-scheduled VP; preserve meeting data |
 | `start_meeting_now` | — | Start an immediate meeting with the LMA virtual participant |
 
-All tool responses include a `meetingUrl` and (where applicable) a
+Meeting-data responses include a `meetingUrl` and (where applicable) a
 `virtualParticipantUrl` deep-link back into the LMA web UI for quick drill-down
 into the full transcript, recording, or VP viewer.
+
+## Calendar-aware Quick flows
+
+LMA does not subscribe to Google Calendar changes. Quick must fetch events and
+call the tools below; a morning-only scan cannot catch events created, moved or
+cancelled later that day. Run again during the day or use a calendar-change
+trigger where your Quick configuration supports it. Do not interpret an event
+missing from a filtered daily list as cancelled: verify its explicit cancellation
+or fetch the tracked event before calling cancellation.
+
+- Schedule with `meetingName`, `meetingPlatform`, `meetingId`, `scheduledTime`.
+  Supply `calendarEventUid` (Google `iCalUID`, not per-calendar `id`) and
+  `calendarOccurrenceStart` for recurring meetings. For a recurring event this is
+  `originalStartTime.dateTime`; each occurrence gets a different VP, even when
+  the series reuses the same meeting link. Expand recurring events into individual
+  timed occurrences, not the recurring-series master or all-day events.
+- For a one-off event, supply `calendarEventUid` alone and omit
+  `calendarOccurrenceStart`; its UID remains stable when the start time changes.
+  Alternatively store the returned
+  `virtualParticipantId` and use that for subsequent update/cancel calls.
+- Retries and simultaneous employees sharing the same canonical meeting link
+  and start time return the existing VP. Google Meet URL/code and equivalent time
+  offsets normalize to the same slot. Google Meet and Zoom URL/ID normalization
+  is supported; other platforms need the same meeting identifier spelling.
+- Use `update_scheduled_meeting` with `scheduleAction: UPDATE`, a VP ID or both
+  calendar identity fields (UID alone for one-off events), and whichever title/time/link/password/language fields
+  changed. Calling `schedule_meeting` again returns the existing VP; it does not
+  silently apply changed calendar values. Keep occurrence identity stable.
+- Use `cancel_scheduled_meeting` with `scheduleAction: CANCEL` and the same ID or
+  identity fields. Retrying is safe; stale schedule requests cannot resurrect the
+  cancelled occurrence. Neither tool deletes transcripts or interrupts a running VP.
+- Changes require the scheduling owner or an admin and must arrive at least three
+  minutes before the old/new start; the VP starts joining two minutes early.
+  Previously scheduled VPs are not automatically migrated into this registry.
+
+CloudFormation adds a KMS-encrypted, on-demand claim table when MCP is enabled;
+existing storage and users are unchanged. Atomic DynamoDB transactions claim both
+the calendar occurrence and meeting slot with the VP row. Claims expire after a
+year past the meeting time and survive cancellation/rescheduling in the meantime.
+The existing stream scheduler reconciles the current row, updating/deleting its
+EventBridge schedule and retrying failures. Reconciliation is asynchronous, not a
+promise that a schedule is installed/deleted at the instant the tool returns.
+AppSync publishes committed changes to the open VP list. If `notificationPending`
+is true, scheduling still succeeded; refresh the list or retry the same request.
+
+After deployment, refresh the Quick connector's tool catalog and test the actual
+Calendar attendee, conference-link, `iCalUID`, start/originalStartTime and cancelled
+event output. Configure Quick action permissions for scheduled unattended runs.
+No Bosnian/English invitation addresses or Google bot accounts are provisioned.
 
 ---
 

@@ -98,7 +98,7 @@ export interface MeetingDetails {
   meetingMode?: string;
 }
 
-class DetailsManager {
+export class DetailsManager {
   private _details: MeetingDetails;
 
   constructor() {
@@ -112,7 +112,10 @@ class DetailsManager {
     const virtualParticipantId = process.env.VIRTUAL_PARTICIPANT_ID || uuidv4();
 
     // LMA Configuration
-    const lmaIdentity = process.env.LMA_IDENTITY || 'LMA ({LMA_USER})';
+    // Migrate the previous deployed default without renaming signed-in accounts.
+    const configuredIdentity = (process.env.LMA_IDENTITY || '').trim();
+    const lmaIdentity = !configuredIdentity || configuredIdentity === 'LMA ({LMA_USER})'
+      ? 'allOps LMA' : configuredIdentity;
     const lmaUser = userName;
 
     // Replace {LMA_USER} placeholder in messages
@@ -121,14 +124,6 @@ class DetailsManager {
     };
 
     // Messages Configuration
-    const introMessage = replacePlaceholders(
-      process.env.INTRO_MESSAGE ||
-      "Hello. I am LMA, allOps's AI Live Meeting Assistant. I was invited by {LMA_USER} to join this call. " +
-      'Anyone here can ask me to leave at any time by typing "LMA leave" (or "LMA end") in chat.'
-    );
-    const startRecordingMessage = replacePlaceholders(
-      process.env.START_RECORDING_MESSAGE || 'Live Meeting Assistant started.'
-    );
     const stopRecordingMessage = replacePlaceholders(
       process.env.STOP_RECORDING_MESSAGE || 'Live Meeting Assistant stopped.'
     );
@@ -169,8 +164,9 @@ class DetailsManager {
       attachments: {},
 
       // Meeting Control Messages
-      introMessages: [introMessage],
-      startMessages: [startRecordingMessage],
+      // No unsolicited join/start announcements on any platform.
+      introMessages: [],
+      startMessages: [],
       pauseMessages: [stopRecordingMessage],
       exitMessages: [exitMessage],
 

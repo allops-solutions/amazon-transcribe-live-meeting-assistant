@@ -200,18 +200,23 @@ def test_cloudfront_omits_the_vnc_behavior_under_microvm(template: dict) -> None
         "DistributionConfig"
     ]
     behaviors = dist["CacheBehaviors"]
-    assert "Fn::If" in behaviors
-    assert behaviors["Fn::If"][0] == CONDITION
-    # MICROVM branch drops the property entirely rather than sending an empty
-    # list, which CloudFront rejects.
-    assert behaviors["Fn::If"][2] == {"Ref": "AWS::NoValue"}
+    # SSO adds an independent /oauth2/* behavior. VNC is still individually
+    # conditional, so selecting MICROVM must remove that entry, not SSO.
+    vnc_behaviors = [b["Fn::If"] for b in behaviors
+                     if isinstance(b, dict) and b.get("Fn::If", [None])[0] == CONDITION]
+    assert len(vnc_behaviors) == 1
+    assert vnc_behaviors[0][1]["PathPattern"] == "/vnc/*"
+    assert vnc_behaviors[0][2] == {"Ref": "AWS::NoValue"}
+    assert not any(b.get("TargetOriginId") == "vnc-alb" for b in behaviors)
 
     origins = dist["Origins"]
-    assert "Fn::If" in origins
-    microvm_origins = origins["Fn::If"][2]
-    assert len(microvm_origins) == 1
-    assert microvm_origins[0]["Id"] == "webapp-s3-bucket"
-    assert "vnc-alb" not in json.dumps(microvm_origins, default=str)
+    vnc_origins = [o["Fn::If"] for o in origins
+                   if isinstance(o, dict) and o.get("Fn::If", [None])[0] == CONDITION]
+    assert len(vnc_origins) == 1
+    assert vnc_origins[0][1]["Id"] == "vnc-alb"
+    assert vnc_origins[0][2] == {"Ref": "AWS::NoValue"}
+    assert origins[0]["Id"] == "webapp-s3-bucket"
+    assert not any(o.get("Id") == "vnc-alb" for o in origins)
 
 
 def test_vp_manager_alb_listener_env_tolerates_no_alb(template: dict) -> None:

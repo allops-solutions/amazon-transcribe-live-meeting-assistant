@@ -63,6 +63,7 @@ class BridgeTests(unittest.TestCase):
         self.env = patch.dict(os.environ, {
             "LMA_SETTINGS_PARAMETER": "settings", "GOOGLE_CLIENT_ID": "test-client",
             "GOOGLE_CLIENT_SECRET": "test-secret",
+            "ALLOWED_WORKSPACE_DOMAIN": "allops.co",
             "COGNITO_LOGIN_URL": "https://pool.auth.us-east-1.amazoncognito.com",
         })
         self.env.start()
@@ -145,22 +146,82 @@ class BridgeTests(unittest.TestCase):
             client_id="test-client", client_secret="test-secret", code="code",
             grant_type="authorization_code", redirect_uri=self.callback))
 
-    def test_token_exchanges_using_identical_cloudfront_redirect(self):
+    def google_response(self, **claims):
+        data = {"email": "user@allops.co", "email_verified": True, **claims}
+        payload = base64.urlsafe_b64encode(json.dumps(data).encode()).decode().rstrip("=")
+        return json.dumps({"id_token": "header." + payload + ".signature",
+                           "access_token": "google-access-token", "token_type": "Bearer"}).encode()
+
+    def upstream(self, body):
         upstream = Mock()
         upstream.__enter__ = Mock(return_value=upstream)
         upstream.__exit__ = Mock(return_value=False)
-        upstream.read.return_value = b'{"id_token":"test-token"}'
-        with patch.object(self.bridge, "urlopen", return_value=upstream) as send:
+        upstream.read.return_value = body
+        return upstream
+
+    def test_token_exchanges_using_identical_cloudfront_redirect(self):
+        body = self.google_response(hd="allops.co")
+        with patch.object(self.bridge.google_http, "open", return_value=self.upstream(body)) as send:
             result = self.bridge.lambda_handler(self.token_event(), None)
         self.assertEqual(result["statusCode"], 200)
         request = send.call_args.args[0]
         self.assertEqual(request.full_url, "https://oauth2.googleapis.com/token")
         self.assertEqual(parse_qs(request.data.decode())["redirect_uri"], [self.web_callback])
+        self.assertEqual(result["body"], body.decode())
+
+    def test_company_email_without_workspace_or_wrong_domain_is_rejected(self):
+        for claims in ({}, {"hd": ""}, {"hd": "other.co"}, {"hd": "allops.co.evil.test"},
+                       {"hd": "sub.allops.co"}, {"hd": ["allops.co"]}, {"hd": None},
+                       {"hd": "ALLOPS.CO"}, {"hd": " allops.co "}):
+            with self.subTest(claims=claims), patch.object(self.bridge.google_http, "open",
+                    return_value=self.upstream(self.google_response(**claims))):
+                event = self.token_event()
+                event["body"] += "&hd=allops.co"
+                result = self.bridge.lambda_handler(event, None)
+                self.assertEqual(result["statusCode"], 400)
+                self.assertEqual(result["body"], '{"error":"invalid_grant"}')
+                self.assertNotIn("id_token", result["body"])
+
+    def test_malformed_or_missing_upstream_identity_token_is_rejected(self):
+        for body in (b'{}', b'[]', b'null', b'{"id_token":null}',
+                     b'{"id_token":"bad"}', b'{"id_token":"a.%%%%.b"}',
+                     b'{"id_token":"a.W10.b"}', b'{"id_token":"a.e30."}', b'not-json'):
+            with self.subTest(body=body), patch.object(self.bridge.google_http, "open",
+                    return_value=self.upstream(body)):
+                result = self.bridge.lambda_handler(self.token_event(), None)
+                self.assertEqual(result["statusCode"], 400)
+                self.assertEqual(result["body"], '{"error":"invalid_grant"}')
+
+    def test_authorization_hint_cannot_choose_another_domain(self):
+        result = self.authorize(hd="evil.test")
+        self.assertEqual(parse_qs(urlsplit(result["headers"]["Location"]).query)["hd"], ["allops.co"])
+
+    def test_valid_basic_credentials_and_base64_body_preserve_workspace_login(self):
+        event = self.token_event()
+        event["body"] = base64.b64encode(event["body"].encode()).decode()
+        event["isBase64Encoded"] = True
+        event["headers"]["Authorization"] = "Basic " + base64.b64encode(b"test-client:test-secret").decode()
+        with patch.object(self.bridge.google_http, "open",
+                          return_value=self.upstream(self.google_response(hd="allops.co"))):
+            self.assertEqual(self.bridge.lambda_handler(event, None)["statusCode"], 200)
+
+    def test_google_token_redirects_are_rejected_before_credentials_are_forwarded(self):
+        request = self.bridge.Request("https://oauth2.googleapis.com/token", data=b"client_secret=test-secret")
+        with self.assertRaises(self.bridge.HTTPError) as caught:
+            self.bridge.NoGoogleTokenRedirects().redirect_request(
+                request, None, 307, "redirect", {}, "https://evil.test/token")
+        caught.exception.close()
+
+    def test_upstream_failure_returns_no_tokens(self):
+        with patch.object(self.bridge.google_http, "open", side_effect=OSError("network error")):
+            result = self.bridge.lambda_handler(self.token_event(), None)
+        self.assertEqual(result["statusCode"], 503)
+        self.assertNotIn("test-secret", result["body"])
 
     def test_bad_client_does_not_send_google_request(self):
         event = self.token_event()
         event["body"] = event["body"].replace("test-secret", "wrong")
-        with patch.object(self.bridge, "urlopen") as send:
+        with patch.object(self.bridge.google_http, "open") as send:
             result = self.bridge.lambda_handler(event, None)
         self.assertEqual(result["statusCode"], 401)
         send.assert_not_called()
@@ -179,7 +240,7 @@ class BridgeTests(unittest.TestCase):
             key = "grant_type" if replacements[0] == "authorization_code" else "redirect_uri"
             params[key] = replacements[1]
             event["body"] = urlencode(params)
-            with patch.object(self.bridge, "urlopen") as send:
+            with patch.object(self.bridge.google_http, "open") as send:
                 self.assertEqual(self.bridge.lambda_handler(event, None)["statusCode"], 400)
                 send.assert_not_called()
 
@@ -206,6 +267,12 @@ class GuardTests(unittest.TestCase):
         event = self.event(email="User@ALLops.CO")
         self.assertIs(self.guard(event, None), event)
         self.client.admin_add_user_to_group.assert_not_called()
+
+    def test_existing_refresh_sessions_are_not_retroactively_revalidated_by_bridge(self):
+        # This records a rollout limitation, not Workspace-membership proof:
+        # an existing Cognito refresh does not exchange a fresh Google code.
+        event = self.event(source="TokenGeneration_RefreshTokens")
+        self.assertIs(self.guard(event, None), event)
 
     def test_denies_external_suffix_subdomain_missing_or_unverified_email(self):
         for email, verified in (("user@gmail.com", "true"), ("user@allops.co.evil", "true"),
@@ -336,6 +403,21 @@ class CallbackTests(unittest.TestCase):
 
 
 class TemplateTests(unittest.TestCase):
+    def test_workspace_domain_is_wired_without_changing_pool_or_provider(self):
+        main = template("lma-main.yaml")
+        ai = template("lma-ai-stack/deployment/lma-ai-stack.yaml")
+        self.assertEqual(main["Resources"]["AISTACK"]["Properties"]["Parameters"]["FederatedEmailDomain"],
+                         {"Ref": "FederatedEmailDomain"})
+        env = ai["Resources"]["GoogleOAuthBridge"]["Properties"]["Environment"]["Variables"]
+        self.assertEqual(env["ALLOWED_WORKSPACE_DOMAIN"], {"Ref": "FederatedEmailDomain"})
+        self.assertEqual(ai["Parameters"]["FederatedEmailDomain"]["Default"], "allops.co")
+        original_ai = template("lma-ai-stack/deployment/lma-ai-stack.yaml", True)
+        self.assertEqual(ai["Resources"]["GoogleWorkspaceIdentityProvider"],
+                         original_ai["Resources"]["GoogleWorkspaceIdentityProvider"])
+        original_main = template("lma-main.yaml", True)
+        for key in ("COGNITOSTACK", "SSOCOGNITOSTACK"):
+            self.assertEqual(main["Resources"][key], original_main["Resources"][key])
+
     def test_all_original_resources_and_data_definitions_preserved(self):
         protected = {"AWS::S3::Bucket", "AWS::DynamoDB::Table", "AWS::KMS::Key"}
         for relative in ("lma-main.yaml", "lma-ai-stack/deployment/lma-ai-stack.yaml",

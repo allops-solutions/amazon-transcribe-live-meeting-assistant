@@ -448,8 +448,19 @@ Parameters:
     Description: >
       ON_DEMAND: no summary is generated when a meeting ends (only the transcript
       is archived for the Knowledge Base); users generate one from the meeting page,
-      choosing a summary profile and language, and pay for Bedrock only then.
+      choosing a summary profile, and pay for Bedrock only then.
       AUTOMATIC: a summary is generated at the end of every meeting.
+
+  SummaryBedrockModelId:
+    Type: String
+    Default: ""
+    AllowedValues:
+      - ""
+      - "global.moonshotai.kimi-k3"
+      - "us.moonshotai.kimi-k3"
+    Description: >-
+      Optional summary-only model override. Empty uses BedrockModelId.
+      Kimi K3 changes summary generation only, not assistant or knowledge-base searches.
 
   BedrockModelId:
     Default: "global.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -500,7 +511,7 @@ Parameters:
       - "global.openai.gpt-5.6-luna"
       - "global.openai.gpt-5.6-terra"
     Description: >
-      If the primary BedrockModelId errors when generating a meeting summary (model
+      If the selected summary model (SummaryBedrockModelId override or BedrockModelId) errors (model
       unavailable, access denied, validation error — not transient throttling, which
       already retries), the summary Lambda retries once against this model instead of
       giving up. Set to empty to disable the fallback. Defaults to
@@ -972,6 +983,7 @@ Metadata:
           - TranscriptLambdaHookFunctionNonPartialOnly
           - EndOfCallTranscriptSummary
           - SummaryGenerationMode
+          - SummaryBedrockModelId
           - BedrockModelId
           - BedrockFallbackModelId
           - EndOfCallLambdaHookFunctionArn
@@ -1217,6 +1229,7 @@ Mappings:
       MaxOpenSegmentMs: "20000"
 
 Conditions:
+  HasSummaryBedrockModelId: !Not [!Equals [!Ref SummaryBedrockModelId, ""]]
   ShouldProvisionSsoPool: !Not [!Equals [!Ref SsoPoolMode, LEGACY]]
   ShouldUseSsoPool: !Equals [!Ref SsoPoolMode, ACTIVE]
   ShouldUseGoogleSso: !And [!Equals [!Ref SsoPoolMode, ACTIVE], !Equals [!Ref EnableGoogleSso, "true"]]
@@ -1748,7 +1761,8 @@ Resources:
       BedrockModelIds:
         - !Ref MeetingAssistServiceBedrockModelID # Meeting assistant
         - "amazon.titan-embed-text-v2:0" # Meeting Assistant Bedrock KB embeddings
-        - !Ref BedrockModelId # Meeting summarization
+        - !Ref BedrockModelId # Historical meeting searches
+        - !If [HasSummaryBedrockModelId, !Ref SummaryBedrockModelId, !Ref BedrockModelId] # Meeting summarization
         - !If [HasBedrockFallbackModelId, !Ref BedrockFallbackModelId, !Ref "AWS::NoValue"] # Meeting summarization fallback
 
   ##########################################################################
@@ -2648,6 +2662,7 @@ Resources:
         EndOfCallTranscriptSummary: !Ref EndOfCallTranscriptSummary
         SummaryGenerationMode: !Ref SummaryGenerationMode
         BedrockModelId: !Ref BedrockModelId
+        SummaryBedrockModelId: !Ref SummaryBedrockModelId
         BedrockFallbackModelId: !Ref BedrockFallbackModelId
         EndOfCallLambdaHookFunctionArn: !Ref EndOfCallLambdaHookFunctionArn
         StartOfCallLambdaHookFunctionArn: !Ref StartOfCallLambdaHookFunctionArn
@@ -2701,6 +2716,7 @@ Resources:
         EnableMCPServer: !Ref EnableMCP
         MCPServerCallbackURLs: !Ref MCPServerCallbackURLs
         EnableGoogleSso: !If [ShouldUseGoogleSso, "true", "false"]
+        FederatedEmailDomain: !Ref FederatedEmailDomain
         GoogleOAuthClientId: !Ref GoogleOAuthClientId
         GoogleOAuthClientSecret: !Ref GoogleOAuthClientSecret
         PasswordSignInEnabled: !If [ShouldUseSsoPool, !Ref PasswordSignInEnabled, "true"]

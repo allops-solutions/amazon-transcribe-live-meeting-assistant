@@ -1101,10 +1101,32 @@ class _FakeScheduler:
 
     def __init__(self) -> None:
         self.created: list[dict] = []
+        self.updated: list[dict] = []
+        self.deleted: list[dict] = []
+        self.schedules = {}
+        self.exceptions = type("Exceptions", (), {
+            "ResourceNotFoundException": type("NotFound", (Exception,), {}),
+            "ConflictException": type("Conflict", (Exception,), {}),
+        })
+
+    def get_schedule(self, **kwargs):
+        if kwargs["Name"] not in self.schedules:
+            raise self.exceptions.ResourceNotFoundException()
+        return self.schedules[kwargs["Name"]]
 
     def create_schedule(self, **kwargs):  # noqa: ANN003
         self.created.append(kwargs)
+        self.schedules[kwargs["Name"]] = kwargs
         return {"ScheduleArn": "arn:aws:scheduler:::schedule/g/n"}
+
+    def update_schedule(self, **kwargs):
+        self.updated.append(kwargs)
+        self.schedules[kwargs["Name"]] = kwargs
+        return {"ScheduleArn": "arn:aws:scheduler:::schedule/g/n"}
+
+    def delete_schedule(self, **kwargs):
+        self.deleted.append(kwargs)
+        self.schedules.pop(kwargs["Name"], None)
 
 
 SCHEDULER_ENV = {
@@ -1119,6 +1141,7 @@ SCHEDULER_ENV = {
     "SCHEDULE_INVOKE_LAUNCHER_ROLE_ARN": "arn:aws:iam::1:role/InvokeLauncher",
     "VP_TASK_REGISTRY_TABLE_NAME": "registry",
     "LMA_STACK_NAME": "stack",
+    "VP_TABLE_NAME": "vp-table",
 }
 
 # A realistic isScheduled row, matching what the UI writes (captured from a
@@ -1126,7 +1149,7 @@ SCHEDULER_ENV = {
 SCHEDULED_ROW = {
     "id": {"S": "vp-1"},
     "isScheduled": {"BOOL": True},
-    "meetingTime": {"N": "1788299100"},
+    "meetingTime": {"N": "4102444800"},
     "meetingPlatform": {"S": "TEAMS"},
     "meetingId": {"S": "25582977335241"},
     "meetingPassword": {"S": "secret"},
@@ -1143,12 +1166,14 @@ def _run_scheduler(raw: str, launch_type: str) -> dict:
     from unittest import mock
 
     fake = _FakeScheduler()
+    dynamodb = mock.Mock()
+    dynamodb.get_item.return_value = {"Item": SCHEDULED_ROW}
     module = types.ModuleType("vpscheduler")
     module.__dict__["__name__"] = "vpscheduler"
     env = {**SCHEDULER_ENV, "VP_LAUNCH_TYPE": launch_type}
     with mock.patch.dict("os.environ", env, clear=False), mock.patch(
         "boto3.client",
-        side_effect=lambda service, *a, **k: fake if service == "scheduler" else mock.Mock(),
+        side_effect=lambda service, *a, **k: fake if service == "scheduler" else dynamodb,
     ):
         exec(compile(_scheduler_source(raw), "vpscheduler", "exec"), module.__dict__)
         event = {
@@ -1261,7 +1286,7 @@ def test_scheduled_microvm_payload_is_readable_by_the_launcher(
     assert payload["meetingPlatform"] == "TEAMS"
     assert payload["meetingPassword"] == "secret"
     # meetingTime is the real meeting time, not the (2-min-earlier) fire time.
-    assert payload["meetingTime"] == "1788299100"
+    assert payload["meetingTime"] == "4102444800"
 
 
 def test_scheduled_launch_fires_before_the_meeting_starts(raw: str) -> None:
@@ -1271,8 +1296,74 @@ def test_scheduled_launch_fires_before_the_meeting_starts(raw: str) -> None:
         fires_at = datetime.strptime(
             expression, "at(%Y-%m-%dT%H:%M:%S)"
         ).replace(tzinfo=timezone.utc)
-        meeting = datetime.fromtimestamp(1788299100, tz=timezone.utc)
+        meeting = datetime.fromtimestamp(4102444800, tz=timezone.utc)
         assert 0 < (meeting - fires_at).total_seconds() <= 300, launch_type
+
+
+@pytest.mark.parametrize("launch_type", ["FARGATE", "MICROVM"])
+def test_scheduler_reconciles_updates_and_cancellation_from_current_row(raw, launch_type):
+    import copy
+    import types
+    from unittest import mock
+
+    fake = _FakeScheduler()
+    dynamodb = mock.Mock()
+    current = copy.deepcopy(SCHEDULED_ROW)
+    dynamodb.get_item.side_effect = lambda **kwargs: {"Item": copy.deepcopy(current)}
+    module = types.ModuleType("calendar_scheduler")
+    with mock.patch.dict("os.environ", {**SCHEDULER_ENV, "VP_LAUNCH_TYPE": launch_type}), mock.patch(
+        "boto3.client", side_effect=lambda service, **kwargs: fake if service == "scheduler" else dynamodb
+    ):
+        exec(compile(_scheduler_source(raw), "calendar_scheduler", "exec"), module.__dict__)
+        event = {"Records": [{"eventName": "INSERT", "dynamodb": {
+            "Keys": {"id": {"S": "vp-1"}}, "NewImage": copy.deepcopy(current)}}]}
+        module.lambda_handler(event, None)
+        # A replay must not attempt another create.
+        module.lambda_handler(event, None)
+        assert len(fake.created) == 1
+        assert len(fake.updated) == 0
+        current["meetingTime"] = {"N": "4103049600"}
+        current["meetingName"] = {"S": "Moved sync"}
+        current["meetingId"] = {"S": "new-meeting"}
+        event["Records"][0]["eventName"] = "MODIFY"
+        # NewImage intentionally remains stale; use the current consistent row.
+        module.lambda_handler(event, None)
+        assert len(fake.created) == 1
+        assert len(fake.updated) == 1
+        assert "new-meeting" in fake.updated[0]["Target"]["Input"]
+        assert fake.updated[0]["ScheduleExpression"] != fake.created[0]["ScheduleExpression"]
+        current["status"] = {"S": "CANCELLED"}
+        module.lambda_handler(event, None)
+        assert not fake.schedules
+        # Delayed INSERT cannot resurrect the cancelled occurrence.
+        event["Records"][0]["eventName"] = "INSERT"
+        module.lambda_handler(event, None)
+        assert len(fake.created) == 1
+        assert dynamodb.get_item.call_args.kwargs["ConsistentRead"] is True
+
+
+def test_scheduler_raises_to_retry_stream_errors_and_never_recreates_past_launch(raw):
+    import copy
+    import types
+    from unittest import mock
+
+    fake = _FakeScheduler()
+    dynamodb = mock.Mock()
+    current = copy.deepcopy(SCHEDULED_ROW)
+    current["meetingTime"] = {"N": "946684800"}
+    dynamodb.get_item.return_value = {"Item": current}
+    module = types.ModuleType("retry_scheduler")
+    with mock.patch.dict("os.environ", SCHEDULER_ENV), mock.patch(
+        "boto3.client", side_effect=lambda service, **kwargs: fake if service == "scheduler" else dynamodb
+    ):
+        exec(compile(_scheduler_source(raw), "retry_scheduler", "exec"), module.__dict__)
+        event = {"Records": [{"eventName": "INSERT", "dynamodb": {
+            "Keys": {"id": {"S": "vp-1"}}, "NewImage": SCHEDULED_ROW}}]}
+        module.lambda_handler(event, None)
+        assert not fake.created
+        dynamodb.get_item.side_effect = RuntimeError("temporary read failure")
+        with pytest.raises(RuntimeError, match="temporary read failure"):
+            module.lambda_handler(event, None)
 
 
 def test_scheduler_lambda_can_pass_the_launcher_invoke_role(template: dict) -> None:

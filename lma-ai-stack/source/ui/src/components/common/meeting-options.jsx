@@ -54,11 +54,6 @@ export const TRANSCRIBE_LANGUAGE_MODE_ITEMS = [
   },
 ];
 
-export const SUMMARY_LANGUAGE_OPTIONS = [
-  { value: 'English', label: 'English' },
-  { value: 'Bosnian', label: 'Bosnian' },
-];
-
 // Missing/empty catalog just means no profiles exist yet — not an error,
 // since most stacks won't have created any.
 export const useSummaryProfileCatalog = () => {
@@ -106,60 +101,37 @@ TranscribeLanguageModeField.propTypes = {
 export const SummaryOptionsFields = ({
   summaryProfile,
   onSummaryProfileChange,
-  summaryLanguage,
-  onSummaryLanguageChange,
   summaryProfileCatalog,
   disabled = false,
 }) => (
-  <>
-    <FormField
-      label="Summary profile (optional)"
-      description={
-        "Which set of summary sections to use. Leave blank for the stack's Default/Custom templates. " +
-        'Manage profiles under Configuration → Transcript Summary.'
+  <FormField
+    label="Summary profile"
+    description={
+      'Choose a profile before generating a summary. The profile prompt determines the output language. ' +
+      'Manage profiles under Configuration → Transcript Summary.'
+    }
+    stretch
+  >
+    <Select
+      selectedOption={
+        summaryProfile
+          ? {
+              value: summaryProfile,
+              label: summaryProfileCatalog.find((p) => p.id === summaryProfile)?.name || summaryProfile,
+            }
+          : null
       }
-      stretch
-    >
-      <Select
-        selectedOption={
-          summaryProfile
-            ? {
-                value: summaryProfile,
-                label: summaryProfileCatalog.find((p) => p.id === summaryProfile)?.name || summaryProfile,
-              }
-            : null
-        }
-        onChange={({ detail }) => onSummaryProfileChange(detail.selectedOption.value)}
-        options={summaryProfileCatalog.map((p) => ({ value: p.id, label: p.name }))}
-        placeholder="Default / Custom (stack-wide)"
-        empty="No summary profiles created yet"
-        disabled={disabled}
-      />
-    </FormField>
-
-    <FormField
-      label="Summary language (optional)"
-      description={
-        "Output language for this meeting's summary, independent of the profile above. " +
-        'Leave blank to use whatever language the chosen templates are written in.'
-      }
-      stretch
-    >
-      <Select
-        selectedOption={summaryLanguage ? { value: summaryLanguage, label: summaryLanguage } : null}
-        onChange={({ detail }) => onSummaryLanguageChange(detail.selectedOption.value)}
-        options={SUMMARY_LANGUAGE_OPTIONS}
-        placeholder="Whatever language the templates are written in"
-        disabled={disabled}
-      />
-    </FormField>
-  </>
+      onChange={({ detail }) => onSummaryProfileChange(detail.selectedOption.value)}
+      options={summaryProfileCatalog.map((p) => ({ value: p.id, label: p.name }))}
+      placeholder="Choose a summary profile"
+      empty="No summary profiles created yet"
+      disabled={disabled}
+    />
+  </FormField>
 );
 SummaryOptionsFields.propTypes = {
   summaryProfile: PropTypes.string.isRequired,
   onSummaryProfileChange: PropTypes.func.isRequired,
-  summaryLanguage: PropTypes.string.isRequired,
-  onSummaryLanguageChange: PropTypes.func.isRequired,
   summaryProfileCatalog: PropTypes.arrayOf(PropTypes.shape({ id: PropTypes.string, name: PropTypes.string }))
     .isRequired,
   disabled: PropTypes.bool,

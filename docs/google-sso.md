@@ -1,14 +1,13 @@
 # Google SSO with CloudFront callbacks
 
-Initial implementation deployed by Ahmed on 2026-09-29. Agent AWS access remains
-read-only. The nonce correction has been deployed and Google authentication now
-reaches Cognito. The browser token exchange fails because the admin bootstrap
-guard assumes `claimsOverrideDetails` is a dictionary, but Cognito supplies null.
-A local correction handles null while preserving existing claim and role overrides.
-The UI also now configures Amplify once before App dependencies are evaluated,
-rather than in a React effect. Both corrections await publish and stack update;
-complete Google sign-in validation is still pending. These changes do not replace
-user pools or delete users or transcripts.
+Ahmed confirmed web Google sign-in and Chrome extension login work after deploying
+the token-generation/Amplify fixes in `bb0f3931` on 2026-09-29. The null
+`claimsOverrideDetails` failure and startup configuration warning are historical.
+The next local UI batch displays the session email and role instead of the
+generated federated username; it does not rename Cognito identities. Agent AWS
+access remains read-only. No further pool switch or user/transcript migration is
+part of that batch. The original pool is retained, but its old passwords do not
+authenticate against the new pool selected in ACTIVE mode.
 
 ## Google client configuration
 
@@ -47,6 +46,28 @@ production SSO-only before that live validation succeeds.
 There are three new Lambda functions: the domain/admin guard, the app-client
 callback updater, and this OAuth bridge, plus an HTTP API. The bridge invokes
 only during sign-in; it does not invoke a summary model.
+
+## Workspace membership enforcement (local patch, not deployed)
+
+The bridge requires the Google ID token's exact `hd` claim to match
+`FederatedEmailDomain` (`allops.co`). A verified company email alone is not enough.
+It inspects only the token response obtained directly from Google's authenticated
+HTTPS endpoint, rejects token-endpoint redirects, and returns accepted tokens
+unchanged for Cognito's cryptographic validation. The browser's `hd` value is not
+trusted; the authorization URL includes only an account-selection hint.
+
+Missing, different or malformed `hd` claims fail closed with a generic OAuth error.
+There are no pool/schema/storage replacements or additional JWT dependencies.
+Google documents this direct token-response trust boundary:
+https://developers.google.com/identity/openid-connect/openid-connect#obtainuserinfo
+
+This applies to fresh Google code exchanges, not retroactively to previously issued
+Cognito access/refresh tokens or existing managed-login sessions. Deploying this
+patch does not sign users out, invalidate old sessions, or continuously recheck
+Workspace membership. A session-revocation/forced-reauthentication rollout, if
+required, is a separate authorized AWS action; the agent did not perform it.
+Dev password sign-in remains governed by its existing flag. After deployment test
+both web and extension fresh Google login and denial of a non-Workspace account.
 
 ## Flags and account transition
 

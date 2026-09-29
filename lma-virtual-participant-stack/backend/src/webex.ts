@@ -84,6 +84,7 @@ export default class Webex {
         messages: string[],
         isEnterprise: boolean | null = false
     ): Promise<void> {
+        if (!messages.length) return;
         // Cap the input lookup so a stale/missing chat editor selector can't hang
         // the caller forever (the goodbye-on-exit path is time-sensitive).
         const messageElement = await frame.waitForSelector(

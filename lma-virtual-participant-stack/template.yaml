@@ -21,19 +21,15 @@ Parameters:
 
   LMAIdentity:
     Type: String
-    Default: LMA ({LMA_USER})
+    Default: allOps LMA
 
   IntroMessage:
     Type: String
-    Default: >-
-      Hello. I am LMA, allOps's AI Live Meeting Assistant.
-      I was invited by {LMA_USER} to join this call.
-      Anyone here can ask me to leave at any time by typing "LMA leave" (or "LMA end") in chat.
+    Default: ""
 
   StartRecordingMessage:
     Type: String
-    Default: >-
-      Live Meeting Assistant started.
+    Default: ""
 
   StopRecordingMessage:
     Type: String
@@ -3184,6 +3180,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - scheduler:CreateSchedule
+                  - scheduler:UpdateSchedule
                   - scheduler:DeleteSchedule
                   - scheduler:GetSchedule
                 Resource: 
@@ -3213,6 +3210,9 @@ Resources:
                   - dynamodb:GetShardIterator
                   - dynamodb:ListStreams
                 Resource: !Ref VirtualParticipantTableStreamArn
+              - Effect: Allow
+                Action: dynamodb:GetItem
+                Resource: !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${VirtualParticipantTableName}"
               - Effect: Allow
                 Action:
                   - "kms:Decrypt"
@@ -3244,11 +3244,40 @@ Resources:
           import boto3
           import logging
           from datetime import datetime, timezone
+          from botocore.config import Config
 
           logger = logging.getLogger()
           logger.setLevel(getattr(logging, os.environ.get('LOG_LEVEL', 'INFO')))
           
-          scheduler_client = boto3.client('scheduler')
+          client_config = Config(retries={'mode': 'adaptive', 'max_attempts': 3})
+          scheduler_client = boto3.client('scheduler', config=client_config)
+          dynamodb_client = boto3.client('dynamodb', config=client_config)
+
+
+          def _delete_schedule(vp_id):
+              try:
+                  scheduler_client.delete_schedule(
+                      GroupName=os.environ['SCHEDULE_GROUP_NAME'], Name=vp_id)
+              except scheduler_client.exceptions.ResourceNotFoundException:
+                  pass
+
+
+          def _upsert_schedule(**desired):
+              try:
+                  current = scheduler_client.get_schedule(
+                      GroupName=desired['GroupName'], Name=desired['Name'])
+              except scheduler_client.exceptions.ResourceNotFoundException:
+                  try:
+                      return scheduler_client.create_schedule(**desired)
+                  except scheduler_client.exceptions.ConflictException:
+                      # A stream retry may race a successfully created schedule.
+                      current = scheduler_client.get_schedule(
+                          GroupName=desired['GroupName'], Name=desired['Name'])
+              same_target = all(current.get('Target', {}).get(key) == desired['Target'].get(key)
+                                for key in ('Arn', 'RoleArn', 'Input'))
+              if current.get('ScheduleExpression') == desired['ScheduleExpression'] and same_target:
+                  return {'ScheduleArn': current.get('Arn')}
+              return scheduler_client.update_schedule(**desired)
 
 
           def _ecs_params(vp_id, new_image, launch_type, meeting_time_int,
@@ -3321,10 +3350,18 @@ Resources:
                           
                       logger.info(f"Processing {event_name} event for VP {vp_id}")
                       
-                      if event_name == 'INSERT':
-                          new_image = dynamodb_data.get('NewImage', {})
+                      if event_name in ('INSERT', 'MODIFY'):
+                          # Stream delivery is at-least-once. Never recreate a cancelled
+                          # or outdated schedule from an earlier event's NewImage.
+                          new_image = dynamodb_client.get_item(
+                              TableName=os.environ['VP_TABLE_NAME'],
+                              Key={'id': {'S': vp_id}}, ConsistentRead=True).get('Item', {})
                           is_scheduled = new_image.get('isScheduled', {}).get('BOOL', False)
                           meeting_time = new_image.get('meetingTime', {}).get('N')
+                          status = new_image.get('status', {}).get('S', 'SCHEDULED')
+                          if not new_image or status != 'SCHEDULED':
+                              _delete_schedule(vp_id)
+                              continue
                           
                           if is_scheduled and meeting_time:
                               meeting_time_int = int(meeting_time)
@@ -3332,6 +3369,11 @@ Resources:
                               # Schedule for future execution
                               delay_seconds = 120  # 2 minutes before meeting
                               scheduled_time = datetime.fromtimestamp(meeting_time_int - delay_seconds, tz=timezone.utc)
+                              if scheduled_time <= datetime.now(timezone.utc):
+                                  # A launched/delivered schedule must not be recreated by
+                                  # a delayed INSERT, MODIFY or stream retry.
+                                  logger.info('VP %s is past pre-join time; not recreating schedule', vp_id)
+                                  continue
 
                               # User identity for persistent profile + stored Zoom creds.
                               # Absent on older rows / guest-only flows.
@@ -3404,7 +3446,7 @@ Resources:
 
                               schedule_expression = f"at({scheduled_time.strftime('%Y-%m-%dT%H:%M:%S')})"
 
-                              response = scheduler_client.create_schedule(
+                              response = _upsert_schedule(
                                   ActionAfterCompletion='DELETE',
                                   FlexibleTimeWindow={'Mode': 'OFF'},
                                   GroupName=os.environ['SCHEDULE_GROUP_NAME'],
@@ -3423,22 +3465,15 @@ Resources:
                               logger.info(f"VP {vp_id} is not scheduled, skipping")
 
                       elif event_name == 'REMOVE':
-                          try:
-                              scheduler_client.delete_schedule(
-                                  GroupName=os.environ['SCHEDULE_GROUP_NAME'],
-                                  Name=vp_id
-                              )
-                              logger.info(f"Successfully unscheduled VP {vp_id}")
-                          except scheduler_client.exceptions.ResourceNotFoundException:
-                              logger.info(f"Schedule for VP {vp_id} not found (may have already been executed)")
-                          except Exception as e:
-                              logger.error(f"Error unscheduling VP {vp_id}: {str(e)}")
+                          _delete_schedule(vp_id)
                   
                   return {'statusCode': 200, 'body': json.dumps({'message': 'Successfully processed VP scheduler events'})}
                   
               except Exception as e:
                   logger.error(f"Error processing VP scheduler events: {str(e)}")
-                  return {'statusCode': 500, 'body': json.dumps({'error': str(e)})}
+                  # Returning statusCode=500 still acknowledges a DynamoDB stream
+                  # batch. Raise so AWS actually retries failed reconciliation.
+                  raise
       Description: Virtual Participant Scheduler with EventBridge Scheduler integration
       MemorySize: 512
       Timeout: 300
@@ -3455,6 +3490,7 @@ Resources:
           RECORDINGS_BUCKET_NAME: !Ref S3BucketName
           VP_TASK_REGISTRY_TABLE_NAME: !Ref VPTaskRegistryTableName
           SCHEDULE_GROUP_NAME: !Ref VPScheduleGroup
+          VP_TABLE_NAME: !Ref VirtualParticipantTableName
           SCHEDULER_ROLE_ARN: !GetAtt VPSchedulerExecutionRole.Arn
           VP_LAUNCH_TYPE: !Ref VPLaunchType
           # MICROVM only: the schedule target is the launcher Lambda rather than

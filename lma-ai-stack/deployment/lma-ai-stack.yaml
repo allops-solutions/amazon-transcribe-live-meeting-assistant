@@ -9,6 +9,10 @@ Transform: AWS::Serverless-2016-10-31
 Description: Amazon Transcribe Live Meeting Assist - AI Stack
 
 Parameters:
+  FederatedEmailDomain:
+    Type: String
+    Default: allops.co
+    Description: Required Google Workspace hosted domain for federated sign-in.
   GoogleOAuthClientId:
     Type: String
     Default: ""
@@ -212,8 +216,19 @@ Parameters:
     Description: >
       ON_DEMAND: no summary is generated when a meeting ends (only the transcript
       is archived for the Knowledge Base); users generate one from the meeting page,
-      choosing a summary profile and language, and pay for Bedrock only then.
+      choosing a summary profile, and pay for Bedrock only then.
       AUTOMATIC: a summary is generated at the end of every meeting.
+
+  SummaryBedrockModelId:
+    Type: String
+    Default: ""
+    AllowedValues:
+      - ""
+      - "global.moonshotai.kimi-k3"
+      - "us.moonshotai.kimi-k3"
+    Description: >-
+      Optional summary-only model override. Empty uses BedrockModelId;
+      does not change assistant or knowledge-base search models.
 
   BedrockModelId:
     Default: "global.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -683,6 +698,7 @@ Metadata:
           Transcript Summary is processed (existing)
 
 Conditions:
+  HasSummaryBedrockModelId: !Not [!Equals [!Ref SummaryBedrockModelId, ""]]
   ShouldEnableGoogleSso: !Equals [!Ref EnableGoogleSso, "true"]
   ShouldEnablePasswordSignIn: !Equals [!Ref PasswordSignInEnabled, "true"]
   ShouldRetainDataOnDelete: !Equals [!Ref EnableDataRetentionOnDelete, "true"]
@@ -1776,7 +1792,7 @@ Resources:
       Runtime: python3.12
       Environment:
         Variables:
-          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          BEDROCK_MODEL_ID: !If [HasSummaryBedrockModelId, !Ref SummaryBedrockModelId, !Ref BedrockModelId]
           BEDROCK_FALLBACK_MODEL_ID: !Ref BedrockFallbackModelId
           SUMMARY_MAX_TOKENS: "4096"
           SUMMARY_EFFORT: "medium"
@@ -4202,7 +4218,25 @@ Resources:
       DataSourceName: !GetAtt AppSyncDataSource.Name
       TypeName: Mutation
       FieldName: deleteTranscriptSegment
-      RequestMappingTemplateS3Location: ../source/appsync/deleteTranscriptSegment.request.vtl
+      RequestMappingTemplate: !Sub |-
+        #set($allowed = false)
+        #if($ctx.identity.claims && $ctx.identity.claims.get("cognito:groups") && $ctx.identity.claims.get("cognito:groups").contains("Admin"))
+          #set($allowed = true)
+        #end
+        #if($ctx.identity.userArn && ($ctx.identity.userArn.startsWith("arn:${AWS::Partition}:sts::${AWS::AccountId}:assumed-role/${MeetingControlsResolverFunctionExecutionRole}/") || $ctx.identity.userArn == "${MeetingControlsResolverFunctionExecutionRole.Arn}"))
+          #set($allowed = true)
+        #end
+        #if(!$allowed)
+          $util.unauthorized()
+        #end
+        {
+          "version": "2018-05-29",
+          "operation": "DeleteItem",
+          "key": {
+            "PK": $util.dynamodb.toDynamoDBJson($ctx.args.input.PK),
+            "SK": $util.dynamodb.toDynamoDBJson($ctx.args.input.SK)
+          }
+        }
       ResponseMappingTemplate: "$util.toJson($context.result)"
 
   ShareTranscriptSegmentAppSyncResolver:
@@ -4324,6 +4358,16 @@ Resources:
       FieldName: deleteCall
       # This VTL uses a local sub so it needs to be kept here
       RequestMappingTemplate: !Sub |-
+        #set($allowed = false)
+        #if($ctx.identity.claims && $ctx.identity.claims.get("cognito:groups") && $ctx.identity.claims.get("cognito:groups").contains("Admin"))
+          #set($allowed = true)
+        #end
+        #if($ctx.identity.userArn && ($ctx.identity.userArn.startsWith("arn:${AWS::Partition}:sts::${AWS::AccountId}:assumed-role/${MeetingControlsResolverFunctionExecutionRole}/") || $ctx.identity.userArn == "${MeetingControlsResolverFunctionExecutionRole.Arn}"))
+          #set($allowed = true)
+        #end
+        #if(!$allowed)
+          $util.unauthorized()
+        #end
         #set( $PK = "c#${!ctx.args.input.CallId}" )
         {
           "version": "2018-05-29",
@@ -4334,7 +4378,7 @@ Resources:
               "operation": "DeleteItem",
               "key": {
                 "PK": $util.dynamodb.toDynamoDBJson($PK),
-                "SK": $util.dynamodb.toDynamoDBJson($PK),
+                "SK": $util.dynamodb.toDynamoDBJson($PK)
               }
             },
             {
@@ -4342,10 +4386,10 @@ Resources:
               "operation": "DeleteItem",
               "key" : {
                 "PK": $util.dynamodb.toDynamoDBJson($ctx.args.input.ListPK),
-                "SK": $util.dynamodb.toDynamoDBJson($ctx.args.input.ListSK),
-              },
-            },
-          ],
+                "SK": $util.dynamodb.toDynamoDBJson($ctx.args.input.ListSK)
+              }
+            }
+          ]
         }
       ResponseMappingTemplateS3Location: ../source/appsync/deleteCall.response.vtl
 
@@ -4498,6 +4542,7 @@ Resources:
       Timeout: 15
       Environment:
         Variables:
+          LLM_PROMPT_TEMPLATE_TABLE_NAME: !Ref LLMPromptTemplateTableName
           EVENT_SOURCING_TABLE_NAME: !Ref EventSourcingTable
           ASYNC_TRANSCRIPT_SUMMARY_ORCHESTRATOR_ARN: !GetAtt AsyncTranscriptSummaryOrchestrator.Arn
           # Orchestrator Timeout (600) + margin: an IN_PROGRESS claim older
@@ -4507,6 +4552,8 @@ Resources:
         # Read the Call; write SummaryProfile/SummaryLanguage/SummaryStatus on it.
         - DynamoDBCrudPolicy:
             TableName: !Ref EventSourcingTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref LLMPromptTemplateTableName
         - Statement:
             - Effect: Allow
               Action:
@@ -5250,6 +5297,30 @@ Resources:
         KMSMasterKeyId: !Ref CustomerManagedEncryptionKeyArn
       StreamSpecification:
         StreamViewType: NEW_AND_OLD_IMAGES
+  # Atomic MCP calendar/meeting-slot claims. No existing table is replaced.
+  CalendarScheduleClaimsTable:
+    Type: AWS::DynamoDB::Table
+    Condition: ShouldEnableMCPServer
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: key
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref CustomerManagedEncryptionKeyArn
+
   # MCP Servers Table - Account-level MCP server configurations
   MCPServersTable:
     Type: AWS::DynamoDB::Table
@@ -5789,6 +5860,29 @@ Resources:
               "fieldName": "listMCPApiKeys"
             }
           }
+        }
+      ResponseMappingTemplate: |
+        #if($ctx.error)
+          $util.error($ctx.error.message, $ctx.error.type)
+        #end
+        $util.toJson($ctx.result)
+
+  # Read-only notification after the MCP's atomic DynamoDB transaction.
+  NotifyScheduledVirtualParticipantResolver:
+    Type: AWS::AppSync::Resolver
+    Condition: ShouldEnableMCPServer
+    DependsOn: AppSyncSchema
+    Properties:
+      ApiId: !GetAtt AppSyncApiEncrypted.ApiId
+      TypeName: Mutation
+      FieldName: notifyScheduledVirtualParticipant
+      DataSourceName: !GetAtt VirtualParticipantDataSource.Name
+      RequestMappingTemplate: |
+        {
+          "version": "2018-05-29",
+          "operation": "GetItem",
+          "key": { "id": $util.dynamodb.toDynamoDBJson($ctx.args.id) },
+          "consistentRead": true
         }
       ResponseMappingTemplate: |
         #if($ctx.error)
@@ -7122,6 +7216,8 @@ Resources:
           BEDROCK_MODEL_ID: !Ref BedrockModelId
           AWS_ACCOUNT_ID: !Ref AWS::AccountId
           APPSYNC_GRAPHQL_URL: !GetAtt AppSyncApiEncrypted.GraphQLUrl
+          VP_TABLE_NAME: !Ref VirtualParticipantTable
+          CALENDAR_SCHEDULE_TABLE_NAME: !Ref CalendarScheduleClaimsTable
           LMA_SETTINGS_PARAMETER: !Ref LMASettingsParameterName
           LMA_WEB_APP_URL: !Sub "https://${WebAppCloudFrontDistribution.DomainName}"
           # Used by start_meeting_now to resolve user email → Cognito sub so
@@ -7133,6 +7229,19 @@ Resources:
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref EventSourcingTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+              Resource:
+                - !GetAtt VirtualParticipantTable.Arn
+                - !GetAtt CalendarScheduleClaimsTable.Arn
+            - Effect: Allow
+              Action:
+                - kms:GenerateDataKey
+              Resource: !Ref CustomerManagedEncryptionKeyArn
         - S3ReadPolicy:
             BucketName: !Ref S3BucketName
         - Statement:
@@ -7162,6 +7271,7 @@ Resources:
                 - appsync:GraphQL
               Resource:
                 - !Sub "${AppSyncApiEncrypted.Arn}/types/Mutation/fields/createVirtualParticipant"
+                - !Sub "${AppSyncApiEncrypted.Arn}/types/Mutation/fields/notifyScheduledVirtualParticipant"
                 # Query/* covers getVirtualParticipant used by the new
                 # get_virtual_participant_status tool.
                 - !Sub "${AppSyncApiEncrypted.Arn}/types/Query/*"
@@ -7323,7 +7433,11 @@ Resources:
                         Type: number
                         Description: "Maximum number of meetings to return"
                 - Name: schedule_meeting
-                  Description: "Schedule a future meeting with virtual participant"
+                  Description: >-
+                    Schedule a future meeting with allOps LMA. Supported platforms:
+                    Google Meet, Zoom, Teams, Chime and Webex. Google Meet IS supported;
+                    use the meet.google.com URL or abc-defg-hij code. Host admission or
+                    bot Google sign-in may be required.
                   InputSchema:
                     Type: object
                     Properties:
@@ -7341,6 +7455,12 @@ Resources:
                       scheduledTime:
                         Type: string
                         Description: "ISO 8601 datetime when meeting should start"
+                      calendarEventUid:
+                        Type: string
+                        Description: "Google Calendar iCalUID shared across attendees, NOT per-calendar event id. For recurring events also supply calendarOccurrenceStart; omit occurrence start for one-off events."
+                      calendarOccurrenceStart:
+                        Type: string
+                        Description: "Recurring events only: originalStartTime.dateTime with timezone, not the updated event start. Keep unchanged when rescheduling; omit for one-off events."
                       meetingPassword:
                         Type: string
                         Description: "Optional meeting password"
@@ -7359,9 +7479,67 @@ Resources:
                       - meetingPlatform
                       - meetingId
                       - scheduledTime
+                - Name: update_scheduled_meeting
+                  Description: "Update an existing pending MCP-scheduled VP when its calendar occurrence changes. Owner/admin only; use virtualParticipantId or calendarEventUid (plus original start for recurring events). Never create another VP for a reschedule. Changes must arrive at least 3 minutes before the old and new meeting starts. No running meeting is interrupted."
+                  InputSchema:
+                    Type: object
+                    Properties:
+                      scheduleAction:
+                        Type: string
+                        Description: "Required routing marker: UPDATE."
+                      virtualParticipantId:
+                        Type: string
+                        Description: "VP id returned by schedule_meeting; omit only when calendarEventUid is supplied (plus original start for recurring events)."
+                      calendarEventUid:
+                        Type: string
+                        Description: "Google Calendar iCalUID (shared across attendees), NOT per-calendar event id. For recurring events also supply calendarOccurrenceStart; omit occurrence start for one-off events."
+                      calendarOccurrenceStart:
+                        Type: string
+                        Description: "Recurring events only: originalStartTime.dateTime with timezone, not the updated event start. Keep unchanged when rescheduling; omit for one-off events."
+                      meetingName:
+                        Type: string
+                        Description: "Updated event title."
+                      meetingPlatform:
+                        Type: string
+                        Description: "Updated platform: Google Meet, Zoom, Teams, Chime, Webex."
+                      meetingId:
+                        Type: string
+                        Description: "Updated meeting code/URL."
+                      scheduledTime:
+                        Type: string
+                        Description: "Updated start datetime with timezone; NOT calendarOccurrenceStart."
+                      meetingPassword:
+                        Type: string
+                        Description: "Updated password; empty string clears it."
+                      meetingLanguage:
+                        Type: string
+                        Description: "Updated transcription language mode (same choices as schedule_meeting)."
+                    Required:
+                      - scheduleAction
+                - Name: cancel_scheduled_meeting
+                  Description: "Cancel a pending MCP-scheduled VP when its calendar occurrence is cancelled or no longer requires LMA. Owner/admin only; use virtualParticipantId or calendarEventUid (plus original start for recurring events). Retrying cancellation is safe. Must arrive at least 3 minutes before meeting start. Does not delete transcripts or stop an already-running meeting."
+                  InputSchema:
+                    Type: object
+                    Properties:
+                      scheduleAction:
+                        Type: string
+                        Description: "Required routing marker: CANCEL."
+                      virtualParticipantId:
+                        Type: string
+                        Description: "VP id returned by schedule_meeting; omit only when calendarEventUid is supplied (plus original start for recurring events)."
+                      calendarEventUid:
+                        Type: string
+                        Description: "Google Calendar iCalUID (shared across attendees), NOT per-calendar event id. For recurring events also supply calendarOccurrenceStart; omit occurrence start for one-off events."
+                      calendarOccurrenceStart:
+                        Type: string
+                        Description: "Recurring events only: originalStartTime.dateTime with timezone, not the updated event start. Keep unchanged when rescheduling; omit for one-off events."
+                    Required:
+                      - scheduleAction
                 - Name: start_meeting_now
                   Description: >-
                     Start a meeting immediately with a virtual participant.
+                    Supported platforms: Google Meet, Zoom, Teams, Chime and Webex.
+                    Google Meet IS supported; host admission or bot Google sign-in may be required.
                     When the user has stored Zoom credentials in LMA, the VP
                     signs in to Zoom with them by default for a more reliable
                     join; pass useStoredZoomCredentials=false to force a guest
@@ -8470,6 +8648,7 @@ Resources:
           COGNITO_LOGIN_URL: !Sub "https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com"
           GOOGLE_CLIENT_ID: !Ref GoogleOAuthClientId
           GOOGLE_CLIENT_SECRET: !Ref GoogleOAuthClientSecret
+          ALLOWED_WORKSPACE_DOMAIN: !Ref FederatedEmailDomain
       Policies:
         - Version: "2012-10-17"
           Statement:

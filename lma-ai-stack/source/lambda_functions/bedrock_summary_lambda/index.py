@@ -3,8 +3,7 @@
 # See the LICENSE file in the project root for full license information.
 
 #
-# Invokes Anthropic generate text API using requests module
-# see https://console.anthropic.com/docs/api/reference for more details
+# Generates text-only, single-turn summaries through Amazon Bedrock Converse.
 
 import json
 import logging
@@ -160,9 +159,8 @@ def get_profile_templates_from_dynamodb(profile_id):
     """Load a named summary profile's section templates (e.g. "technical-client",
     "startup", "team-weekly"). Profiles are self-contained — unlike the
     Default/Custom pair, there is no merge; a profile's own N#LABEL fields are
-    its complete set of sections. Falls back to the Default+Custom merge if
-    the profile can't be found, so a stale/deleted profile reference on an
-    old meeting never breaks summary generation."""
+    its complete set of sections. A missing/deleted profile fails without
+    silently generating from a different prompt set."""
     try:
         response = dynamodb_client.get_item(
             Key={"LLMPromptTemplateId": {"S": f"Profile#{profile_id}"}},
@@ -170,8 +168,7 @@ def get_profile_templates_from_dynamodb(profile_id):
         )
         item = response.get("Item")
         if not item:
-            print(f"Summary profile '{profile_id}' not found — falling back to Default+Custom templates")
-            return get_templates_from_dynamodb(None)
+            raise ValueError(f"Summary profile '{profile_id}' no longer exists. Choose another profile.")
 
         templates = []
         for k in sorted(item):
@@ -183,10 +180,12 @@ def get_profile_templates_from_dynamodb(profile_id):
                 index = k.find("#")
                 k_stripped = k[index + 1:]
                 templates.append({k_stripped: prompt})
+        if not templates:
+            raise ValueError("The selected summary profile has no sections.")
         return templates
     except Exception as e:
-        print(f"Error loading summary profile '{profile_id}': {e} — falling back to Default+Custom templates")
-        return get_templates_from_dynamodb(None)
+        print(f"Error loading summary profile '{profile_id}': {e}")
+        raise
 
 
 def apply_language(prompt, language):
@@ -254,7 +253,8 @@ def build_inference_args(modelId):
         args["additionalModelRequestFields"] = {
             "reasoningConfig": {"type": "enabled", "maxReasoningEffort": "high" if effort == "max" else effort}
         }
-    # other models (Nova 1.x etc.): no reasoning support, plain call
+    # Other models (including Kimi K3): use plain single-turn Converse args,
+    # without Claude/OpenAI-specific reasoning fields or prior reasoning blocks.
     return args
 
 
@@ -328,6 +328,8 @@ def generate_summary(transcript, prompt_override, profile_id=None, language=None
         prompt = apply_language(prompt, language)
         print("Prompt:", prompt)
         response = call_bedrock(prompt)
+        if not isinstance(response, str) or not response.strip():
+            raise ValueError("The model returned an empty summary section.")
         print("API Response:", response)
         result[key] = response
     if len(result.keys()) == 1:
@@ -363,7 +365,14 @@ def getKBMetadata(metadata):
 
 
 def format_summary(summary, metadata):
-    summary_dict = json.loads(summary)
+    # Single-section profiles may deliberately return Markdown/plain text.
+    # Preserve the model text instead of requiring every prompt to return JSON.
+    try:
+        summary_dict = json.loads(summary)
+    except (TypeError, ValueError):
+        summary_dict = {"SUMMARY": summary}
+    if not isinstance(summary_dict, dict):
+        summary_dict = {"SUMMARY": summary}
     summary_dict["MEETING NAME"] = metadata["CallId"]
     summary_dict["MEETING DATE AND TIME"] = metadata["CreatedAt"]
     summary_dict["MEETING DURATION (SECONDS)"] = int(
@@ -420,20 +429,19 @@ def handler(event, context):
         prompt_override = None
         if "Prompt" in event:
             prompt_override = event["Prompt"]
-        # Per-meeting summary profile ("technical-client", "startup", "team-weekly",
-        # ...) and output language, set at meeting-creation time and carried
-        # through the END call event. Both optional; absent means today's
-        # stack-wide Default+Custom templates, in whatever language they're
-        # written in — unchanged behavior for meetings that don't set them.
+        # On-demand requests carry an explicitly selected profile. Legacy
+        # automatic/debug requests can still use the Default+Custom templates.
+        # Language comes exclusively from the prompt, never a saved override.
         summary_profile = event.get("SummaryProfile") or None
-        summary_language = event.get("SummaryLanguage") or None
+        summary_language = None
         summary = generate_summary(transcript, prompt_override, summary_profile, summary_language)
         if not prompt_override:
-            # only write to S3 when using default summary prompt
+            # Archive normal profile/default runs, not ad-hoc debug prompts.
             write_to_s3(callId, metadata, transcript, summary)
     except Exception as e:
         print(e)
-        summary = "An error occurred."
+        # Never overwrite a previous summary with an error placeholder.
+        return {"summary": None, "error": "Summary generation failed. The previous summary was kept."}
     print("Returning: ", json.dumps({"summary": summary}))
     return {"summary": summary}
 

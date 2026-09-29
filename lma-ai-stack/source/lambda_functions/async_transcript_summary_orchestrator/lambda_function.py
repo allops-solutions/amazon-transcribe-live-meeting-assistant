@@ -53,11 +53,14 @@ def get_call_summary(message: Dict[str, Any]):
     )
     try:
         message = json.loads(lambda_response.get("Payload").read().decode("utf-8"))
+        if lambda_response.get("FunctionError"):
+            raise RuntimeError("Summary Lambda failed; preserving existing summary.")
     except Exception as error:
         LOGGER.error(
             "Transcript summary result payload parsing exception. Lambda must return JSON object with (modified) input event fields",
-            extra=error,
+            extra={"error": str(error)},
         )
+        raise
     return message
 
 
@@ -104,6 +107,9 @@ def handler(event, context: LambdaContext):
         # End-of-call in ON_DEMAND mode: the summary Lambda only archived the
         # transcript for the Knowledge Base. No summary, nothing to publish.
         LOGGER.info("TranscriptOnly run finished for %s — no summary generated", data.get("CallId"))
+        return
+    if call_summary.get("error") or not call_summary.get("summary"):
+        LOGGER.error("Summary generation failed; no ADD_SUMMARY event will be written.")
         return
     data["CallSummaryText"] = call_summary["summary"]
 

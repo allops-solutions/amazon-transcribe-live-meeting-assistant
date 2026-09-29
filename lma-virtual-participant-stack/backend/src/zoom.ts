@@ -464,6 +464,7 @@ export default class Zoom {
     }
 
     private async sendMessages(page: Page, messages: string[]): Promise<void> {
+        if (!messages.length) return;
         // Make sure the panel is open, but never toggle a panel that's already
         // open (see openChatPanel — the toolbar button is a toggle).
         if (!(await this.chatInputVisible(page))) {

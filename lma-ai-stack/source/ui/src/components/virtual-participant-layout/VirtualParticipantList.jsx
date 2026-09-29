@@ -34,6 +34,7 @@ import useAppContext from '../../contexts/app';
 import awsExports from '../../aws-exports';
 import useSettingsContext from '../../contexts/settings';
 import useLocalStorage from '../common/local-storage';
+import mergeParticipantUpdate from './participantUpdates';
 import { paginationLabels } from '../common/labels';
 import { getFilterCounterText, TableEmptyState, TableNoMatchState } from '../common/table';
 import { DEFAULT_TRANSCRIBE_LANGUAGE_MODE, TranscribeLanguageModeField } from '../common/meeting-options';
@@ -358,11 +359,7 @@ const VirtualParticipantList = () => {
           }
           return prev.map((p) => {
             if (p.id === updatedParticipant.id) {
-              return {
-                ...p,
-                status: updatedParticipant.status,
-                updatedAt: updatedParticipant.updatedAt,
-              };
+              return mergeParticipantUpdate(p, updatedParticipant);
             }
             return p;
           });

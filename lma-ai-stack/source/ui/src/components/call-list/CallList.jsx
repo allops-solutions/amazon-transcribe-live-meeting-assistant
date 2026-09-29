@@ -48,7 +48,8 @@ const CallList = () => {
     totalCallCountTruncated,
   } = useCallsContext();
 
-  const [preferences, setPreferences] = useLocalStorage('call-list-preferences', DEFAULT_PREFERENCES);
+  // New schema key replaces stale columns cached by existing users.
+  const [preferences, setPreferences] = useLocalStorage('call-list-preferences-v2', DEFAULT_PREFERENCES);
 
   // prettier-ignore
   const {
