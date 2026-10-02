@@ -2080,6 +2080,7 @@ Resources:
               !Ref EndOfCallLambdaHookFunctionArn,
             ]
           CALL_DATA_STREAM_NAME: !Ref CallDataStream
+          EVENT_SOURCING_TABLE_NAME: !Ref EventSourcingTable
           # This function waits synchronously for BedrockSummaryLambda, which
           # may run up to its own 600s Timeout. Waiting must cover that in a
           # SINGLE attempt: with read_timeout 300 and boto retries, a slow
@@ -2146,6 +2147,19 @@ Resources:
               - Effect: Allow
                 Action: kinesis:PutRecord
                 Resource: !Ref CallDataStreamArn
+              - Effect: Allow
+                Action: dynamodb:UpdateItem
+                Resource: !GetAtt EventSourcingTable.Arn
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                Resource: !Ref CustomerManagedEncryptionKeyArn
+                Condition:
+                  StringEquals:
+                    "kms:ViaService": !Sub "dynamodb.${AWS::Region}.amazonaws.com"
               - !If
                 - ShouldEnableEndOfCallLambdaHookFunction
                 - Effect: Allow

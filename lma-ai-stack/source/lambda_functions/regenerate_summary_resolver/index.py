@@ -130,16 +130,36 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     )
 
     payload: Dict[str, Any] = {"CallId": call_id}
+    payload["SummaryRequestedAt"] = requested_at
     if summary_profile:
         payload["SummaryProfile"] = summary_profile
     if summary_language:
         payload["SummaryLanguage"] = summary_language
 
     logger.info("Invoking summary orchestrator: %s", json.dumps(payload))
-    lambda_client.invoke(
-        FunctionName=ASYNC_TRANSCRIPT_SUMMARY_ORCHESTRATOR_ARN,
-        InvocationType="Event",
-        Payload=json.dumps(payload),
-    )
+    try:
+        invocation = lambda_client.invoke(
+            FunctionName=ASYNC_TRANSCRIPT_SUMMARY_ORCHESTRATOR_ARN,
+            InvocationType="Event",
+            Payload=json.dumps(payload),
+        )
+        if invocation.get("StatusCode") != 202:
+            raise RuntimeError("Summary orchestrator did not accept the request")
+    except Exception:
+        # The request was never accepted. Release only this claim, never a
+        # newer run that might have replaced it after the stale-run TTL.
+        try:
+            table.update_item(
+                Key={"PK": pk, "SK": pk},
+                UpdateExpression="SET SummaryStatus = :failed",
+                ConditionExpression="SummaryStatus = :running AND SummaryRequestedAt = :requested_at",
+                ExpressionAttributeValues={
+                    ":failed": "FAILED", ":running": STATUS_IN_PROGRESS,
+                    ":requested_at": requested_at,
+                },
+            )
+        except Exception:
+            logger.exception("Could not release failed summary claim for %s", call_id)
+        raise
 
     return {"CallId": call_id, "Success": True}

@@ -90,6 +90,15 @@ const updateSummaryTextMutation = /* GraphQL */ `
   }
 `;
 
+const summaryRunStatusQuery = /* GraphQL */ `
+  query SummaryRunStatus($callId: ID!) {
+    getCall(CallId: $callId) {
+      SummaryStatus
+      SummaryRequestedAt
+    }
+  }
+`;
+
 // comprehend PII types
 const piiTypesSplitRegEx = new RegExp(`\\[(${COMPREHEND_PII_TYPES.join('|')})\\]`);
 
@@ -246,7 +255,7 @@ const CallSummary = ({ item }) => {
     item.summaryStatus === 'IN_PROGRESS' &&
     !!item.summaryRequestedAt &&
     Date.now() - Date.parse(item.summaryRequestedAt) < IN_PROGRESS_STALE_MS;
-  const generationInProgress = serverInProgress || regenerateStatus === 'in-progress';
+  const generationInProgress = (serverInProgress && regenerateStatus !== 'error') || regenerateStatus === 'in-progress';
   const meetingEnded = item.recordingStatusLabel === DONE_STATUS;
 
   // Detect new text or a completed newer request via onUpdateCall. The latter
@@ -272,6 +281,37 @@ const CallSummary = ({ item }) => {
     },
     [],
   );
+
+  // A failed run updates its DynamoDB claim without publishing a replacement
+  // summary, so there is no onUpdateCall subscription for that outcome.
+  // Poll only while this page is waiting for its own run.
+  useEffect(() => {
+    if (regenerateStatus !== 'in-progress') return undefined;
+    let cancelled = false;
+    const checkRun = async () => {
+      try {
+        const response = await client.graphql({
+          query: summaryRunStatusQuery,
+          variables: { callId: item.callId },
+        });
+        const run = response?.data?.getCall;
+        if (cancelled || !run || run.SummaryStatus !== 'FAILED') return;
+        if (run.SummaryRequestedAt === regenerateBaselineRef.current?.requestedAt) return;
+        if (regenerateTimeoutRef.current) clearTimeout(regenerateTimeoutRef.current);
+        regenerateTimeoutRef.current = null;
+        regenerateBaselineRef.current = null;
+        setRegenerateError('Summary generation failed. The previous summary was kept.');
+        setRegenerateStatus('error');
+      } catch (error) {
+        logger.warn('Could not check summary run status:', error);
+      }
+    };
+    const timer = setInterval(checkRun, 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [regenerateStatus, item.callId]);
 
   // Edit Summary: a plain markdown textarea, not a rich editor - matches
   // what was asked for. Edits the same flattened text getMarkdownSummary
@@ -499,6 +539,11 @@ const CallSummary = ({ item }) => {
             onDismiss={() => setRegenerateStatus(null)}
           >
             {regenerateError}
+          </Alert>
+        )}
+        {item.summaryStatus === 'FAILED' && regenerateStatus !== 'error' && !generationInProgress && (
+          <Alert type="error" header="Summary generation failed">
+            The previous summary was kept. Choose a profile and try again after the issue is resolved.
           </Alert>
         )}
         {!item.callSummaryText && !generationInProgress && (

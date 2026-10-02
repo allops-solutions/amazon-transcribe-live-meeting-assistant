@@ -237,11 +237,16 @@ def build_inference_args(modelId):
       OpenAI:    reasoning_effort (low|medium|high)
       Nova 2:    reasoningConfig.type=enabled + maxReasoningEffort (low|medium|high), temperature must be 0
     """
-    args = {"inferenceConfig": {"maxTokens": SUMMARY_MAX_TOKENS, "temperature": 0}}
+    inference_config = {"maxTokens": SUMMARY_MAX_TOKENS}
+    # Kimi K3 rejects the temperature field even when it is set to zero.
+    # Keep provider-specific optional fields out of the shared request.
+    if "moonshotai.kimi" not in modelId:
+        inference_config["temperature"] = 0
+    args = {"inferenceConfig": inference_config}
     effort = SUMMARY_EFFORT
     if effort in ("", "off", "none", "0"):
         return args
-    if "anthropic" in modelId:
+    if "anthropic" in modelId and "claude-haiku-4-5" not in modelId:
         args["inferenceConfig"]["temperature"] = 1
         args["additionalModelRequestFields"] = {
             "thinking": {"type": "adaptive"},

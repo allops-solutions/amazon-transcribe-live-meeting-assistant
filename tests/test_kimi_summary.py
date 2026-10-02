@@ -80,7 +80,17 @@ class KimiConverseTests(unittest.TestCase):
         self.assertEqual(self.module["call_bedrock"]("Transcript text"), "Meeting summary")
         self.client.converse.assert_called_once_with(
             modelId=KIMI, messages=[{"role": "user", "content": [{"text": "Transcript text"}]}],
-            inferenceConfig={"maxTokens": 4096, "temperature": 0})
+            inferenceConfig={"maxTokens": 4096})
+
+    def test_haiku_fallback_omits_unsupported_adaptive_thinking(self):
+        args = self.module["build_inference_args"](
+            "global.anthropic.claude-haiku-4-5-20251001-v1:0")
+        self.assertEqual(args, {"inferenceConfig": {"maxTokens": 4096, "temperature": 0}})
+
+    def test_sonnet_keeps_adaptive_thinking(self):
+        args = self.module["build_inference_args"]("global.anthropic.claude-sonnet-4-6")
+        self.assertEqual(args["inferenceConfig"]["temperature"], 1)
+        self.assertEqual(args["additionalModelRequestFields"]["thinking"]["type"], "adaptive")
 
     def test_existing_fallback_still_runs_after_primary_error(self):
         self.client.converse.side_effect = [RuntimeError("Unavailable"), self.response()]

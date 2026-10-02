@@ -8,6 +8,7 @@ from os import getenv
 from typing import TYPE_CHECKING, Any, Dict
 
 import boto3
+from botocore.exceptions import ClientError
 
 # third-party imports from Lambda layer
 from aws_lambda_powertools import Logger
@@ -40,9 +41,37 @@ LAMBDA_CLIENT: LambdaClient = BOTO3_SESSION.client(
     config=CLIENT_CONFIG,
 )
 KINESIS_CLIENT: KinesisClient = BOTO3_SESSION.client("kinesis")
+DYNAMODB_CLIENT = BOTO3_SESSION.client("dynamodb")
 
 TRANSCRIPT_SUMMARY_FUNCTION_ARN = getenv("TRANSCRIPT_SUMMARY_FUNCTION_ARN", "")
 CALL_DATA_STREAM_NAME = getenv("CALL_DATA_STREAM_NAME", "")
+EVENT_SOURCING_TABLE_NAME = getenv("EVENT_SOURCING_TABLE_NAME", "")
+
+
+def mark_summary_failed(message: Dict[str, Any]):
+    """Release only the failed on-demand run; preserve the previous summary."""
+    call_id = message.get("CallId")
+    requested_at = message.get("SummaryRequestedAt")
+    if not (call_id and requested_at):
+        return
+    try:
+        DYNAMODB_CLIENT.update_item(
+            TableName=EVENT_SOURCING_TABLE_NAME,
+            Key={"PK": {"S": f"c#{call_id}"}, "SK": {"S": f"c#{call_id}"}},
+            UpdateExpression="SET SummaryStatus = :failed",
+            ConditionExpression="SummaryStatus = :running AND SummaryRequestedAt = :requested_at",
+            ExpressionAttributeValues={
+                ":failed": {"S": "FAILED"}, ":running": {"S": "IN_PROGRESS"},
+                ":requested_at": {"S": requested_at},
+            },
+        )
+    except ClientError as error:
+        if error.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            LOGGER.info("Summary claim was already completed or replaced for %s", call_id)
+            return
+        LOGGER.exception("Could not mark summary failed for %s", call_id)
+    except Exception:
+        LOGGER.exception("Could not mark summary failed for %s", call_id)
 
 
 def get_call_summary(message: Dict[str, Any]):
@@ -88,6 +117,7 @@ def write_call_summary_to_kds(message: Dict[str, Any]):
                 "Error writing ADD_SUMMARY event to KDS ",
                 extra=error,
             )
+            raise
     return
 
 
@@ -99,7 +129,12 @@ def handler(event, context: LambdaContext):
 
     data = json.loads(json.dumps(event))
 
-    call_summary = get_call_summary(message=data)
+    try:
+        call_summary = get_call_summary(message=data)
+    except Exception:
+        LOGGER.exception("Summary Lambda invocation failed")
+        mark_summary_failed(data)
+        return
 
     LOGGER.debug("Call summary: ")
     LOGGER.debug(call_summary)
@@ -110,7 +145,11 @@ def handler(event, context: LambdaContext):
         return
     if call_summary.get("error") or not call_summary.get("summary"):
         LOGGER.error("Summary generation failed; no ADD_SUMMARY event will be written.")
+        mark_summary_failed(data)
         return
     data["CallSummaryText"] = call_summary["summary"]
 
-    write_call_summary_to_kds(data)
+    try:
+        write_call_summary_to_kds(data)
+    except Exception:
+        mark_summary_failed(data)

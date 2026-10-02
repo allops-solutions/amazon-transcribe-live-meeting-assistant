@@ -27,6 +27,7 @@ def functions(path, names, namespace):
 class ProfileTests(unittest.TestCase):
     def setUp(self):
         self.calls, self.profiles, self.lambda_client = Mock(), Mock(), Mock()
+        self.lambda_client.invoke.return_value = {"StatusCode": 202}
         self.calls.get_item.return_value = {"Item": {
             "PK": "c#meeting", "SummaryProfile": "old-profile", "SummaryLanguage": "Bosnian",
             "CallSummaryText": "old summary"}}
@@ -67,7 +68,18 @@ class ProfileTests(unittest.TestCase):
         self.assertNotIn("CallSummaryText", update["UpdateExpression"])
         self.assertIn("attribute_not_exists(SummaryRequestedAt)", update["ConditionExpression"])
         payload = json.loads(self.lambda_client.invoke.call_args.kwargs["Payload"])
-        self.assertEqual(payload, {"CallId": "meeting", "SummaryProfile": "chosen"})
+        self.assertEqual(payload["CallId"], "meeting")
+        self.assertEqual(payload["SummaryProfile"], "chosen")
+        self.assertTrue(payload["SummaryRequestedAt"].endswith("Z"))
+
+    def test_failed_async_invoke_releases_only_its_claim(self):
+        self.lambda_client.invoke.side_effect = RuntimeError("invoke unavailable")
+        with self.assertRaises(RuntimeError):
+            self.ns["handler"](self.event(SummaryProfile="chosen"), None)
+        self.assertEqual(self.calls.update_item.call_count, 2)
+        release = self.calls.update_item.call_args.kwargs
+        self.assertEqual(release["ExpressionAttributeValues"][":failed"], "FAILED")
+        self.assertIn("SummaryRequestedAt = :requested_at", release["ConditionExpression"])
 
     def test_atomic_claim_failure_never_invokes_second_run(self):
         self.calls.get_item.return_value["Item"]["SummaryRequestedAt"] = "2020-01-01T00:00:00Z"
@@ -146,9 +158,47 @@ class SummaryFailureTests(unittest.TestCase):
             ns = functions("lma-ai-stack/source/lambda_functions/async_transcript_summary_orchestrator/lambda_function.py",
                            {"handler"}, {"Any": Any, "Dict": Dict, "LambdaContext": object,
                            "json": json, "LOGGER": Mock(), "get_call_summary": Mock(return_value=result),
-                           "write_call_summary_to_kds": write})
+                           "write_call_summary_to_kds": write, "mark_summary_failed": Mock()})
             ns["handler"]({"CallId": "meeting"}, None)
             write.assert_not_called()
+            ns["mark_summary_failed"].assert_called_once()
+
+    def test_failed_run_status_update_is_conditional_and_preserves_summary(self):
+        ddb = Mock()
+        ns = functions("lma-ai-stack/source/lambda_functions/async_transcript_summary_orchestrator/lambda_function.py",
+                       {"mark_summary_failed"}, {"Any": Any, "Dict": Dict,
+                       "DYNAMODB_CLIENT": ddb, "EVENT_SOURCING_TABLE_NAME": "calls",
+                       "ClientError": ClientError, "LOGGER": Mock()})
+        ns["mark_summary_failed"]({"CallId": "meeting", "SummaryRequestedAt": "request-1"})
+        args = ddb.update_item.call_args.kwargs
+        self.assertEqual(args["Key"]["PK"], {"S": "c#meeting"})
+        self.assertEqual(args["ExpressionAttributeValues"][":requested_at"], {"S": "request-1"})
+        self.assertIn("SummaryRequestedAt = :requested_at", args["ConditionExpression"])
+        self.assertNotIn("CallSummaryText", args["UpdateExpression"])
+
+    def test_orchestrator_invoke_error_releases_run_without_publishing(self):
+        failed, write = Mock(), Mock()
+        ns = functions("lma-ai-stack/source/lambda_functions/async_transcript_summary_orchestrator/lambda_function.py",
+                       {"handler"}, {"Any": Any, "Dict": Dict, "LambdaContext": object,
+                       "json": json, "LOGGER": Mock(),
+                       "get_call_summary": Mock(side_effect=RuntimeError("invoke failed")),
+                       "write_call_summary_to_kds": write, "mark_summary_failed": failed})
+        event = {"CallId": "meeting", "SummaryRequestedAt": "request-1"}
+        ns["handler"](event, None)
+        failed.assert_called_once_with(event)
+        write.assert_not_called()
+
+    def test_kinesis_write_error_releases_run(self):
+        failed = Mock()
+        ns = functions("lma-ai-stack/source/lambda_functions/async_transcript_summary_orchestrator/lambda_function.py",
+                       {"handler"}, {"Any": Any, "Dict": Dict, "LambdaContext": object,
+                       "json": json, "LOGGER": Mock(),
+                       "get_call_summary": Mock(return_value={"summary": "new"}),
+                       "write_call_summary_to_kds": Mock(side_effect=RuntimeError("stream failed")),
+                       "mark_summary_failed": failed})
+        event = {"CallId": "meeting", "SummaryRequestedAt": "request-1"}
+        ns["handler"](event, None)
+        failed.assert_called_once()
 
     def test_success_publishes_replacement(self):
         write = Mock()
