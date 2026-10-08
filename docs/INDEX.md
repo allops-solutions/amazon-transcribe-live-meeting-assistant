@@ -19,6 +19,7 @@ title: "LMA Documentation"
 - [Prerequisites & Deployment](prerequisites-and-deployment.md) — AWS account setup, Bedrock model access, CloudFormation deployment, initial login
 - [Quick Start Guide](quick-start-guide.md) — Your first meeting in 5 minutes using Stream Audio or Virtual Participant
 - [Google SSO](google-sso.md) — CloudFront OAuth callbacks, feature flags and rollout (web and extension login confirmed working)
+- [allOps CI/CD](ci-cd.md) — Reviewed GitHub deployments, production bootstrap and disposable dev validation
 
 ### Core Features
 

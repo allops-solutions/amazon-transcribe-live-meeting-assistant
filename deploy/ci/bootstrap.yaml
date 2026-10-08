@@ -1,0 +1,228 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: allOps LMA CI runner and narrowly scoped GitHub deployment identity
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [production, dev]
+  GitHubOidcSubject:
+    Type: String
+    Description: Exact sub claim from LMA inspect OIDC identity; no wildcards
+    AllowedPattern: 'repo:allops-solutions[^*]*:environment:(production|dev)'
+  GitHubConnectionArn:
+    Type: String
+    Description: Authorized GitHub App CodeConnections connection in this account
+  CloudFormationServiceRoleArn:
+    Type: String
+    Description: Separately reviewed LMA CloudFormation service role
+  ConfigurationSecretArn:
+    Type: String
+    Description: Secrets Manager JSON parameter overrides in this account and region
+  ConfigurationKmsKeyArn:
+    Type: String
+    Default: ''
+    Description: Optional customer-managed key encrypting the configuration secret
+  CustomerManagedEncryptionKeyArn:
+    Type: String
+    Default: ''
+    Description: Optional KMS key for artifact encryption and runner logs; key policy must authorize S3/CloudFormation and CloudWatch Logs
+  ExistingOidcProviderArn:
+    Type: String
+    Default: ''
+    Description: Reuse the account GitHub OIDC provider if one already exists
+  PermissionsBoundaryArn:
+    Type: String
+    Default: ''
+Conditions:
+  Production: !Equals [!Ref Environment, production]
+  CreateOidc: !Equals [!Ref ExistingOidcProviderArn, '']
+  HasBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
+  HasConfigurationKey: !Not [!Equals [!Ref ConfigurationKmsKeyArn, '']]
+  HasStorageKey: !Not [!Equals [!Ref CustomerManagedEncryptionKeyArn, '']]
+Resources:
+  Artifacts:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'allops-lma-ci-${AWS::AccountId}-${Environment}-${AWS::Region}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: !If [HasStorageKey, 'aws:kms', AES256]
+              KMSMasterKeyID: !If [HasStorageKey, !Ref CustomerManagedEncryptionKeyArn, !Ref 'AWS::NoValue']
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+  ArtifactsPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Artifacts
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: [!GetAtt Artifacts.Arn, !Sub '${Artifacts.Arn}/*']
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+  OidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateOidc
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+  RunnerLogs:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub '/aws/codebuild/lma-ci-${Environment}'
+      RetentionInDays: 180
+      KmsKeyId: !If [HasStorageKey, !Ref CustomerManagedEncryptionKeyArn, !Ref 'AWS::NoValue']
+  RunnerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref 'AWS::NoValue']
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'codebuild.${AWS::URLSuffix}'
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref 'AWS::AccountId'
+              ArnEquals:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/lma-ci-${Environment}'
+      Policies:
+        - PolicyName: RunnerLogsAndGitHubOnly
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub '${RunnerLogs.Arn}'
+              - Effect: Allow
+                Action: [codeconnections:UseConnection, codestar-connections:UseConnection]
+                Resource: !Ref GitHubConnectionArn
+  Runner:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub 'lma-ci-${Environment}'
+      ServiceRole: !GetAtt RunnerRole.Arn
+      TimeoutInMinutes: 240
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_LARGE
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: true
+      Source:
+        Type: GITHUB
+        Location: https://github.com/allops-solutions/amazon-transcribe-live-meeting-assistant
+        Auth:
+          Type: CODECONNECTIONS
+          Resource: !Ref GitHubConnectionArn
+      Triggers:
+        Webhook: true
+        FilterGroups:
+          - - Type: EVENT
+              Pattern: WORKFLOW_JOB_QUEUED
+            - Type: WORKFLOW_NAME
+              Pattern: '^LMA deployment$'
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref RunnerLogs
+  DeploymentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      MaxSessionDuration: 14400
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref 'AWS::NoValue']
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If [CreateOidc, !Ref OidcProvider, !Ref ExistingOidcProviderArn]
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Ref GitHubOidcSubject
+      Policies:
+        - PolicyName: LmaReleaseOnly
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:GetBucketLocation, s3:ListBucket, s3:GetBucketVersioning]
+                Resource: !GetAtt Artifacts.Arn
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:AbortMultipartUpload]
+                Resource: !Sub '${Artifacts.Arn}/releases/*'
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref ConfigurationSecretArn
+              - !If
+                - HasStorageKey
+                - Effect: Allow
+                  Action: [kms:Decrypt, kms:Encrypt, kms:GenerateDataKey]
+                  Resource: !Ref CustomerManagedEncryptionKeyArn
+                  Condition:
+                    StringEquals:
+                      kms:ViaService: !Sub 's3.${AWS::Region}.${AWS::URLSuffix}'
+                - !Ref 'AWS::NoValue'
+              - !If
+                - HasConfigurationKey
+                - Effect: Allow
+                  Action: kms:Decrypt
+                  Resource: !Ref ConfigurationKmsKeyArn
+                  Condition:
+                    StringEquals:
+                      kms:ViaService: !Sub 'secretsmanager.${AWS::Region}.${AWS::URLSuffix}'
+                - !Ref 'AWS::NoValue'
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !Ref CloudFormationServiceRoleArn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: !Sub 'cloudformation.${AWS::URLSuffix}'
+              - Effect: Allow
+                Action: [cloudformation:CreateChangeSet, cloudformation:DescribeChangeSet, cloudformation:DeleteChangeSet, cloudformation:ExecuteChangeSet, cloudformation:DescribeStacks, cloudformation:DescribeStackEvents]
+                Resource:
+                  - !If [Production, !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/LMA/*', !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/LMA-CI-*/*']
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/lma-ci-*/*'
+              - !If
+                - Production
+                - Effect: Allow
+                  Action: cloudformation:UpdateTerminationProtection
+                  Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/LMA/*'
+                - Effect: Allow
+                  Action: cloudformation:DeleteStack
+                  Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/LMA-CI-*/*'
+                  Condition:
+                    StringEquals:
+                      aws:ResourceTag/LmaCiManaged: 'true'
+              # ValidateTemplate has no resource-level permissions; required by lma publish.
+              - Effect: Allow
+                Action: cloudformation:ValidateTemplate
+                Resource: '*'
+Outputs:
+  ArtifactBucket:
+    Value: !Ref Artifacts
+  DeploymentRoleArn:
+    Value: !GetAtt DeploymentRole.Arn
+  RunnerProject:
+    Value: !Ref Runner

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- allOps GitHub CI checks and manually approved production deployment via an
+  ephemeral CodeBuild runner, with OIDC credentials, private release artifacts,
+  Secrets Manager configuration, and run-owned temporary dev stack cleanup.
+
 - Calendar-aware MCP scheduling: atomic occurrence/meeting-slot claims prevent
   duplicate VPs across flow retries and employees. New update/cancel tools
   reconcile pending EventBridge launches without deleting meeting data.

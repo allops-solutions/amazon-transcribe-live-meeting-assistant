@@ -1,0 +1,78 @@
+name: LMA deployment
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Production deployment or disposable dev validation
+        type: choice
+        options: [production, dev]
+        required: true
+      confirmation:
+        description: Type DEPLOY LMA to authorize the selected environment
+        type: string
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: lma-deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+jobs:
+  checks:
+    if: github.repository == 'allops-solutions/amazon-transcribe-live-meeting-assistant' && github.ref == 'refs/heads/allops-main' && inputs.confirmation == 'DEPLOY LMA'
+    uses: ./.github/workflows/lma-checks.yml
+  deploy:
+    needs: checks
+    environment: ${{ inputs.environment }}
+    runs-on: codebuild-lma-ci-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_PAGER: ''
+      LMA_ARTIFACT_BUCKET: ${{ vars.LMA_ARTIFACT_BUCKET }}
+      LMA_CONFIG_SECRET_ARN: ${{ vars.LMA_CONFIG_SECRET_ARN }}
+      LMA_CFN_ROLE_ARN: ${{ vars.LMA_CFN_ROLE_ARN }}
+      TARGET_ENVIRONMENT: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22.23.2'
+      - name: Install repository CLI and build dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install ./lib/lma_sdk ./lib/lma_cli_pkg virtualenv 'aws-sam-cli>=1.118,<2'
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          docker info > /dev/null
+      - name: Authenticate with short-lived deployment credentials
+        id: aws
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        with:
+          role-to-assume: ${{ vars.LMA_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+          role-duration-seconds: 14400
+          unset-current-credentials: true
+          allowed-account-ids: ${{ inputs.environment == 'production' && '009853297978' || '135755363077' }}
+      - name: Validate target and configuration before the expensive build
+        run: |
+          python deploy/ci/deploy.py preflight --environment "$TARGET_ENVIRONMENT" --run-id "$GITHUB_RUN_ID" --template-url "https://s3.us-east-1.amazonaws.com/$LMA_ARTIFACT_BUCKET/releases/$GITHUB_SHA/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/lma-main.yaml"
+      - name: Build and publish this exact commit privately
+        run: |
+          test -n "$LMA_ARTIFACT_BUCKET"
+          test -n "$LMA_CONFIG_SECRET_ARN"
+          test -n "$LMA_CFN_ROLE_ARN"
+          lma publish --source-dir . --region us-east-1 --bucket-basename "${LMA_ARTIFACT_BUCKET%-us-east-1}" --prefix "releases/$GITHUB_SHA/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT" --force
+      - name: Deploy and wait for CloudFormation
+        run: |
+          python deploy/ci/deploy.py deploy --environment "$TARGET_ENVIRONMENT" --run-id "$GITHUB_RUN_ID" --template-url "https://s3.us-east-1.amazonaws.com/$LMA_ARTIFACT_BUCKET/releases/$GITHUB_SHA/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/lma-main.yaml"
+      - name: Clean up only this run's temporary dev stack
+        if: always() && inputs.environment == 'dev' && steps.aws.outcome == 'success'
+        run: python deploy/ci/deploy.py cleanup --environment dev --run-id "$GITHUB_RUN_ID"
