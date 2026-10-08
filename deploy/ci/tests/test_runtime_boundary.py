@@ -16,6 +16,20 @@ DOCS = f'allops-lma-documents-{ACCOUNT}-{REGION}'
 
 
 class RuntimeBoundaryTests(unittest.TestCase):
+    def test_generated_scopes_are_exact_and_fit_with_documents(self):
+        generated = {'kms': [f'arn:aws:kms:{REGION}:{ACCOUNT}:key/12345678-1234-1234-1234-123456789abc'],
+                     'appsync': [f'arn:aws:appsync:{REGION}:{ACCOUNT}:apis/abcdefghijklmnop']}
+        policy = boundary.build_policy(ACCOUNT, REGION, BUCKET, DOCS, generated_resources=generated)
+        self.assertLessEqual(len(json.dumps(policy, separators=(',', ':'))), 6144)
+        scopes = next(s for s in policy['Statement'] if 'NotResource' in s and
+                      'iam:PassRole' in s.get('Action', []))['NotResource']
+        self.assertIn(generated['kms'][0], scopes)
+        self.assertIn(generated['appsync'][0] + '/*', scopes)
+        for invalid in [[], {'unknown': []}, {'kms': ['*']},
+                        {'kms': [generated['kms'][0].replace(ACCOUNT, '111111111111')]}]:
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                boundary.build_policy(ACCOUNT, REGION, BUCKET, generated_resources=invalid)
+
     def test_managed_policy_size_with_and_without_documents(self):
         for docs in ['', DOCS]:
             with self.subTest(docs=docs):
@@ -27,8 +41,9 @@ class RuntimeBoundaryTests(unittest.TestCase):
         deny = next(s for s in policy['Statement'] if s['Sid'] == 'DenyUnreviewedActions')
         self.assertEqual(deny['Effect'], 'Deny')
         self.assertEqual(deny['Resource'], '*')
-        self.assertTrue(all(not a.startswith(('iam:', 'sts:', 'ec2:', 'kms:', 'appsync:'))
+        self.assertTrue(all(not a.startswith(('sts:', 'ec2:', 'kms:', 'appsync:'))
                             for a in deny['NotAction']))
+        self.assertEqual([a for a in deny['NotAction'] if a.startswith('iam:')], ['iam:PassRole'])
 
     def test_artifact_prefix_is_read_only(self):
         policy = boundary.build_policy(ACCOUNT, REGION, BUCKET)
@@ -53,7 +68,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
         client.simulate_custom_policy.side_effect = [
             {'EvaluationResults': [{'EvalDecision': row[-1]}]} for row in cases]
         boundary.simulate(client, boundary.build_policy(ACCOUNT, REGION, BUCKET), ACCOUNT, REGION, BUCKET)
-        self.assertEqual(client.simulate_custom_policy.call_count, 20)
+        self.assertEqual(client.simulate_custom_policy.call_count, 23)
         self.assertEqual({call[0] for call in client.method_calls}, {'simulate_custom_policy'})
 
     def test_unexpected_simulator_result_is_failure(self):

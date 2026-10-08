@@ -41,7 +41,11 @@
   },
   {
     "ParameterKey": "BedrockKnowledgeBaseS3BucketName",
-    "ParameterValue": "TODO_CREATE_PROD_DOCS_BUCKET_FIRST"
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "CreateDocumentSourceBucket",
+    "ParameterValue": "true"
   },
   {
     "ParameterKey": "BedrockKnowledgeBaseS3DocumentUploadFolderPrefix",
@@ -297,7 +301,7 @@
   },
   {
     "ParameterKey": "GoogleOAuthClientId",
-    "ParameterValue": "TODO_PROD_GOOGLE_CLIENT_ID"
+    "ParameterValue": "946982280728-83o5e2s1kg2tjltsukt0sd28qdafg7o7.apps.googleusercontent.com"
   },
   {
     "ParameterKey": "GoogleOAuthClientSecret",

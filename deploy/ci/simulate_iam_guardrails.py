@@ -33,7 +33,7 @@ def load_policy(account):
 
 
 def cases(account, boundary):
-    role = f'arn:aws:iam::{account}:role/LMA-Ai-Worker-example'
+    role = f'arn:aws:iam::{account}:role/lma/application/LMA-Ai-Worker-example'
     other = f'arn:aws:iam::{account}:role/UnrelatedProductionAdmin'
     ci = f'arn:aws:iam::{account}:role/LMA-CICD-Production-RunnerRole-example'
     policy = f'arn:aws:iam::{account}:policy/lma/isolation/provisioning-guardrails'
@@ -50,6 +50,7 @@ def cases(account, boundary):
         ('create-ci-role', 'iam:CreateRole', ci, boundary, 'explicitDeny'),
         ('pass-ci-role', 'iam:PassRole', ci, None, 'explicitDeny'),
         ('pass-unrelated-role', 'iam:PassRole', other, None, 'explicitDeny'),
+        ('pass-legacy-unbounded-lma-role', 'iam:PassRole', f'arn:aws:iam::{account}:role/LMA-LegacyAdmin', None, 'explicitDeny'),
         ('create-iam-user', 'iam:CreateUser', f'arn:aws:iam::{account}:user/LMA-user', None, 'explicitDeny'),
         ('edit-boundary', 'iam:CreatePolicyVersion', boundary, None, 'explicitDeny'),
         ('change-boundary-default', 'iam:SetDefaultPolicyVersion', boundary, None, 'explicitDeny'),

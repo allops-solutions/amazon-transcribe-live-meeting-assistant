@@ -160,13 +160,28 @@ access outside the reviewed namespaces, limits artifacts to read-only release
 access, and denies cross-account S3 access. The dedicated document bucket is an
 optional exact-name scope. Broad service action ceilings on LMA-named resources
 are maximum permissions, not grants: each role's existing identity policies must
-still authorize its own work. IAM mutation/PassRole, STS role assumption, KMS,
-EC2/ECS, AppSync, Cognito, CloudFront, Bedrock and other unreviewed services remain
-denied. Do not activate it: it intentionally cannot run the full application yet.
+still authorize its own work. PassRole is limited to `/lma/application/LMA-*`;
+IAM mutation and STS role assumption remain denied. KMS data operations and
+AppSync data operations can be scoped to exact, verified stack resource IDs.
+EC2/ECS, Cognito, CloudFront, Bedrock and other unreviewed services remain denied.
+Do not activate it: it intentionally cannot run the full application yet.
 Generated-ID resources, model access, provisioning controls and runtime
 compatibility must be addressed before activation. A passing simulator does not
 validate the behavior of deployed resource policies, AWS service principals or
 service-linked roles. No production IAM policy is created by this generator.
+
+`--include-generated-resources` performs a read-only inventory of the existing,
+stable `LMA` root and all nested stacks/pages. It checks account, region, parent
+and root ownership before including exact KMS/AppSync IDs. Missing or unstable
+stacks fail closed. This is not a first-deployment bootstrap solution: custom
+resources may need those permissions before the initial stack is complete.
+
+When a boundary is configured, all explicit and SAM-generated application roles,
+managed policies and instance profiles use `/lma/application/`. The provisioning
+IAM deny overlay rejects legacy root-path roles as well as unrelated IAM objects.
+Empty boundary defaults preserve existing dev paths. Changing an existing IAM
+resource's path requires replacement; do not apply this to an existing bounded
+deployment without a migration plan, particularly for explicitly named roles.
 
 The read-only test is:
 `AWS_PROFILE=default .venv/bin/python deploy/ci/runtime_boundary.py --account 009853297978 --artifact-bucket allops-lma-ci-009853297978-production-us-east-1 --simulate`.
@@ -181,20 +196,26 @@ The Google OAuth client ID is public configuration. Its matching client secret
 belongs in the production configuration secret, never committed or pasted into
 chat. Configure the production Google callback URL once the domain is known.
 
-`BedrockKnowledgeBaseS3BucketName` is optional: empty means no S3 document source,
-not disabled transcript search. For later company-document ingestion,
-`deploy/ci/document-source.yaml` prepares a dedicated, encrypted, versioned,
-public-access-blocked bucket with retained data and HTTPS-only access. Its
-creation is opt-in and requires cost approval; it has not been deployed. After
-creation, supply its returned bucket name instead of the TODO placeholder.
+`BedrockKnowledgeBaseS3BucketName` is optional for an existing document bucket.
+Alternatively, `CreateDocumentSourceBucket=true` creates a dedicated, encrypted,
+versioned, public-access-blocked, retained, HTTPS-only bucket in the application
+stack and wires it into the knowledge base and assistant. This requires the
+create-KB assistant mode and an empty existing-bucket parameter. Production
+parameters now select this option, approved by Ahmed for the first deployment;
+dev defaults remain unchanged. No bucket has been created yet. Once deployed,
+documents can be added without redeploying the application. With the flag false
+and an empty existing-bucket parameter, only the S3 document source is disabled,
+not transcript search.
 
 This repository uses S3 Vectors, not a continuously provisioned OpenSearch
 cluster, for the knowledge base. It is nevertheless usage-billed: S3 storage and
 requests, vector storage/indexing/search, embedding-model calls, assistant-model
 calls, plus the sync Lambda/schedule's activity. An empty source is not a promise
 of zero AWS charges. See [S3 pricing](https://aws.amazon.com/s3/pricing/) and
-[Bedrock pricing](https://aws.amazon.com/bedrock/pricing/). Do not create the source
-bucket or deploy the knowledge base on the assumption that it is free.
+[Bedrock pricing](https://aws.amazon.com/bedrock/pricing/). An empty bucket has no
+stored document payload or document embedding/query usage; sync activity and
+other assistant/transcript usage are separate. Production deployment remains a
+separate step, not performed by changing these parameters.
 
 Before the first release, **LMA bootstrap validation** checks CodeBuild's runner,
 repository checkout and Docker daemon without deployment credentials by default.

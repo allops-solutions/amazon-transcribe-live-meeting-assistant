@@ -12,7 +12,7 @@ import re
 import boto3
 
 
-def build_policy(account, region, artifact_bucket, documents_bucket='', partition='aws'):
+def build_policy(account, region, artifact_bucket, documents_bucket='', partition='aws', generated_resources=None):
     """Return a deny-by-default boundary; accept only the reviewed bucket namespaces."""
     if not re.fullmatch(r'[0-9]{12}', account) or not re.fullmatch(r'[a-z]{2}(?:-gov)?-[a-z]+-[0-9]', region):
         raise ValueError('Invalid account or region')
@@ -25,6 +25,7 @@ def build_policy(account, region, artifact_bucket, documents_bucket='', partitio
     arn = f'arn:{partition}'
     regional = f'{region}:{account}'
     groups = [
+        ('PassApplicationRoles', ['iam:PassRole'], [f'{arn}:iam::{account}:role/lma/application/LMA-*']),
         ('DynamoDB', ['dynamodb:*'], [f'{arn}:dynamodb:{regional}:table/LMA-*']),
         ('Lambda', ['lambda:*'], [f'{arn}:lambda:{regional}:function:LMA-*',
                                 f'{arn}:lambda:{regional}:layer:LMA-*:*']),
@@ -42,6 +43,25 @@ def build_policy(account, region, artifact_bucket, documents_bucket='', partitio
         ('EcrRepositories', ['ecr:Batch*', 'ecr:*Layer*', 'ecr:PutImage', 'ecr:DescribeImages'],
          [f'{arn}:ecr:{regional}:repository/lma-*']),
     ]
+    generated_resources = {} if generated_resources is None else generated_resources
+    if not isinstance(generated_resources, dict) or set(generated_resources) - {'kms', 'appsync'}:
+        raise ValueError('Unsupported generated resource group')
+    for service, values in generated_resources.items():
+        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+            raise ValueError('Generated resources must be lists of exact ARNs')
+        resource = {'kms': r'key/[0-9a-fA-F-]{36}', 'appsync': r'apis/[A-Za-z0-9]{10,40}'}[service]
+        pattern = rf'arn:{re.escape(partition)}:{service}:{re.escape(region)}:{account}:{resource}'
+        if any(not re.fullmatch(pattern, value) for value in values):
+            raise ValueError('Generated resource scope must be exact and account/region-local')
+        if not values:
+            continue
+        if service == 'kms':
+            groups.append(('KmsData', ['kms:Encrypt', 'kms:Decrypt', 'kms:ReEncrypt*',
+                                      'kms:GenerateDataKey*', 'kms:DescribeKey'], sorted(set(values))))
+        else:
+            groups.append(('AppSyncData', ['appsync:GraphQL', 'appsync:EventConnect',
+                                           'appsync:EventPublish', 'appsync:EventSubscribe'],
+                           [resource for value in sorted(set(values)) for resource in [value, value + '/*']]))
     s3_actions = ['s3:GetObject', 's3:GetObjectVersion', 's3:PutObject', 's3:DeleteObject',
                   's3:DeleteObjectVersion', 's3:ListBucket', 's3:GetBucketLocation',
                   's3:AbortMultipartUpload', 's3:ListMultipartUploadParts',
@@ -62,7 +82,13 @@ def build_policy(account, region, artifact_bucket, documents_bucket='', partitio
     # Service-qualified ARNs retain separate namespaces; compact the common
     # allow/deny ceiling to stay within IAM's 6,144-character managed-policy cap.
     statements.extend([
-        {'Sid': 'AllowNamedResources', 'Effect': 'Allow', 'Action': named_actions, 'Resource': named_resources},
+        # Every reviewed action also has an explicit scope deny below (or is an
+        # explicitly unscopable telemetry/auth action). This compact ceiling
+        # avoids duplicating long generated IDs in the single managed boundary.
+        {'Sid': 'AllowReviewedActions', 'Effect': 'Allow',
+         'Action': [a for a in approved_actions if a != 'iam:PassRole'], 'Resource': '*'},
+        {'Sid': 'AllowPassApplicationRoles', 'Effect': 'Allow', 'Action': 'iam:PassRole',
+         'Resource': f'{arn}:iam::{account}:role/lma/application/LMA-*'},
         {'Sid': 'DenyOutsideNamedResources', 'Effect': 'Deny', 'Action': named_actions, 'NotResource': named_resources},
     ])
     statements.extend([
@@ -77,6 +103,7 @@ def build_policy(account, region, artifact_bucket, documents_bucket='', partitio
         {'Sid': 'ArtifactsAreReadOnly', 'Effect': 'Deny', 'NotAction': read_artifacts,
          'Resource': [f'{arn}:s3:::{artifact_bucket}', f'{arn}:s3:::{artifact_bucket}/*']},
         {'Sid': 'ProtectCiResources', 'Effect': 'Deny', 'Action': '*', 'Resource': [
+            f'{arn}:iam::{account}:role/lma/application/LMA-CICD-*',
             f'{arn}:lambda:{regional}:function:LMA-CICD-*',
             f'{arn}:codebuild:{regional}:project/LMA-CICD-*',
             f'{arn}:codebuild:{regional}:build/LMA-CICD-*',
@@ -118,6 +145,9 @@ def simulation_cases(account, region, bucket):
         ('artifact-overwrite', 's3:PutObject', f'arn:aws:s3:::{bucket}/releases/test/code.zip', {'aws:ResourceAccount': account}, 'explicitDeny'),
         ('config-secret-read', 'secretsmanager:GetSecretValue', base.format(service='secretsmanager') + 'secret:lma/ci/production/parameters-test', {}, 'explicitDeny'),
         ('iam-escalation', 'iam:CreateRole', f'arn:aws:iam::{account}:role/LMA-Escalation', {}, 'explicitDeny'),
+        ('pass-bounded-namespace', 'iam:PassRole', f'arn:aws:iam::{account}:role/lma/application/LMA-Worker', {}, 'allowed'),
+        ('pass-legacy-role', 'iam:PassRole', f'arn:aws:iam::{account}:role/LMA-LegacyAdmin', {}, 'explicitDeny'),
+        ('pass-ci-path-role', 'iam:PassRole', f'arn:aws:iam::{account}:role/lma/application/LMA-CICD-Worker', {}, 'explicitDeny'),
         ('assume-admin', 'sts:AssumeRole', f'arn:aws:iam::{account}:role/Admin', {}, 'explicitDeny'),
         ('unreviewed-kms', 'kms:Decrypt', base.format(service='kms') + 'key/test', {}, 'explicitDeny'),
         ('unreviewed-ec2', 'ec2:RunInstances', '*', {}, 'explicitDeny'),
@@ -128,7 +158,20 @@ def simulation_cases(account, region, bucket):
 def simulate(client, policy, account, region, bucket):
     """Only call IAM's read-only simulator; never attach the hypothetical Allow."""
     permissive = {'Version': '2012-10-17', 'Statement': [{'Effect': 'Allow', 'Action': '*', 'Resource': '*'}]}
-    for name, action, resource, context, expected in simulation_cases(account, region, bucket):
+    cases = simulation_cases(account, region, bucket)
+    scopes = next(s['NotResource'] for s in policy['Statement'] if 'NotResource' in s and
+                  'iam:PassRole' in s.get('Action', []))
+    for resource in scopes:
+        if ':kms:' in resource:
+            cases.extend([('reviewed-key', 'kms:Decrypt', resource, {}, 'allowed'),
+                          ('unrelated-key', 'kms:Decrypt', resource.rsplit('/', 1)[0] +
+                           '/ffffffff-ffff-ffff-ffff-ffffffffffff', {}, 'explicitDeny')])
+        elif ':appsync:' in resource and not resource.endswith('/*'):
+            cases.extend([('reviewed-api-field', 'appsync:GraphQL', resource +
+                           '/types/Query/fields/test', {}, 'allowed'),
+                          ('unrelated-api-field', 'appsync:GraphQL', resource.rsplit('/', 1)[0] +
+                           '/zzzzzzzzzzzzzzzz/types/Query/fields/test', {}, 'explicitDeny')])
+    for name, action, resource, context, expected in cases:
         result = client.simulate_custom_policy(
             PolicyInputList=[json.dumps(permissive), json.dumps(policy)], ActionNames=[action],
             ResourceArns=[resource], ContextEntries=[{'ContextKeyName': key, 'ContextKeyValues': [value],
@@ -146,14 +189,23 @@ def main():
     parser.add_argument('--artifact-bucket', required=True)
     parser.add_argument('--documents-bucket', default='')
     parser.add_argument('--simulate', action='store_true')
+    parser.add_argument('--include-generated-resources', action='store_true',
+                        help='Read exact resource IDs from the stable, verified LMA stack; no IAM writes')
     args = parser.parse_args()
-    policy = build_policy(args.account, args.region, args.artifact_bucket, args.documents_bucket)
+    session = None
+    generated = None
+    if args.simulate or args.include_generated_resources:
+        session = boto3.Session(profile_name='default', region_name=args.region)
+        if session.client('sts').get_caller_identity()['Account'] != args.account:
+            raise ValueError('Authenticated account differs from target')
+    if args.include_generated_resources:
+        from generated_resources import collect
+        generated = collect(session.client('cloudformation'), args.account, args.region)['resources']
+    policy = build_policy(args.account, args.region, args.artifact_bucket, args.documents_bucket,
+                          generated_resources=generated)
     if not args.simulate:
         print(json.dumps(policy, indent=2))
         return
-    session = boto3.Session(profile_name='default', region_name=args.region)
-    if session.client('sts').get_caller_identity()['Account'] != args.account:
-        raise ValueError('Authenticated account differs from simulation target')
     simulate(session.client('iam'), policy, args.account, args.region, args.artifact_bucket)
 
 

@@ -244,6 +244,7 @@ Resources:
   GetDomainLambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -367,6 +368,7 @@ Resources:
   CognitoAuthorizedRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -479,6 +481,7 @@ Resources:
     Type: AWS::Serverless::Function
     Condition: ShouldAllowSignUpEmailDomain
     Properties:
+      RolePath: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Handler: index.lambda_handler
       Runtime: python3.12
@@ -569,6 +572,7 @@ Resources:
   CognitoCustomMessageFunctionRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -732,6 +736,7 @@ Resources:
     Type: AWS::IAM::Role
     Condition: IsSsoCompatiblePool
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:

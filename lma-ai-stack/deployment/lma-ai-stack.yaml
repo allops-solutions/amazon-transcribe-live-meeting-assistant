@@ -1013,6 +1013,7 @@ Resources:
     # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency"
     # checkov:skip=CKV_AWS_173: "Environment variables do not contain sensitive data"
     Properties:
+      RolePath: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       FunctionName: !Sub "${AWS::StackName}-BackfillWorker"
       Handler: index.lambda_handler
@@ -1041,6 +1042,7 @@ Resources:
   BackfillStateMachineRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -1091,6 +1093,7 @@ Resources:
     # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency"
     # checkov:skip=CKV_AWS_173: "Environment variables do not contain sensitive data"
     Properties:
+      RolePath: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       FunctionName: !Sub "${AWS::StackName}-BackfillTrigger"
       Handler: index.handler
@@ -1165,7 +1168,7 @@ Resources:
   LMAUICodeBuildServiceRole:
     Type: AWS::IAM::Role
     Properties:
-      Path: /
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -1230,7 +1233,7 @@ Resources:
     Properties:
       Description: !Sub >-
         Builds docker images and the website of stack: ${AWS::StackName}
-      ServiceRole: !Ref LMAUICodeBuildServiceRole
+      ServiceRole: !GetAtt LMAUICodeBuildServiceRole.Arn
       EncryptionKey: alias/aws/s3
       Artifacts:
         Type: NO_ARTIFACTS
@@ -1388,7 +1391,7 @@ Resources:
     Properties:
       Name: !Sub "${AWS::StackName}-MCP-Layer-Builder"
       Description: Builds Lambda layer with installed MCP servers
-      ServiceRole: !Ref MCPLayerBuildRole
+      ServiceRole: !GetAtt MCPLayerBuildRole.Arn
       EncryptionKey: alias/aws/s3
       Artifacts:
         Type: NO_ARTIFACTS
@@ -1526,6 +1529,7 @@ Resources:
   MCPLayerBuildRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -1607,7 +1611,7 @@ Resources:
                 - lambda.amazonaws.com
             Action:
               - sts:AssumeRole
-      Path: "/"
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       Policies:
         - PolicyName: root
           PolicyDocument:
@@ -1760,6 +1764,7 @@ Resources:
   LambdaFetchTranscriptExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Description: Fetch Transcript Lambda Role
       AssumeRolePolicyDocument:
@@ -1846,6 +1851,7 @@ Resources:
     Type: AWS::IAM::Role
     Condition: ShouldEnableBedrockSummarizer
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Description: Bedrock Summary Lambda Role
       AssumeRolePolicyDocument:
@@ -1993,6 +1999,7 @@ Resources:
   StrandsChatInterfaceFunctionExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Description: STRANDS Chat Interface Lambda Role
       AssumeRolePolicyDocument:
@@ -2027,6 +2034,7 @@ Resources:
   AsyncAgentAssistOrchestratorExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Description: Async Agent Assist Orchestrator Lambda Role
       AssumeRolePolicyDocument:
@@ -2135,6 +2143,7 @@ Resources:
   AsyncTranscriptSummaryOrchestratorExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Description: Async Transcript Summary Orchetrator Lambda Role
       AssumeRolePolicyDocument:
@@ -2212,6 +2221,7 @@ Resources:
     # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
     # checkov:skip=CKV_AWS_173: "Environment variables do not contain sensitive data - only configuration values like feature flags and non-sensitive settings"
     Properties:
+      RolePath: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Architectures:
         - arm64
@@ -2376,6 +2386,7 @@ Resources:
   AppSyncCwlRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSAppSyncPushToCloudWatchLogs
@@ -2392,6 +2403,7 @@ Resources:
   AppSyncDynamoDbRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -2498,6 +2510,7 @@ Resources:
   MeetingInvitationParserFunctionExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Description: Meeting Invitation Parser Function Lambda Role
       AssumeRolePolicyDocument:
@@ -2540,6 +2553,7 @@ Resources:
   QueryKnowledgeBaseResolverFunctionExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Description: QueryKnowledgeBaseResolver Function Lambda Role
       AssumeRolePolicyDocument:
@@ -2578,6 +2592,7 @@ Resources:
   AppSyncLambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -2660,6 +2675,7 @@ Resources:
   MeetingControlsResolverFunctionExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Description: MeetingControlsResolver Function Lambda Role
       AssumeRolePolicyDocument:
@@ -2733,6 +2749,7 @@ Resources:
   AppSyncMeetingControlsLambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -2802,6 +2819,7 @@ Resources:
   UploadMeetingInitiatorFunctionExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Description: UploadMeetingInitiator Lambda execution role
       AssumeRolePolicyDocument:
@@ -2849,6 +2867,7 @@ Resources:
   AppSyncUploadMeetingInitiatorLambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -2920,6 +2939,7 @@ Resources:
   UploadMeetingProcessorFunctionExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Description: UploadMeetingProcessor Lambda execution role
       AssumeRolePolicyDocument:
@@ -3046,6 +3066,7 @@ Resources:
   UploadMeetingFinalizerFunctionExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Description: UploadMeetingFinalizer Lambda execution role
       AssumeRolePolicyDocument:
@@ -3186,6 +3207,7 @@ Resources:
   UpdateChatButtonConfigResolverFunctionExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Description: UpdateChatButtonConfigResolver Function Lambda Role
       AssumeRolePolicyDocument:
@@ -3219,6 +3241,7 @@ Resources:
   AppSyncUpdateChatButtonConfigLambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -3296,6 +3319,7 @@ Resources:
   UpdateNovaSonicConfigResolverFunctionExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Description: UpdateNovaSonicConfigResolver Function Lambda Role
       AssumeRolePolicyDocument:
@@ -3329,6 +3353,7 @@ Resources:
   AppSyncUpdateNovaSonicConfigLambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -3375,6 +3400,7 @@ Resources:
   NovaSonicConfigDataSourceRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -3438,6 +3464,7 @@ Resources:
     Type: AWS::IAM::Role
     Condition: HasAsrConfigTable
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       Description: UpdateAsrConfigResolver Function Lambda Role
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -3474,6 +3501,7 @@ Resources:
     Type: AWS::IAM::Role
     Condition: HasAsrConfigTable
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -3520,6 +3548,7 @@ Resources:
     Type: AWS::IAM::Role
     Condition: HasAsrConfigTable
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -3648,6 +3677,7 @@ Resources:
   UpdateLLMPromptTemplateResolverFunctionExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Description: UpdateLLMPromptTemplateResolver Function Lambda Role
       AssumeRolePolicyDocument:
@@ -3685,6 +3715,7 @@ Resources:
   AppSyncUpdateLLMPromptTemplateLambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -3731,6 +3762,7 @@ Resources:
   LLMPromptTemplateDataSourceRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -3783,6 +3815,7 @@ Resources:
   GetEventApiDnsRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -3999,6 +4032,7 @@ Resources:
   ChatButtonConfigDataSourceRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -4029,6 +4063,7 @@ Resources:
   AppSyncStrandsChatLambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -4467,6 +4502,7 @@ Resources:
     # checkov:skip=CKV_AWS_117: "Function does not require VPC access"
     # checkov:skip=CKV_AWS_173: "Environment variables do not contain sensitive data"
     Properties:
+      RolePath: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       FunctionName: !Sub "${AWS::StackName}-ListCallsGsiResolver"
       Handler: index.handler
@@ -4502,6 +4538,7 @@ Resources:
   AppSyncListCallsGsiLambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -4579,6 +4616,7 @@ Resources:
     # checkov:skip=CKV_AWS_117: "Function does not require VPC access"
     # checkov:skip=CKV_AWS_173: "Environment variables do not contain sensitive data"
     Properties:
+      RolePath: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       FunctionName: !Sub "${AWS::StackName}-RegenerateSummaryResolver"
       Handler: index.handler
@@ -4624,6 +4662,7 @@ Resources:
   AppSyncRegenerateSummaryLambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -4694,6 +4733,7 @@ Resources:
     # checkov:skip=CKV_AWS_117: "Function does not require VPC access"
     # checkov:skip=CKV_AWS_173: "Environment variables do not contain sensitive data"
     Properties:
+      RolePath: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       FunctionName: !Sub "${AWS::StackName}-UpdateSummaryTextResolver"
       Handler: index.handler
@@ -4738,6 +4778,7 @@ Resources:
   AppSyncUpdateSummaryTextLambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -5145,6 +5186,7 @@ Resources:
           - id: AwsSolutions-IAM5
             reason: 'lambda-microvms does not support resource-level permissions for CreateMicrovmAuthToken'
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -5230,6 +5272,7 @@ Resources:
   MicrovmVncTokenDataSourceRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -5449,6 +5492,7 @@ Resources:
   OAuthManagerFunction:
     Type: AWS::Serverless::Function
     Properties:
+      RolePath: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       FunctionName: !Sub "${AWS::StackName}-OAuthManager"
       Handler: index.handler
@@ -5513,6 +5557,7 @@ Resources:
   OAuthManagerDataSourceRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -5612,6 +5657,7 @@ Resources:
     # checkov:skip=CKV_AWS_117: "Function does not require VPC access"
     # checkov:skip=CKV_AWS_173: "Environment contains only non-sensitive DynamoDB table name and log level; AWS-owned key encryption is sufficient"
     Properties:
+      RolePath: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       FunctionName: !Sub "${LMAStackName}-MCPApiKeyAuthorizer"
       Handler: index.handler
@@ -5660,6 +5706,7 @@ Resources:
     # checkov:skip=CKV_AWS_117: "Function does not require VPC access"
     # checkov:skip=CKV_AWS_173: "Environment contains only non-sensitive DynamoDB table name and log level; AWS-owned key encryption is sufficient"
     Properties:
+      RolePath: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       FunctionName: !Sub "${LMAStackName}-MCPApiKeyManager"
       Handler: index.handler
@@ -5819,6 +5866,7 @@ Resources:
     Type: AWS::IAM::Role
     Condition: ShouldEnableMCPServer
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -5959,6 +6007,7 @@ Resources:
   VirtualParticipantDataSourceRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -6282,6 +6331,7 @@ Resources:
     # checkov:skip=CKV_AWS_117: "VPC access not required; reaches AWS public APIs only"
     # checkov:skip=CKV_AWS_173: "Environment contains only non-sensitive table names, stream names, schedule group names, and ARNs; AWS-owned key encryption is sufficient"
     Properties:
+      RolePath: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       FunctionName: !Sub "${AWS::StackName}-VirtualParticipantManager"
       Handler: index.lambda_handler
@@ -6520,6 +6570,7 @@ Resources:
   MCPServerManagerFunction:
     Type: AWS::Serverless::Function
     Properties:
+      RolePath: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       FunctionName: !Sub "${AWS::StackName}-MCPServerManager"
       Handler: index.handler
@@ -6584,6 +6635,7 @@ Resources:
   MCPServerManagerDataSourceRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -6747,6 +6799,7 @@ Resources:
   ZoomCredentialsManagerFunction:
     Type: AWS::Serverless::Function
     Properties:
+      RolePath: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       FunctionName: !Sub "${AWS::StackName}-ZoomCredentialsManager"
       Handler: index.handler
@@ -6834,6 +6887,7 @@ Resources:
   ZoomCredentialsManagerDataSourceRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -7028,6 +7082,7 @@ Resources:
   UserManagementFunctionExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Description: UserManagement Lambda execution role - admin-only Cognito operations
       AssumeRolePolicyDocument:
@@ -7062,6 +7117,7 @@ Resources:
   UserManagementDataSourceRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -7211,6 +7267,7 @@ Resources:
     Type: AWS::IAM::Role
     Condition: ShouldEnableMCPServer
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       RoleName: !Sub "${LMAStackName}-MCPServerGatewayRole"
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -7263,6 +7320,7 @@ Resources:
     # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency"
     # checkov:skip=CKV_AWS_173: "Environment contains only non-sensitive configuration (table names, S3 bucket name, KB IDs, model IDs, SSM parameter names); no secrets"
     Properties:
+      RolePath: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       FunctionName: !Sub "${LMAStackName}-MCPServerAnalytics"
       CodeUri: ../source/lambda_functions/mcp_analytics/
@@ -7671,6 +7729,7 @@ Resources:
   VirtualParticipantLambdaDataSourceRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -7787,6 +7846,7 @@ Resources:
   EdgeAuthFunctionRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -7807,6 +7867,7 @@ Resources:
   EdgeAuthDeployerRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -7920,6 +7981,7 @@ Resources:
     Type: AWS::IAM::Role
     Condition: ShouldCreateVNCALB
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -8126,6 +8188,7 @@ Resources:
   BucketDeleteLambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -8218,6 +8281,7 @@ Resources:
   UploadManifestLambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -8566,6 +8630,7 @@ Resources:
     Type: AWS::IAM::Role
     Condition: ShouldEnableGoogleSso
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -8698,6 +8763,7 @@ Resources:
     Type: AWS::Serverless::Function
     Condition: ShouldEnableGoogleSso
     Properties:
+      RolePath: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       Runtime: python3.12
       Handler: index.lambda_handler
       CodeUri: ../source/lambda_functions/google_oauth_bridge/

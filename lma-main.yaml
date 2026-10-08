@@ -193,6 +193,14 @@ Parameters:
       If MeetingAssistService is 'STRANDS_BEDROCK_WITH_KB (Create)', provide the bucket 
       name of an existing bucket with documents to ingest, or leave blank if you don't need an S3 data source.
 
+  CreateDocumentSourceBucket:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      Create a private retained document-source bucket with the application. Requires
+      STRANDS_BEDROCK_WITH_KB (Create) and an empty existing document bucket name.
+
   BedrockKnowledgeBaseS3DocumentUploadFolderPrefix:
     Type: String
     Default: ""
@@ -1165,6 +1173,13 @@ Metadata:
         default: Enable Data Retention On Stack Deletion
 
 Rules:
+  ManagedDocumentSource:
+    RuleCondition: !Equals [!Ref CreateDocumentSourceBucket, "true"]
+    Assertions:
+      - Assert: !Equals [!Ref MeetingAssistService, "STRANDS_BEDROCK_WITH_KB (Create)"]
+        AssertDescription: Managed document source requires creating the document knowledge base.
+      - Assert: !Equals [!Ref BedrockKnowledgeBaseS3BucketName, ""]
+        AssertDescription: Choose either the managed document bucket or an existing bucket, not both.
   GoogleSsoConfiguration:
     RuleCondition: !Equals [!Ref EnableGoogleSso, "true"]
     Assertions:
@@ -1254,6 +1269,9 @@ Conditions:
       !Condition ShouldUseStrandsBedrockWithKB
     ]
   ShouldCreateBedrockKnowledgeBase: !Condition ShouldUseStrandsBedrockWithKBCreate
+  ShouldCreateDocumentSourceBucket: !And
+    - !Equals [!Ref CreateDocumentSourceBucket, "true"]
+    - !Condition ShouldCreateBedrockKnowledgeBase
   ShouldCreateVPC: !Equals [!Ref UseExistingVPC, "false"]
   ShouldCreateTranscriptKnowledgeBase:
     !Equals [!Ref TranscriptKnowledgeBase, "BEDROCK_KNOWLEDGE_BASE (Create)"]
@@ -1272,6 +1290,43 @@ Conditions:
         - "transcription-only"
 
 Resources:
+  DocumentsBucket:
+    Type: AWS::S3::Bucket
+    Condition: ShouldCreateDocumentSourceBucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'allops-lma-documents-${AWS::AccountId}-${AWS::Region}'
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+  DocumentsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: ShouldCreateDocumentSourceBucket
+    Properties:
+      Bucket: !Ref DocumentsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: RequireTls
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: [!GetAtt DocumentsBucket.Arn, !Sub '${DocumentsBucket.Arn}/*']
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
   ##########################################################################
   # Customer Managed KMS Key for encryption across all resources
   ##########################################################################
@@ -1453,6 +1508,7 @@ Resources:
     # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
     # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency as it scales based on demand"
     Properties:
+      RolePath: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Handler: index.handler
       Runtime: python3.12
@@ -1553,6 +1609,7 @@ Resources:
     # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
     # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency as it scales based on demand"
     Properties:
+      RolePath: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Handler: index.handler
       Runtime: python3.12
@@ -1605,6 +1662,7 @@ Resources:
           - id: AwsSolutions-IAM5
             reason: 'Wildcards scoped by service/resource or PassedToService condition; standard CFN least-privilege pattern'
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -1797,6 +1855,7 @@ Resources:
           - id: AwsSolutions-IAM4
             reason: 'AWS-managed policies are used intentionally for standard Lambda execution; scope is narrow'
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Statement:
           - Action: "sts:AssumeRole"
@@ -1927,6 +1986,7 @@ Resources:
             reason: 'Wildcards scoped by service/resource or PassedToService condition; standard CFN least-privilege pattern'
     Condition: ShouldDeleteDataOnDelete
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -2348,6 +2408,7 @@ Resources:
             reason: 'python3.12 is an actively supported Lambda runtime per AWS; upgrade to 3.13 is an availability/testing consideration'
     Condition: ShouldCreateRecordingBucket
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -2505,6 +2566,7 @@ Resources:
     # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
     # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency as it scales based on demand"
     Properties:
+      RolePath: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Handler: index.handler
       Runtime: python3.12
@@ -2741,7 +2803,7 @@ Resources:
     Properties:
       TemplateURL: https://s3.<REGION_TOKEN>.amazonaws.com/<ARTIFACT_BUCKET_TOKEN>/<ARTIFACT_PREFIX_TOKEN>/lma-bedrockkb-stack/template.yaml
       Parameters:
-        pKnowledgeBaseBucketName: !Ref BedrockKnowledgeBaseS3BucketName
+        pKnowledgeBaseBucketName: !If [ShouldCreateDocumentSourceBucket, !Ref DocumentsBucket, !Ref BedrockKnowledgeBaseS3BucketName]
         pInputDocumentUploadFolderPrefix: !Ref BedrockKnowledgeBaseS3DocumentUploadFolderPrefix
         pS3SyncScheduleExpression: "cron(0 0 * * ? *)"  # default once a day at midnight
         PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
@@ -2782,7 +2844,7 @@ Resources:
             - ShouldCreateBedrockKnowledgeBase
             - !GetAtt BEDROCKKB.Outputs.KnowledgeBaseID
             - ""
-        BedrockKnowledgeBaseS3BucketName: !Ref BedrockKnowledgeBaseS3BucketName
+        BedrockKnowledgeBaseS3BucketName: !If [ShouldCreateDocumentSourceBucket, !Ref DocumentsBucket, !Ref BedrockKnowledgeBaseS3BucketName]
         MeetingAssistServiceBedrockModelID: !Ref MeetingAssistServiceBedrockModelID
         TavilyApiKey: !Ref TavilyApiKey
         WebAppBucket: !GetAtt AISTACK.Outputs.WebAppBucket
@@ -3095,6 +3157,10 @@ Resources:
         CustomerManagedEncryptionKeyArn: !GetAtt CustomerManagedEncryptionKey.Arn
 
 Outputs:
+  DocumentsBucketName:
+    Condition: ShouldCreateDocumentSourceBucket
+    Description: Upload company documents here; the document KB syncs this source.
+    Value: !Ref DocumentsBucket
   QuickSightManifestUrl:
     Description: S3 URL for QuickSight manifest file to import recordings bucket data
     Value: !GetAtt AISTACK.Outputs.QuickSightManifestUrl
