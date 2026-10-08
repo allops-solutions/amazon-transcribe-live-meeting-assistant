@@ -79,6 +79,12 @@ def describe_stack(cfn, name):
         raise
 
 
+def validate_cloudformation_role(role, account):
+    """Refuse legacy, cross-account or arbitrary administrator service roles."""
+    if not re.fullmatch(rf"arn:aws:iam::{account}:role/lma/isolation/LMA-[A-Za-z0-9+=,.@_-]+", role):
+        raise ValueError("CloudFormation service role must use the reviewed account-local isolation path")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=["preflight", "deploy", "cleanup"])
@@ -118,8 +124,7 @@ def main():
     parameters = merge_parameters(base, overrides, args.environment)
     validate_application_boundary(parameters, account, args.environment)
     role = os.environ["LMA_CFN_ROLE_ARN"]
-    if not role.startswith(f"arn:aws:iam::{account}:role/"):
-        raise ValueError("CloudFormation service role must belong to the target account")
+    validate_cloudformation_role(role, account)
     if args.action == "preflight":
         print("Target account, stack, release URL and configuration validated; no AWS writes performed")
         return

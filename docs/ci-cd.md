@@ -162,8 +162,14 @@ optional exact-name scope. Broad service action ceilings on LMA-named resources
 are maximum permissions, not grants: each role's existing identity policies must
 still authorize its own work. PassRole is limited to `/lma/application/LMA-*`;
 IAM mutation and STS role assumption remain denied. KMS data operations and
-AppSync data operations can be scoped to exact, verified stack resource IDs.
-EC2/ECS, Cognito, CloudFront, Bedrock and other unreviewed services remain denied.
+AppSync data operations, Cognito user/group reads and CloudFront invalidations
+can be scoped to exact, verified stack resource IDs. ECS task launches require
+an exact task-definition revision AND an approved destination cluster. Task
+reads/stops/tagging are confined to tasks under verified clusters; listing tasks
+requires explicit `ecs:cluster` context. Missing cluster context is denied.
+Account-wide `DescribeTaskDefinition` reads are deliberately not enabled because
+AWS provides no definition-ID resource/condition scope for that operation.
+EC2, Bedrock and other unreviewed services remain denied.
 Do not activate it: it intentionally cannot run the full application yet.
 Generated-ID resources, model access, provisioning controls and runtime
 compatibility must be addressed before activation. A passing simulator does not
@@ -172,7 +178,7 @@ service-linked roles. No production IAM policy is created by this generator.
 
 `--include-generated-resources` performs a read-only inventory of the existing,
 stable `LMA` root and all nested stacks/pages. It checks account, region, parent
-and root ownership before including exact KMS/AppSync IDs. Missing or unstable
+and root ownership before including exact KMS/AppSync/Cognito/CloudFront/ECS IDs. Missing or unstable
 stacks fail closed. This is not a first-deployment bootstrap solution: custom
 resources may need those permissions before the initial stack is complete.
 
@@ -189,6 +195,28 @@ Add `--documents-bucket allops-lma-documents-009853297978-us-east-1` to validate
 the optional document scope. The generator checks the 6,144-character managed
 policy cap and omits diagnostic statement IDs if longer partition names require
 it; never drops permission rules to fit the limit.
+
+The compact boundary's non-IAM Allow is always paired with an exhaustive
+`DenyUnreviewedActions` and explicit resource/account/cluster Denies. IAM is
+excluded from that Allow and receives only path-scoped PassRole. Removing or
+weakening those Denies would change the ceiling's safety properties. Oversized
+inventories fail rather than silently omit resources or broaden them to '*'.
+
+### Pinned deployment requests (prepared, not activated)
+
+The future deployment identity can create application change sets only with the
+configured CloudFormation service role and a private artifact-bucket URL under
+`releases/*/lma-main.yaml`. Explicit Denies reject missing/wrong roles, inline
+templates and other source buckets/prefixes. The reviewed AWS SAM transform has
+a separate transform-only authorization; this does not authorize other stacks.
+Deployment preflight requires the role's account-local `/lma/isolation/LMA-*`
+path. The role remains separately administered, not application-controlled.
+
+Read-only regression command:
+`AWS_PROFILE=default .venv/bin/python deploy/ci/simulate_release_guards.py --account 009853297978`.
+This checks hypothetical request semantics, not a live CloudFormation deployment.
+First-deployment bootstrap ordering and the non-IAM provisioning service role
+are still incomplete. Do not enable deployment based on these simulations alone.
 
 ### Optional production documents and OAuth credentials
 

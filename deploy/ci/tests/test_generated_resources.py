@@ -69,6 +69,31 @@ class GeneratedResourceTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 inventory.validate_arn('kms', value, ACCOUNT, REGION)
 
+    def test_new_services_are_collected_with_correct_arn_forms(self):
+        client, _, _ = self.client()
+        ecs = f'arn:aws:ecs:{REGION}:{ACCOUNT}:'
+        client.get_paginator.return_value.paginate.side_effect = [[{'StackResourceSummaries': [
+            entry('AWS::Cognito::UserPool', REGION + '_Example12'),
+            entry('AWS::CloudFront::Distribution', 'E123456789ABCD'),
+            entry('AWS::ECS::Cluster', 'LMA-VP-Cluster'),
+            entry('AWS::ECS::TaskDefinition', ecs + 'task-definition/LMA-VP-Task:1'),
+        ]}]]
+        result = inventory.collect(client, ACCOUNT, REGION)['resources']
+        self.assertEqual(result['cognito'], [f'arn:aws:cognito-idp:{REGION}:{ACCOUNT}:userpool/{REGION}_Example12'])
+        self.assertEqual(result['cloudfront'], [f'arn:aws:cloudfront::{ACCOUNT}:distribution/E123456789ABCD'])
+        self.assertEqual(result['ecs_clusters'], [ecs + 'cluster/LMA-VP-Cluster'])
+        self.assertEqual(result['ecs_task_definitions'], [ecs + 'task-definition/LMA-VP-Task:1'])
+
+    def test_new_service_ids_fail_closed(self):
+        for kind, arn in [
+            ('cognito', f'arn:aws:cognito-idp:{REGION}:{ACCOUNT}:userpool/eu-west-1_Example'),
+            ('cloudfront', f'arn:aws:cloudfront:{REGION}:{ACCOUNT}:distribution/E123456789ABCD'),
+            ('ecs_clusters', f'arn:aws:ecs:{REGION}:{ACCOUNT}:cluster/LMA-*'),
+            ('ecs_task_definitions', f'arn:aws:ecs:{REGION}:{ACCOUNT}:task-definition/LMA-VP:*'),
+        ]:
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                inventory.validate_arn(kind, arn, ACCOUNT, REGION)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -31,6 +31,7 @@ Parameters:
     Type: String
     Default: ''
     Description: Separately reviewed LMA CloudFormation service role
+    AllowedPattern: '(|arn:[a-z0-9-]+:iam::[0-9]{12}:role/lma/isolation/LMA-[A-Za-z0-9+=,.@_-]+)'
   ConfigurationSecretArn:
     Type: String
     Description: Secrets Manager JSON parameter overrides in this account and region
@@ -310,10 +311,39 @@ Resources:
                   StringEquals:
                     iam:PassedToService: !Sub 'cloudformation.${AWS::URLSuffix}'
               - Effect: Allow
-                Action: [cloudformation:CreateChangeSet, cloudformation:DescribeChangeSet, cloudformation:DeleteChangeSet, cloudformation:ExecuteChangeSet, cloudformation:DescribeStacks, cloudformation:DescribeStackEvents]
+                Action: [cloudformation:DescribeChangeSet, cloudformation:DeleteChangeSet, cloudformation:ExecuteChangeSet, cloudformation:DescribeStacks, cloudformation:DescribeStackEvents]
                 Resource:
                   - !If [Production, !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/LMA/*', !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/LMA-CI-*/*']
                   - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/lma-ci-*/*'
+              - Sid: CreatePinnedReleaseChangeSet
+                Effect: Allow
+                Action: cloudformation:CreateChangeSet
+                Resource: !If [Production, !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/LMA/*', !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/LMA-CI-*/*']
+                Condition:
+                  ArnEquals:
+                    cloudformation:RoleArn: !Ref CloudFormationServiceRoleArn
+                  StringLike:
+                    cloudformation:TemplateUrl: !Sub 'https://s3.${AWS::Region}.${AWS::URLSuffix}/${Artifacts}/releases/*/lma-main.yaml'
+              - Sid: DenyUnapprovedChangeSetRole
+                Effect: Deny
+                Action: cloudformation:CreateChangeSet
+                Resource: !If [Production, !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/LMA/*', !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/LMA-CI-*/*']
+                Condition:
+                  ArnNotEqualsIfExists:
+                    cloudformation:RoleArn: !Ref CloudFormationServiceRoleArn
+              - Sid: DenyUnapprovedChangeSetSource
+                Effect: Deny
+                Action: cloudformation:CreateChangeSet
+                Resource: !If [Production, !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/LMA/*', !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/LMA-CI-*/*']
+                Condition:
+                  StringNotLikeIfExists:
+                    cloudformation:TemplateUrl: !Sub 'https://s3.${AWS::Region}.${AWS::URLSuffix}/${Artifacts}/releases/*/lma-main.yaml'
+              # SAM needs authorization on this AWS-owned transform in addition
+              # to the pinned application stack. This grants no stack mutation.
+              - Sid: PermitReviewedSamTransform
+                Effect: Allow
+                Action: cloudformation:CreateChangeSet
+                Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31'
               - !If
                 - Production
                 - Effect: Allow
