@@ -367,6 +367,7 @@ Resources:
   CognitoAuthorizedRole:
     Type: AWS::IAM::Role
     Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -478,6 +479,7 @@ Resources:
     Type: AWS::Serverless::Function
     Condition: ShouldAllowSignUpEmailDomain
     Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Handler: index.lambda_handler
       Runtime: python3.12
       Timeout: 10
