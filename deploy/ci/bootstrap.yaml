@@ -4,15 +4,22 @@ Parameters:
   Environment:
     Type: String
     AllowedValues: [production, dev]
+  EnableDeploymentRole:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Keep false for runner-only bootstrap; enable after identity verification and service-role review
   GitHubOidcSubject:
     Type: String
+    Default: ''
     Description: Exact sub claim from LMA inspect OIDC identity; no wildcards
-    AllowedPattern: 'repo:allops-solutions[^*]*:environment:(production|dev)'
+    AllowedPattern: '(|repo:allops-solutions[^*]*:environment:(production|dev))'
   GitHubConnectionArn:
     Type: String
     Description: Authorized GitHub App CodeConnections connection in this account
   CloudFormationServiceRoleArn:
     Type: String
+    Default: ''
     Description: Separately reviewed LMA CloudFormation service role
   ConfigurationSecretArn:
     Type: String
@@ -32,9 +39,18 @@ Parameters:
   PermissionsBoundaryArn:
     Type: String
     Default: ''
+Rules:
+  DeploymentInputs:
+    RuleCondition: !Equals [!Ref EnableDeploymentRole, 'true']
+    Assertions:
+      - Assert: !Not [!Equals [!Ref GitHubOidcSubject, '']]
+        AssertDescription: An observed GitHub OIDC subject is required before enabling deployment
+      - Assert: !Not [!Equals [!Ref CloudFormationServiceRoleArn, '']]
+        AssertDescription: A reviewed CloudFormation service role is required before enabling deployment
 Conditions:
   Production: !Equals [!Ref Environment, production]
-  CreateOidc: !Equals [!Ref ExistingOidcProviderArn, '']
+  DeploymentEnabled: !Equals [!Ref EnableDeploymentRole, 'true']
+  CreateOidc: !And [!Equals [!Ref EnableDeploymentRole, 'true'], !Equals [!Ref ExistingOidcProviderArn, '']]
   HasBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
   HasConfigurationKey: !Not [!Equals [!Ref ConfigurationKmsKeyArn, '']]
   HasStorageKey: !Not [!Equals [!Ref CustomerManagedEncryptionKeyArn, '']]
@@ -113,7 +129,7 @@ Resources:
                 Action: [logs:CreateLogStream, logs:PutLogEvents]
                 Resource: !Sub '${RunnerLogs.Arn}'
               - Effect: Allow
-                Action: [codeconnections:UseConnection, codestar-connections:UseConnection]
+                Action: [codeconnections:UseConnection, codeconnections:GetConnection, codeconnections:GetConnectionToken]
                 Resource: !Ref GitHubConnectionArn
   Runner:
     Type: AWS::CodeBuild::Project
@@ -140,13 +156,14 @@ Resources:
           - - Type: EVENT
               Pattern: WORKFLOW_JOB_QUEUED
             - Type: WORKFLOW_NAME
-              Pattern: '^LMA deployment$'
+              Pattern: '^LMA (deployment|bootstrap validation)$'
       LogsConfig:
         CloudWatchLogs:
           Status: ENABLED
           GroupName: !Ref RunnerLogs
   DeploymentRole:
     Type: AWS::IAM::Role
+    Condition: DeploymentEnabled
     Properties:
       MaxSessionDuration: 14400
       PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref 'AWS::NoValue']
@@ -223,6 +240,7 @@ Outputs:
   ArtifactBucket:
     Value: !Ref Artifacts
   DeploymentRoleArn:
+    Condition: DeploymentEnabled
     Value: !GetAtt DeploymentRole.Arn
   RunnerProject:
     Value: !Ref Runner

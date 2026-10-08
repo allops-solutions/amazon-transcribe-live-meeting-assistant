@@ -1,0 +1,21 @@
+name: LMA bootstrap validation
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  runner:
+    if: github.repository == 'allops-solutions/amazon-transcribe-live-meeting-assistant' && github.ref == 'refs/heads/allops-main'
+    environment: production
+    runs-on: codebuild-lma-ci-production-${{ github.run_id }}-${{ github.run_attempt }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Verify checkout and Docker without deployment credentials
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -f lma-main.yaml
+          docker info > /dev/null
+          echo 'Repository checkout and Docker daemon verified. No LMA deployment attempted.'

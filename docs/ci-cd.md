@@ -58,6 +58,10 @@ it is not performed by running local tests.
    with a customer-managed KMS key, supply `ConfigurationKmsKeyArn` and authorize
    the deployment role in that key policy.
 6. Review and deploy `deploy/ci/bootstrap.yaml` in the selected account/region.
+   First use `EnableDeploymentRole=false` (the default) for runner-only bootstrap.
+   This creates build infrastructure without an OIDC deployment role. After
+   verifying the exact subject and reviewing the service role, update it with
+   `EnableDeploymentRole=true` and both required identity/service-role inputs.
    Confirm the environment matches that account. Reuse an existing GitHub OIDC
    provider with `ExistingOidcProviderArn` if present. Optional IAM permissions
    boundaries apply to both new roles. Check that the webhook was created and
@@ -84,6 +88,10 @@ DeleteStack permission. Dev deletion is limited to CI stack names with the manag
 tag, with a second exact run-ID/ownership check in Python.
 
 ## Running a release
+
+Before the first release, **LMA bootstrap validation** checks CodeBuild's runner,
+repository checkout and Docker daemon with production approval but no OIDC
+deployment credentials, application publishing or CloudFormation deployment.
 
 Open Actions → **LMA deployment** → Run workflow. Select `allops-main`, choose
 the environment, and type `DEPLOY LMA`. Checks must pass before deployment can
