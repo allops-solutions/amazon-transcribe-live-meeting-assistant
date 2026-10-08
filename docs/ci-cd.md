@@ -110,6 +110,21 @@ tag, with a second exact run-ID/ownership check in Python.
 
 ## Running a release
 
+### Stronger isolation rollout (not yet activated)
+
+Ahmed selected stronger isolation on 2026-10-08. All application templates now
+accept and forward the optional `PermissionsBoundaryArn`; explicit IAM roles
+and SAM-generated function roles receive it when configured. Empty defaults
+preserve the existing dev behavior. Coverage tests prevent future omissions.
+
+This is coverage groundwork, **not an enforced isolation policy**. A production
+boundary and scoped provisioning policy still need definition, IAM simulation,
+SAM-transformed-template checks and deployment/runtime validation. Provisioning
+must require the exact approved boundary when creating application roles and
+must not let deployed code remove it or modify its policy. Service-linked roles,
+custom-resource permissions and resource-policy grants need separate handling.
+Do not enable the deployment role merely because boundary coverage tests pass.
+
 Before the first release, **LMA bootstrap validation** checks CodeBuild's runner,
 repository checkout and Docker daemon without deployment credentials by default.
 `validate_aws=true` also checks metadata-only AWS authentication;

@@ -6,6 +6,11 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: Amazon Transcribe Live Meeting Assist - Websocket Server
 
 Parameters:
+  PermissionsBoundaryArn:
+    Type: String
+    Default: ""
+    Description: Optional permissions boundary applied to application roles
+
   LMAStackName:
     Type: String
     Default: "LMA"
@@ -40,6 +45,9 @@ Outputs:
   PrivateSubnet2:
     Description: Private Subnet 1
     Value: !Ref PrivateSubnet2
+
+Conditions:
+  HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
 
 Resources:
   VPC:
@@ -93,6 +101,7 @@ Resources:
           - id: AwsSolutions-IAM5
             reason: 'Wildcards scoped by service/resource or PassedToService condition; standard CFN least-privilege pattern'
     Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:

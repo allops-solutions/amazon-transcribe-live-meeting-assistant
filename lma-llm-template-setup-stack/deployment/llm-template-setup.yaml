@@ -9,6 +9,11 @@ Description: Amazon Transcribe Live Meeting Assistant - LLM Prompts
 Transform: AWS::Serverless-2016-10-31
 
 Parameters:
+  PermissionsBoundaryArn:
+    Type: String
+    Default: ""
+    Description: Optional permissions boundary applied to application roles
+
   Domain:
     Type: String
     Default: "Default"
@@ -25,6 +30,9 @@ Parameters:
   CustomerManagedEncryptionKeyArn:
     Type: String
     Description: ARN of the customer managed KMS key for encryption
+
+Conditions:
+  HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
 
 Resources:
   LLMPromptTemplateTable:
@@ -47,6 +55,7 @@ Resources:
   LLMPromptUploadRole:
     Type: "AWS::IAM::Role"
     Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Statement:
           - Effect: Allow

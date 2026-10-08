@@ -12,6 +12,11 @@ Description: >-
 Transform: AWS::Serverless-2016-10-31
 
 Parameters:
+  PermissionsBoundaryArn:
+    Type: String
+    Default: ""
+    Description: Optional permissions boundary applied to application roles
+
   CloudWatchLogsExpirationInDays:
     Type: Number
     Default: 14
@@ -20,6 +25,9 @@ Parameters:
   CustomerManagedEncryptionKeyArn:
     Type: String
     Description: ARN of the customer managed KMS key for encryption
+
+Conditions:
+  HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
 
 Resources:
   # DynamoDB Table for Nova Sonic Configuration
@@ -45,6 +53,7 @@ Resources:
   NovaSonicConfigUploadRole:
     Type: AWS::IAM::Role
     Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Statement:
           - Effect: Allow

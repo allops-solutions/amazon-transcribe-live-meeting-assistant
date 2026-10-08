@@ -1453,6 +1453,7 @@ Resources:
     # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
     # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency as it scales based on demand"
     Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Handler: index.handler
       Runtime: python3.12
       Timeout: 60
@@ -1552,6 +1553,7 @@ Resources:
     # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
     # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency as it scales based on demand"
     Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Handler: index.handler
       Runtime: python3.12
       InlineCode: |
@@ -2503,6 +2505,7 @@ Resources:
     # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
     # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency as it scales based on demand"
     Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Handler: index.handler
       Runtime: python3.12
       InlineCode: |
@@ -2544,6 +2547,7 @@ Resources:
     Properties:
       TemplateURL: https://s3.<REGION_TOKEN>.amazonaws.com/<ARTIFACT_BUCKET_TOKEN>/<ARTIFACT_PREFIX_TOKEN>/lma-llm-template-setup-stack/llm-template-setup.yaml
       Parameters:
+        PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
         Domain: "Default"
         CloudWatchLogsExpirationInDays: !Ref CloudWatchLogsExpirationInDays
         CustomerManagedEncryptionKeyArn: !GetAtt CustomerManagedEncryptionKey.Arn
@@ -2556,6 +2560,7 @@ Resources:
     Properties:
       TemplateURL: https://s3.<REGION_TOKEN>.amazonaws.com/<ARTIFACT_BUCKET_TOKEN>/<ARTIFACT_PREFIX_TOKEN>/lma-chat-button-config-stack/chat-button-config.yaml
       Parameters:
+        PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
         CloudWatchLogsExpirationInDays: !Ref CloudWatchLogsExpirationInDays
         CustomerManagedEncryptionKeyArn: !GetAtt CustomerManagedEncryptionKey.Arn
 
@@ -2567,6 +2572,7 @@ Resources:
     Properties:
       TemplateURL: https://s3.<REGION_TOKEN>.amazonaws.com/<ARTIFACT_BUCKET_TOKEN>/<ARTIFACT_PREFIX_TOKEN>/lma-nova-sonic-config-stack/deployment/nova-sonic-config.yaml
       Parameters:
+        PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
         CloudWatchLogsExpirationInDays: !Ref CloudWatchLogsExpirationInDays
         CustomerManagedEncryptionKeyArn: !GetAtt CustomerManagedEncryptionKey.Arn
 
@@ -2580,6 +2586,7 @@ Resources:
       TemplateURL: https://s3.<REGION_TOKEN>.amazonaws.com/<ARTIFACT_BUCKET_TOKEN>/<ARTIFACT_PREFIX_TOKEN>/lma-cognito-stack/template.yaml
       # yamllint enable rule:line-length
       Parameters:
+        PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
         LMAStackName: !Ref AWS::StackName
         S3BucketName: !If
           - ShouldCreateRecordingBucket
@@ -2606,6 +2613,7 @@ Resources:
       TemplateURL: https://s3.<REGION_TOKEN>.amazonaws.com/<ARTIFACT_BUCKET_TOKEN>/<ARTIFACT_PREFIX_TOKEN>/lma-cognito-stack/template.yaml
       # yamllint enable rule:line-length
       Parameters:
+        PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
         LMAStackName: !Ref AWS::StackName
         S3BucketName: !If
           - ShouldCreateRecordingBucket
@@ -2748,6 +2756,7 @@ Resources:
     Properties:
       TemplateURL: https://s3.<REGION_TOKEN>.amazonaws.com/<ARTIFACT_BUCKET_TOKEN>/<ARTIFACT_PREFIX_TOKEN>/lma-bedrockkb-stack/template.yaml
       Parameters:
+        PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
         pKnowledgeBaseBucketName: !Ref RecordingsBucket
         pInputDocumentUploadFolderPrefix: "lma-transcripts/"
         pS3SyncScheduleExpression: "cron(0/15 * ? * * *)"  # default is to sync transcripts every 15 minutes
@@ -2761,6 +2770,7 @@ Resources:
       TemplateURL: https://s3.<REGION_TOKEN>.amazonaws.com/<ARTIFACT_BUCKET_TOKEN>/<ARTIFACT_PREFIX_TOKEN>/lma-meetingassist-setup-stack/template.yaml
       # yamllint enable rule:line-length
       Parameters:
+        PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
         LMAStackName: !Ref AWS::StackName
         AISTACK: !Ref AISTACK
         COGNITOSTACK: !If [ShouldUseSsoPool, !Ref SSOCOGNITOSTACK, !Ref COGNITOSTACK]
@@ -2811,6 +2821,7 @@ Resources:
       # yamllint disable rule:line-length
       TemplateURL: https://s3.<REGION_TOKEN>.amazonaws.com/<ARTIFACT_BUCKET_TOKEN>/<ARTIFACT_PREFIX_TOKEN>/lma-vpc-stack/template.yaml
       Parameters:
+        PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
         LMAStackName: !Ref "AWS::StackName"
         CustomerManagedEncryptionKeyArn: !GetAtt CustomerManagedEncryptionKey.Arn
 
@@ -3051,6 +3062,7 @@ Resources:
       TemplateURL: https://s3.<REGION_TOKEN>.amazonaws.com/<ARTIFACT_BUCKET_TOKEN>/<ARTIFACT_PREFIX_TOKEN>/lma-browser-extension-stack/template.yaml
       # yamllint enable rule:line-length
       Parameters:
+        PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
         LMAStackName: !Ref AWS::StackName
         WebSocketEndpoint: !GetAtt WEBSOCKETTRANSCRIBERSTACK.Outputs.WebSocketEndpoint
         CognitoClientId: !If [ShouldUseSsoPool, !GetAtt SSOCOGNITOSTACK.Outputs.CognitoClientId, !GetAtt COGNITOSTACK.Outputs.CognitoClientId]
@@ -3069,6 +3081,7 @@ Resources:
       TemplateURL: https://s3.<REGION_TOKEN>.amazonaws.com/<ARTIFACT_BUCKET_TOKEN>/<ARTIFACT_PREFIX_TOKEN>/lma-desktop-capture-app-stack/template.yaml
       # yamllint enable rule:line-length
       Parameters:
+        PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
         LMAStackName: !Ref AWS::StackName
         WebSocketEndpoint: !GetAtt WEBSOCKETTRANSCRIBERSTACK.Outputs.WebSocketEndpoint
         CognitoUserPoolId: !If [ShouldUseSsoPool, !GetAtt SSOCOGNITOSTACK.Outputs.UserPoolId, !GetAtt COGNITOSTACK.Outputs.UserPoolId]
