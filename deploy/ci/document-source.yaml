@@ -1,0 +1,56 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Optional retained private LMA production document source. No application deployment or credentials.
+Parameters:
+  EnableDocumentsBucket:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+Conditions:
+  Enabled: !Equals [!Ref EnableDocumentsBucket, 'true']
+Resources:
+  Documents:
+    Type: AWS::S3::Bucket
+    Condition: Enabled
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'allops-lma-documents-${AWS::AccountId}-${AWS::Region}'
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Application
+          Value: LMA
+        - Key: Purpose
+          Value: DocumentKnowledgeBase
+  DocumentsPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: Enabled
+    Properties:
+      Bucket: !Ref Documents
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: RequireTls
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: [!GetAtt Documents.Arn, !Sub '${Documents.Arn}/*']
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+Outputs:
+  DocumentsBucketName:
+    Condition: Enabled
+    Value: !Ref Documents

@@ -54,9 +54,10 @@ it is not performed by running local tests.
    names to string values. Supply its ARN as `ConfigurationSecretArn`. Resolve
    every `TODO_` / `FILL_IN_FROM_SECRET_STORE` value in `deploy/params/prod.json`
    or `dev.json`. Disabled optional providers may use empty strings where their
-   parameter allows it. Required admin emails, document bucket and Google OAuth
-   credentials must have real values. Ask the boss for production Google OAuth
-   credentials; do not copy dev secrets into production without approval.
+   parameter allows it. Required admin emails and enabled Google OAuth credentials
+   must have real values. The document bucket is optional (empty disables that S3
+   source). Use the approved production OAuth credentials; do not copy dev secrets
+   into production without approval.
    Do not commit this JSON or include it in logs or GitHub artifacts. If encrypted
    with a customer-managed KMS key, supply `ConfigurationKmsKeyArn` and authorize
    the deployment role in that key policy.
@@ -152,6 +153,48 @@ Production preflight/deploy now also requires the environment variable
 configuration-secret overrides cannot clear or substitute it. Keep the variable
 unset until the actual runtime boundary is defined and validated. Dev remains
 optional-boundary. This code check supplements, but never replaces, IAM enforcement.
+
+`deploy/ci/runtime_boundary.py` now generates an **inactive, incomplete runtime
+ceiling** for named LMA resources. It explicitly denies unreviewed actions and
+access outside the reviewed namespaces, limits artifacts to read-only release
+access, and denies cross-account S3 access. The dedicated document bucket is an
+optional exact-name scope. Broad service action ceilings on LMA-named resources
+are maximum permissions, not grants: each role's existing identity policies must
+still authorize its own work. IAM mutation/PassRole, STS role assumption, KMS,
+EC2/ECS, AppSync, Cognito, CloudFront, Bedrock and other unreviewed services remain
+denied. Do not activate it: it intentionally cannot run the full application yet.
+Generated-ID resources, model access, provisioning controls and runtime
+compatibility must be addressed before activation. A passing simulator does not
+validate the behavior of deployed resource policies, AWS service principals or
+service-linked roles. No production IAM policy is created by this generator.
+
+The read-only test is:
+`AWS_PROFILE=default .venv/bin/python deploy/ci/runtime_boundary.py --account 009853297978 --artifact-bucket allops-lma-ci-009853297978-production-us-east-1 --simulate`.
+Add `--documents-bucket allops-lma-documents-009853297978-us-east-1` to validate
+the optional document scope. The generator checks the 6,144-character managed
+policy cap and omits diagnostic statement IDs if longer partition names require
+it; never drops permission rules to fit the limit.
+
+### Optional production documents and OAuth credentials
+
+The Google OAuth client ID is public configuration. Its matching client secret
+belongs in the production configuration secret, never committed or pasted into
+chat. Configure the production Google callback URL once the domain is known.
+
+`BedrockKnowledgeBaseS3BucketName` is optional: empty means no S3 document source,
+not disabled transcript search. For later company-document ingestion,
+`deploy/ci/document-source.yaml` prepares a dedicated, encrypted, versioned,
+public-access-blocked bucket with retained data and HTTPS-only access. Its
+creation is opt-in and requires cost approval; it has not been deployed. After
+creation, supply its returned bucket name instead of the TODO placeholder.
+
+This repository uses S3 Vectors, not a continuously provisioned OpenSearch
+cluster, for the knowledge base. It is nevertheless usage-billed: S3 storage and
+requests, vector storage/indexing/search, embedding-model calls, assistant-model
+calls, plus the sync Lambda/schedule's activity. An empty source is not a promise
+of zero AWS charges. See [S3 pricing](https://aws.amazon.com/s3/pricing/) and
+[Bedrock pricing](https://aws.amazon.com/bedrock/pricing/). Do not create the source
+bucket or deploy the knowledge base on the assumption that it is free.
 
 Before the first release, **LMA bootstrap validation** checks CodeBuild's runner,
 repository checkout and Docker daemon without deployment credentials by default.
