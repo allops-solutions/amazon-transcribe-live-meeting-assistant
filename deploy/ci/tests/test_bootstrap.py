@@ -28,6 +28,19 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(source['Location'], 'https://github.com/allops-solutions/amazon-transcribe-live-meeting-assistant')
         self.assertEqual(source['Auth']['Type'], 'CODECONNECTIONS')
 
+    def test_authentication_role_is_metadata_only(self):
+        self.assertEqual(self.template['Parameters']['EnableAuthenticationRole']['Default'], 'false')
+        role = self.template['Resources']['AuthenticationRole']
+        self.assertEqual(role['Condition'], 'AuthenticationEnabled')
+        statements = role['Properties']['Policies'][0]['PolicyDocument']['Statement']
+        actions = []
+        for statement in statements:
+            action = statement['Action']
+            actions.extend(action if isinstance(action, list) else [action])
+        self.assertEqual(set(actions), {'s3:GetBucketLocation', 's3:ListBucket', 'secretsmanager:DescribeSecret'})
+        self.assertEqual(role['Properties']['AssumeRolePolicyDocument']['Statement'][0]['Condition']['StringEquals']['token.actions.githubusercontent.com:aud'], 'sts.amazonaws.com')
+        self.assertIn('AuthenticationInputs', self.template['Rules'])
+
 
 if __name__ == '__main__':
     unittest.main()
