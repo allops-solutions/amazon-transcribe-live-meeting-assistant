@@ -5,7 +5,7 @@
   },
   {
     "ParameterKey": "AdminEmail",
-    "ParameterValue": "TODO_PROD_ADMIN_EMAIL@allops.co"
+    "ParameterValue": "ismail.icanovic@allops.co"
   },
   {
     "ParameterKey": "AllowedSignUpEmailDomain",
@@ -309,7 +309,7 @@
   },
   {
     "ParameterKey": "GoogleAdminEmail",
-    "ParameterValue": "TODO_PROD_ADMIN_EMAIL@allops.co"
+    "ParameterValue": "ismail.icanovic@allops.co"
   },
   {
     "ParameterKey": "PasswordSignInEnabled",
