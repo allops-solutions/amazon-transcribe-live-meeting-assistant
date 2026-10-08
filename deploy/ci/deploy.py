@@ -55,6 +55,21 @@ def validate_cleanup(stack, tags, run_id):
         raise ValueError("Refusing cleanup: stack identity or workflow ownership tags do not match")
 
 
+def validate_application_boundary(parameters, account, environment):
+    """Pin production's boundary independently of the editable configuration secret."""
+    if environment != "production":
+        return
+    approved = os.environ.get("LMA_APPLICATION_BOUNDARY_ARN", "")
+    if not re.fullmatch(
+        rf"arn:aws:iam::{re.escape(account)}:policy/lma/isolation/[A-Za-z0-9+=,.@_-]+",
+        approved,
+    ):
+        raise ValueError("An approved production application boundary must be configured")
+    values = {p["ParameterKey"]: p["ParameterValue"] for p in parameters}
+    if values.get("PermissionsBoundaryArn") != approved:
+        raise ValueError("Production parameters must use the exact approved application boundary")
+
+
 def describe_stack(cfn, name):
     try:
         return cfn.describe_stacks(StackName=name)["Stacks"][0]
@@ -101,6 +116,7 @@ def main():
     overrides = json.loads(session.client("secretsmanager").get_secret_value(SecretId=secret_arn)["SecretString"])
     base = json.loads(Path(f"deploy/params/{'prod' if args.environment == 'production' else 'dev'}.json").read_text())
     parameters = merge_parameters(base, overrides, args.environment)
+    validate_application_boundary(parameters, account, args.environment)
     role = os.environ["LMA_CFN_ROLE_ARN"]
     if not role.startswith(f"arn:aws:iam::{account}:role/"):
         raise ValueError("CloudFormation service role must belong to the target account")

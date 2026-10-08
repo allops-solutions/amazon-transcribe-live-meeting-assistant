@@ -1,0 +1,62 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Inactive-by-default IAM deny overlay; not a complete application boundary or provisioning role.
+Parameters:
+  EnableGuardrails:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+  ApplicationBoundaryArn:
+    Type: String
+    Description: Administrator-owned runtime boundary; must exist before activation.
+    AllowedPattern: '^arn:[a-z0-9-]+:iam::[0-9]{12}:policy/lma/isolation/[A-Za-z0-9+=,.@_-]+$'
+Conditions:
+  Enabled: !Equals [!Ref EnableGuardrails, 'true']
+Resources:
+  ProvisioningIamGuardrails:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: Enabled
+    Properties:
+      Path: /lma/isolation/
+      Description: Deny overlay for a future restricted LMA CloudFormation service role; grants no permissions.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: RequireApprovedBoundaryOnCreationAndReplacement
+            Effect: Deny
+            Action: [iam:CreateRole, iam:PutRolePermissionsBoundary]
+            Resource: '*'
+            Condition:
+              ArnNotEquals:
+                iam:PermissionsBoundary: !Ref ApplicationBoundaryArn
+          - Sid: NeverRemoveRoleBoundaries
+            Effect: Deny
+            Action: iam:DeleteRolePermissionsBoundary
+            Resource: '*'
+          - Sid: ProtectIsolationPolicies
+            Effect: Deny
+            Action: 'iam:*'
+            Resource:
+              - !Ref ApplicationBoundaryArn
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/lma/isolation/*'
+          - Sid: ProtectCiAndIsolationRoles
+            Effect: Deny
+            Action: 'iam:*'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/LMA-CICD-*'
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/LMA-Isolation-*'
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/LMA-CICD-*'
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/LMA-Isolation-*'
+          - Sid: NoIamOutsideApplicationNamespace
+            Effect: Deny
+            Action: 'iam:*'
+            NotResource:
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/LMA-*'
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/LMA-*'
+          - Sid: NoRoleAssumptionByProvisioner
+            Effect: Deny
+            Action: [sts:AssumeRole, sts:AssumeRoleWithSAML, sts:AssumeRoleWithWebIdentity]
+            Resource: '*'
+Outputs:
+  GuardrailPolicyArn:
+    Condition: Enabled
+    Value: !Ref ProvisioningIamGuardrails

@@ -133,6 +133,7 @@ setup-python: ## Create .venv and install Python dev/lint dependencies
 		bandit \
 		black \
 		cfn-lint \
+		'aws-sam-translator==1.113.0' \
 		flake8 \
 		mypy \
 		pylint \

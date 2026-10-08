@@ -35,6 +35,7 @@ jobs:
       LMA_ARTIFACT_BUCKET: ${{ vars.LMA_ARTIFACT_BUCKET }}
       LMA_CONFIG_SECRET_ARN: ${{ vars.LMA_CONFIG_SECRET_ARN }}
       LMA_CFN_ROLE_ARN: ${{ vars.LMA_CFN_ROLE_ARN }}
+      LMA_APPLICATION_BOUNDARY_ARN: ${{ vars.LMA_APPLICATION_BOUNDARY_ARN }}
       TARGET_ENVIRONMENT: ${{ inputs.environment }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
