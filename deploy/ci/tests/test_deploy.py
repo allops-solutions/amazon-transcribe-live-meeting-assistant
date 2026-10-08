@@ -66,6 +66,27 @@ class SafetyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'AdminEmail'):
             deploy.merge_parameters([{'ParameterKey': 'AdminEmail', 'ParameterValue': 'TODO_ADMIN'}], {}, 'production')
 
+    def test_production_boundary_is_mandatory_and_pinned(self):
+        approved = 'arn:aws:iam::009853297978:policy/lma/isolation/application-boundary'
+        parameters = [{'ParameterKey': 'PermissionsBoundaryArn', 'ParameterValue': approved}]
+        with patch.dict(os.environ, {'LMA_APPLICATION_BOUNDARY_ARN': approved}):
+            deploy.validate_application_boundary(parameters, '009853297978', 'production')
+            for supplied in ['', 'arn:aws:iam::aws:policy/AdministratorAccess',
+                             approved.replace('application-boundary', 'other')]:
+                with self.subTest(supplied=supplied), self.assertRaises(ValueError):
+                    deploy.validate_application_boundary(
+                        [{'ParameterKey': 'PermissionsBoundaryArn', 'ParameterValue': supplied}],
+                        '009853297978', 'production')
+            with self.assertRaises(ValueError):
+                deploy.validate_application_boundary([], '009853297978', 'production')
+        for configured in ['', approved.replace('009853297978', '135755363077'),
+                           'arn:aws:iam::aws:policy/AdministratorAccess']:
+            with patch.dict(os.environ, {'LMA_APPLICATION_BOUNDARY_ARN': configured}), self.assertRaises(ValueError):
+                deploy.validate_application_boundary(parameters, '009853297978', 'production')
+
+    def test_dev_boundary_remains_optional(self):
+        deploy.validate_application_boundary([], '135755363077', 'dev')
+
     def run_main(self, action, environment, existing=None):
         account = deploy.ACCOUNTS[environment]
         cfn = MagicMock()
@@ -75,6 +96,8 @@ class SafetyTests(unittest.TestCase):
         session.client.return_value.get_caller_identity.return_value = {'Account': account}
         base = json.loads((ROOT / f"deploy/params/{'prod' if environment == 'production' else 'dev'}.json").read_text())
         overrides = {p['ParameterKey']: '' for p in base if 'TODO_' in p['ParameterValue'] or 'FILL_IN_FROM_SECRET_STORE' in p['ParameterValue']}
+        boundary = f'arn:aws:iam::{account}:policy/lma/isolation/application-boundary'
+        overrides['PermissionsBoundaryArn'] = boundary if environment == 'production' else ''
         session.client.return_value.get_secret_value.return_value = {'SecretString': json.dumps(overrides)}
         clients = {'cloudformation': cfn, 'sts': session.client.return_value, 'secretsmanager': session.client.return_value}
         session.client.side_effect = clients.get
@@ -83,6 +106,7 @@ class SafetyTests(unittest.TestCase):
             'LMA_ARTIFACT_BUCKET': 'test-us-east-1', 'GITHUB_SHA': 'abc', 'GITHUB_RUN_ATTEMPT': '1',
             'LMA_CONFIG_SECRET_ARN': f'arn:aws:secretsmanager:us-east-1:{account}:secret:test',
             'LMA_CFN_ROLE_ARN': f'arn:aws:iam::{account}:role/cfn',
+            'LMA_APPLICATION_BOUNDARY_ARN': boundary,
         }), patch.object(deploy.boto3, 'Session', return_value=session), patch.object(deploy, 'describe_stack', return_value=existing), patch.object(deploy.sys, 'argv', ['deploy.py', action, '--environment', environment, '--run-id', '123', '--template-url', url]):
             deploy.main()
         return cfn

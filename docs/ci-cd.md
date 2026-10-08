@@ -125,6 +125,34 @@ must not let deployed code remove it or modify its policy. Service-linked roles,
 custom-resource permissions and resource-policy grants need separate handling.
 Do not enable the deployment role merely because boundary coverage tests pass.
 
+`deploy/ci/iam-guardrails.yaml` adds an **inactive deny-only overlay** for the
+future CloudFormation role. It requires the exact application boundary on role
+creation/replacement, prohibits boundary removal, protects isolation policies
+and CI roles (which otherwise match `LMA-*`), denies IAM outside the application
+namespace, and prohibits provisioner role assumption. It grants no permissions,
+creates no role and attaches itself to nothing. Service-linked-role creation is
+also blocked by this overlay; required service-linked roles must be handled in a
+separate administrator-controlled bootstrap. It is not yet a complete provisioning
+policy or runtime boundary and does not constrain non-IAM services.
+
+Run the read-only AWS test with
+`AWS_PROFILE=default .venv/bin/python deploy/ci/simulate_iam_guardrails.py --account 009853297978`.
+The simulator intentionally combines a hypothetical broad Allow with the overlay
+to test its explicit Denies. That Allow is never attached or deployed. This test
+does not establish resource-policy/session containment or runtime compatibility.
+
+CI runs the official AWS SAM translator (pinned to 1.113.0) and verifies boundary
+coverage on the resulting IAM roles. Local artifact URIs are replaced with
+in-memory S3 stand-ins for this offline test; it does not build code, upload
+artifacts, resolve runtime permissions or deploy a stack.
+
+Production preflight/deploy now also requires the environment variable
+`LMA_APPLICATION_BOUNDARY_ARN`, pointing to an approved account-local policy in
+`/lma/isolation/`. The merged `PermissionsBoundaryArn` must match it exactly;
+configuration-secret overrides cannot clear or substitute it. Keep the variable
+unset until the actual runtime boundary is defined and validated. Dev remains
+optional-boundary. This code check supplements, but never replaces, IAM enforcement.
+
 Before the first release, **LMA bootstrap validation** checks CodeBuild's runner,
 repository checkout and Docker daemon without deployment credentials by default.
 `validate_aws=true` also checks metadata-only AWS authentication;

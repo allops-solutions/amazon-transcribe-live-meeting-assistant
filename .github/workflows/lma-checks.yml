@@ -29,4 +29,5 @@ jobs:
       - run: make setup-python setup-cli-dev setup-npm
       - run: .venv/bin/python -m unittest discover -s deploy/ci/tests -v
       - run: .venv/bin/cfn-lint --non-zero-exit-code error deploy/ci/bootstrap.yaml
+      - run: .venv/bin/cfn-lint --non-zero-exit-code error deploy/ci/iam-guardrails.yaml
       - run: make lint-cfn test-sdk test-cli test-lambdas test-vp-template lint-ui-force lint-typescript test-vp test-ui-force
