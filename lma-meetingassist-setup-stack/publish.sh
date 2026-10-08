@@ -37,13 +37,21 @@ else
   PUBLIC=false
 fi
 
-# Create bucket if it doesn't already exist
-if [ -x $(aws s3api list-buckets --query 'Buckets[].Name' | grep "\"$BUCKET\"") ]; then
-  echo "Creating s3 bucket: $BUCKET"
-  aws s3 mb s3://${BUCKET} || exit 1
-  aws s3api put-bucket-versioning --bucket ${BUCKET} --versioning-configuration Status=Enabled || exit 1
-else
+# Check only the requested bucket. Access/network failures do not mean it is missing.
+if bucket_error=$(aws s3api head-bucket --bucket "$BUCKET" --region "$REGION" 2>&1); then
   echo "Using existing bucket: $BUCKET"
+else
+  case "$bucket_error" in
+    *"(404)"*|*"(NoSuchBucket)"*|*"(NotFound)"*)
+      echo "Creating s3 bucket: $BUCKET"
+      aws s3 mb "s3://${BUCKET}" --region "$REGION" || exit 1
+      aws s3api put-bucket-versioning --bucket "$BUCKET" --versioning-configuration Status=Enabled --region "$REGION" || exit 1
+      ;;
+    *)
+      printf 'Cannot access S3 bucket %s: %s\n' "$BUCKET" "$bucket_error" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 echo -n "Make temp dir: "
@@ -88,4 +96,3 @@ fi
 
 echo Published $NAME - Template URL: $https_template
 exit 0
-
