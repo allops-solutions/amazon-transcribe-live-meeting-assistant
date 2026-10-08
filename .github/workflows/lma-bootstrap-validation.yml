@@ -1,6 +1,11 @@
 name: LMA bootstrap validation
 on:
   workflow_dispatch:
+    inputs:
+      validate_aws:
+        description: Also assume the read-only authentication role and check bootstrap metadata
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -9,6 +14,9 @@ jobs:
     environment: production
     runs-on: codebuild-lma-ci-production-${{ github.run_id }}-${{ github.run_attempt }}
     timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -19,3 +27,23 @@ jobs:
           test -f lma-main.yaml
           docker info > /dev/null
           echo 'Repository checkout and Docker daemon verified. No LMA deployment attempted.'
+      - name: Authenticate with the metadata-only AWS role
+        if: inputs.validate_aws
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        with:
+          role-to-assume: ${{ vars.LMA_AUTH_ROLE_ARN }}
+          aws-region: us-east-1
+          role-duration-seconds: 900
+          unset-current-credentials: true
+          allowed-account-ids: '009853297978'
+      - name: Check account, bucket access and secret metadata without reading secret values
+        if: inputs.validate_aws
+        env:
+          AWS_PAGER: ''
+          LMA_ARTIFACT_BUCKET: ${{ vars.LMA_ARTIFACT_BUCKET }}
+          LMA_CONFIG_SECRET_ARN: ${{ vars.LMA_CONFIG_SECRET_ARN }}
+        run: |
+          test "$(aws sts get-caller-identity --query Account --output text)" = '009853297978'
+          aws s3api head-bucket --bucket "$LMA_ARTIFACT_BUCKET"
+          test "$(aws secretsmanager describe-secret --secret-id "$LMA_CONFIG_SECRET_ARN" --query ARN --output text)" = "$LMA_CONFIG_SECRET_ARN"
+          echo 'Production AWS authentication and bootstrap metadata access verified. No secret values read; no deployment attempted.'

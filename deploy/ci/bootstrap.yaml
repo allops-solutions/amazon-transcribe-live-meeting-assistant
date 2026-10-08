@@ -9,6 +9,11 @@ Parameters:
     Default: 'false'
     AllowedValues: ['true', 'false']
     Description: Keep false for runner-only bootstrap; enable after identity verification and service-role review
+  EnableAuthenticationRole:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Enable read-only OIDC validation without application deployment permissions
   GitHubOidcSubject:
     Type: String
     Default: ''
@@ -40,6 +45,11 @@ Parameters:
     Type: String
     Default: ''
 Rules:
+  AuthenticationInputs:
+    RuleCondition: !Equals [!Ref EnableAuthenticationRole, 'true']
+    Assertions:
+      - Assert: !Not [!Equals [!Ref GitHubOidcSubject, '']]
+        AssertDescription: An observed GitHub OIDC subject is required before enabling authentication
   DeploymentInputs:
     RuleCondition: !Equals [!Ref EnableDeploymentRole, 'true']
     Assertions:
@@ -50,7 +60,10 @@ Rules:
 Conditions:
   Production: !Equals [!Ref Environment, production]
   DeploymentEnabled: !Equals [!Ref EnableDeploymentRole, 'true']
-  CreateOidc: !And [!Equals [!Ref EnableDeploymentRole, 'true'], !Equals [!Ref ExistingOidcProviderArn, '']]
+  AuthenticationEnabled: !Equals [!Ref EnableAuthenticationRole, 'true']
+  CreateOidc: !And
+    - !Or [!Equals [!Ref EnableDeploymentRole, 'true'], !Equals [!Ref EnableAuthenticationRole, 'true']]
+    - !Equals [!Ref ExistingOidcProviderArn, '']
   HasBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
   HasConfigurationKey: !Not [!Equals [!Ref ConfigurationKmsKeyArn, '']]
   HasStorageKey: !Not [!Equals [!Ref CustomerManagedEncryptionKeyArn, '']]
@@ -161,6 +174,34 @@ Resources:
         CloudWatchLogs:
           Status: ENABLED
           GroupName: !Ref RunnerLogs
+  AuthenticationRole:
+    Type: AWS::IAM::Role
+    Condition: AuthenticationEnabled
+    Properties:
+      MaxSessionDuration: 3600
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref 'AWS::NoValue']
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If [CreateOidc, !Ref OidcProvider, !Ref ExistingOidcProviderArn]
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Ref GitHubOidcSubject
+      Policies:
+        - PolicyName: BootstrapMetadataOnly
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:GetBucketLocation, s3:ListBucket]
+                Resource: !GetAtt Artifacts.Arn
+              - Effect: Allow
+                Action: secretsmanager:DescribeSecret
+                Resource: !Ref ConfigurationSecretArn
   DeploymentRole:
     Type: AWS::IAM::Role
     Condition: DeploymentEnabled
@@ -237,6 +278,9 @@ Resources:
                 Action: cloudformation:ValidateTemplate
                 Resource: '*'
 Outputs:
+  AuthenticationRoleArn:
+    Condition: AuthenticationEnabled
+    Value: !GetAtt AuthenticationRole.Arn
   ArtifactBucket:
     Value: !Ref Artifacts
   DeploymentRoleArn:

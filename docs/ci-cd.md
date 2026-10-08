@@ -60,6 +60,14 @@ it is not performed by running local tests.
 6. Review and deploy `deploy/ci/bootstrap.yaml` in the selected account/region.
    First use `EnableDeploymentRole=false` (the default) for runner-only bootstrap.
    This creates build infrastructure without an OIDC deployment role. After
+   the production identity job passes, enable `EnableAuthenticationRole=true`
+   with its observed `GitHubOidcSubject` to validate AWS authentication separately.
+   This role can list only the artifact bucket and describe only the configuration
+   secret; it cannot read secret values, write objects or deploy resources.
+   Set the production GitHub variable `LMA_AUTH_ROLE_ARN` from its output and run
+   **LMA bootstrap validation** with `validate_aws=true` (production approval
+   required). Keep `EnableDeploymentRole=false` during this validation.
+   After
    verifying the exact subject and reviewing the service role, update it with
    `EnableDeploymentRole=true` and both required identity/service-role inputs.
    Confirm the environment matches that account. Reuse an existing GitHub OIDC
@@ -138,5 +146,5 @@ AWS_PROFILE=default .venv/bin/python -m unittest discover -s deploy/ci/tests -v
 .venv/bin/cfn-lint --non-zero-exit-code error deploy/ci/bootstrap.yaml
 ```
 
-Runner reference: [AWS CodeBuild-hosted GitHub Actions runners](https://docs.aws.amazon.com/codebuild/latest/userguide/action-runner.html).
+  Runner reference: [AWS CodeBuild-hosted GitHub Actions runners](https://docs.aws.amazon.com/codebuild/latest/userguide/action-runner.html).
 Trust reference: [GitHub OIDC in AWS](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws).
