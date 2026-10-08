@@ -6,6 +6,10 @@ on:
         description: Also assume the read-only authentication role and check bootstrap metadata
         type: boolean
         default: false
+      publish_build:
+        description: Build and upload private validation artifacts only (no application deployment)
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -47,3 +51,50 @@ jobs:
           aws s3api head-bucket --bucket "$LMA_ARTIFACT_BUCKET"
           test "$(aws secretsmanager describe-secret --secret-id "$LMA_CONFIG_SECRET_ARN" --query ARN --output text)" = "$LMA_CONFIG_SECRET_ARN"
           echo 'Production AWS authentication and bootstrap metadata access verified. No secret values read; no deployment attempted.'
+  publish:
+    needs: runner
+    if: inputs.publish_build && github.repository == 'allops-solutions/amazon-transcribe-live-meeting-assistant' && github.ref == 'refs/heads/allops-main'
+    environment: production
+    runs-on: codebuild-lma-ci-production-${{ github.run_id }}-${{ github.run_attempt }}
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_PAGER: ''
+      LMA_ARTIFACT_BUCKET: ${{ vars.LMA_ARTIFACT_BUCKET }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22.23.2'
+      - name: Install repository CLI and build dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install ./lib/lma_sdk ./lib/lma_cli_pkg virtualenv 'aws-sam-cli>=1.118,<2'
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          docker info > /dev/null
+      - name: Authenticate for private artifact publishing only
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        with:
+          role-to-assume: ${{ vars.LMA_PUBLISH_ROLE_ARN }}
+          aws-region: us-east-1
+          role-duration-seconds: 14400
+          unset-current-credentials: true
+          allowed-account-ids: '009853297978'
+      - name: Build and verify private validation artifacts without deployment
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -n "$LMA_ARTIFACT_BUCKET"
+          test "$(aws sts get-caller-identity --query Account --output text)" = '009853297978'
+          validation_prefix="build-validation/$GITHUB_SHA/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT"
+          lma publish --source-dir . --region us-east-1 --bucket-basename "${LMA_ARTIFACT_BUCKET%-us-east-1}" --prefix "$validation_prefix" --force
+          aws s3api head-object --bucket "$LMA_ARTIFACT_BUCKET" --key "$validation_prefix/lma-main.yaml" --query ContentLength
+          echo 'Build and private artifact publishing verified. No LMA application deployed.'

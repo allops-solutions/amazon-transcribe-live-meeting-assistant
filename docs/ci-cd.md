@@ -31,8 +31,11 @@ The following setup creates paid AWS infrastructure and GitHub configuration;
 it is not performed by running local tests.
 
 1. Create GitHub environments `production` and `dev`. Restrict deployment branches
-   to `allops-main`. Require a production reviewer and disable self-approval where
-   available. Protect `allops-main` and review workflow changes: this is a public
+   to `allops-main`. Required PR and production environment reviews were removed
+   with Ahmed/Ismail's authorization on 2026-10-08; required CI, strict branch
+   freshness, admin enforcement and force-push/deletion protections remain.
+   Review gates may be restored if the team wants independent approval later.
+   Protect `allops-main` and inspect workflow changes: this is a public
    repository with a privileged Docker runner. Never run pull-request code on it.
 2. Once the workflows are on the default branch, run **LMA inspect OIDC identity**
    for each environment. Copy its exact `sub` claim into `GitHubOidcSubject`.
@@ -65,14 +68,22 @@ it is not performed by running local tests.
    This role can list only the artifact bucket and describe only the configuration
    secret; it cannot read secret values, write objects or deploy resources.
    Set the production GitHub variable `LMA_AUTH_ROLE_ARN` from its output and run
-   **LMA bootstrap validation** with `validate_aws=true` (production approval
-   required). Keep `EnableDeploymentRole=false` during this validation.
+   **LMA bootstrap validation** with `validate_aws=true`.
+   Keep `EnableDeploymentRole=false` during this validation.
+   For a full build test before deployment is enabled, set `EnablePublishRole=true`,
+   configure `LMA_PUBLISH_ROLE_ARN` from `PublishRoleArn`, and dispatch that workflow
+   with `publish_build=true`. This separate role writes only `build-validation/*`
+   in the CI artifact bucket, never `releases/*`, and can validate templates.
+   It cannot read configuration secrets, pass roles or create/execute changesets.
+   Optional artifact KMS access is restricted to the configured key through S3.
+   The workflow builds/publishes privately and checks the uploaded main template.
+   This incurs CodeBuild/S3 costs but does not deploy any LMA application resources.
    After
    verifying the exact subject and reviewing the service role, update it with
    `EnableDeploymentRole=true` and both required identity/service-role inputs.
    Confirm the environment matches that account. Reuse an existing GitHub OIDC
    provider with `ExistingOidcProviderArn` if present. Optional IAM permissions
-   boundaries apply to both new roles. Check that the webhook was created and
+   boundaries apply to all new roles. Check that the webhook was created and
    receives `WORKFLOW_JOB_QUEUED` events.
    If supplying `CustomerManagedEncryptionKeyArn` for artifacts/logs, authorize
    CloudWatch Logs and artifact decryption by the CloudFormation service role in
@@ -84,6 +95,8 @@ it is not performed by running local tests.
    | GitHub variable | Value |
    |---|---|
    | LMA_DEPLOY_ROLE_ARN | Bootstrap DeploymentRoleArn output |
+   | LMA_AUTH_ROLE_ARN | AuthenticationRoleArn output for metadata-only validation |
+   | LMA_PUBLISH_ROLE_ARN | PublishRoleArn output for optional build-only validation |
    | LMA_ARTIFACT_BUCKET | Bootstrap ArtifactBucket output |
    | LMA_CONFIG_SECRET_ARN | Configuration secret ARN |
    | LMA_CFN_ROLE_ARN | Reviewed CloudFormation service role ARN |
@@ -98,12 +111,16 @@ tag, with a second exact run-ID/ownership check in Python.
 ## Running a release
 
 Before the first release, **LMA bootstrap validation** checks CodeBuild's runner,
-repository checkout and Docker daemon with production approval but no OIDC
-deployment credentials, application publishing or CloudFormation deployment.
+repository checkout and Docker daemon without deployment credentials by default.
+`validate_aws=true` also checks metadata-only AWS authentication;
+`publish_build=true` enables the separate private build-only test described above.
+Neither option deploys the application. A passing build test does not prove
+CloudFormation permissions or production runtime behavior.
 
 Open Actions → **LMA deployment** → Run workflow. Select `allops-main`, choose
 the environment, and type `DEPLOY LMA`. Checks must pass before deployment can
-start. Production also waits for its environment approval.
+start. No separate environment reviewer is currently required, but the manual
+`DEPLOY LMA` confirmation and main-branch restriction remain.
 
 The pipeline validates account/configuration before building, installs the local
 SDK/CLI, builds from the selected commit, publishes privately under

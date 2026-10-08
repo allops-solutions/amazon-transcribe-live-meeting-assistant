@@ -14,6 +14,11 @@ Parameters:
     Default: 'false'
     AllowedValues: ['true', 'false']
     Description: Enable read-only OIDC validation without application deployment permissions
+  EnablePublishRole:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Enable private build artifact publishing without deployment or secret access
   GitHubOidcSubject:
     Type: String
     Default: ''
@@ -45,6 +50,11 @@ Parameters:
     Type: String
     Default: ''
 Rules:
+  PublishInputs:
+    RuleCondition: !Equals [!Ref EnablePublishRole, 'true']
+    Assertions:
+      - Assert: !Not [!Equals [!Ref GitHubOidcSubject, '']]
+        AssertDescription: An observed GitHub OIDC subject is required before enabling publishing
   AuthenticationInputs:
     RuleCondition: !Equals [!Ref EnableAuthenticationRole, 'true']
     Assertions:
@@ -61,8 +71,9 @@ Conditions:
   Production: !Equals [!Ref Environment, production]
   DeploymentEnabled: !Equals [!Ref EnableDeploymentRole, 'true']
   AuthenticationEnabled: !Equals [!Ref EnableAuthenticationRole, 'true']
+  PublishEnabled: !Equals [!Ref EnablePublishRole, 'true']
   CreateOidc: !And
-    - !Or [!Equals [!Ref EnableDeploymentRole, 'true'], !Equals [!Ref EnableAuthenticationRole, 'true']]
+    - !Or [!Equals [!Ref EnableDeploymentRole, 'true'], !Equals [!Ref EnableAuthenticationRole, 'true'], !Equals [!Ref EnablePublishRole, 'true']]
     - !Equals [!Ref ExistingOidcProviderArn, '']
   HasBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
   HasConfigurationKey: !Not [!Equals [!Ref ConfigurationKmsKeyArn, '']]
@@ -202,6 +213,47 @@ Resources:
               - Effect: Allow
                 Action: secretsmanager:DescribeSecret
                 Resource: !Ref ConfigurationSecretArn
+  PublishRole:
+    Type: AWS::IAM::Role
+    Condition: PublishEnabled
+    Properties:
+      MaxSessionDuration: 14400
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref 'AWS::NoValue']
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If [CreateOidc, !Ref OidcProvider, !Ref ExistingOidcProviderArn]
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Ref GitHubOidcSubject
+      Policies:
+        - PolicyName: PrivateBuildArtifactsOnly
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:GetBucketLocation, s3:ListBucket, s3:GetBucketVersioning]
+                Resource: !GetAtt Artifacts.Arn
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:AbortMultipartUpload]
+                Resource: !Sub '${Artifacts.Arn}/build-validation/*'
+              - !If
+                - HasStorageKey
+                - Effect: Allow
+                  Action: [kms:Decrypt, kms:Encrypt, kms:GenerateDataKey]
+                  Resource: !Ref CustomerManagedEncryptionKeyArn
+                  Condition:
+                    StringEquals:
+                      kms:ViaService: !Sub 's3.${AWS::Region}.${AWS::URLSuffix}'
+                - !Ref 'AWS::NoValue'
+              # ValidateTemplate supports no resource scoping and does not deploy resources.
+              - Effect: Allow
+                Action: cloudformation:ValidateTemplate
+                Resource: '*'
   DeploymentRole:
     Type: AWS::IAM::Role
     Condition: DeploymentEnabled
@@ -278,6 +330,9 @@ Resources:
                 Action: cloudformation:ValidateTemplate
                 Resource: '*'
 Outputs:
+  PublishRoleArn:
+    Condition: PublishEnabled
+    Value: !GetAtt PublishRole.Arn
   AuthenticationRoleArn:
     Condition: AuthenticationEnabled
     Value: !GetAtt AuthenticationRole.Arn

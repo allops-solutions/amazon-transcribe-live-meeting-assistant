@@ -41,6 +41,37 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(role['Properties']['AssumeRolePolicyDocument']['Statement'][0]['Condition']['StringEquals']['token.actions.githubusercontent.com:aud'], 'sts.amazonaws.com')
         self.assertIn('AuthenticationInputs', self.template['Rules'])
 
+    def test_publish_role_cannot_deploy_or_read_configuration(self):
+        self.assertEqual(self.template['Parameters']['EnablePublishRole']['Default'], 'false')
+        role = self.template['Resources']['PublishRole']
+        self.assertEqual(role['Condition'], 'PublishEnabled')
+        statements = role['Properties']['Policies'][0]['PolicyDocument']['Statement']
+        plain = [statement for statement in statements if 'Action' in statement]
+        actions = {action for statement in plain for action in (
+            statement['Action'] if isinstance(statement['Action'], list) else [statement['Action']])}
+        self.assertEqual(actions, {'s3:GetBucketLocation', 's3:ListBucket', 's3:GetBucketVersioning',
+                                  's3:GetObject', 's3:PutObject', 's3:AbortMultipartUpload',
+                                  'cloudformation:ValidateTemplate'})
+        objects = next(statement for statement in plain if 's3:PutObject' in statement['Action'])
+        self.assertEqual(objects['Resource'], '${Artifacts.Arn}/build-validation/*')
+        self.assertIn('PublishInputs', self.template['Rules'])
+        self.assertEqual(self.template['Outputs']['PublishRoleArn']['Condition'], 'PublishEnabled')
+
+    def test_publish_validation_is_opt_in_and_has_no_deploy_step(self):
+        root = Path(__file__).resolve().parents[3]
+        workflow = yaml.load((root / '.github/workflows/lma-bootstrap-validation.yml').read_text(),
+                             Loader=yaml.BaseLoader)
+        self.assertEqual(workflow['on']['workflow_dispatch']['inputs']['publish_build']['default'], 'false')
+        publish = workflow['jobs']['publish']
+        self.assertIn('inputs.publish_build', publish['if'])
+        self.assertIn("refs/heads/allops-main", publish['if'])
+        scripts = '\n'.join(step.get('run', '') for step in publish['steps'])
+        self.assertIn('build-validation/', scripts)
+        self.assertIn('lma publish', scripts)
+        self.assertNotIn('deploy.py', scripts)
+        self.assertNotIn('secretsmanager', scripts)
+        self.assertNotIn('execute-change-set', scripts)
+
 
 if __name__ == '__main__':
     unittest.main()
