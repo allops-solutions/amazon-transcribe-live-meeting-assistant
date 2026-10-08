@@ -92,6 +92,8 @@ class ApplicationBoundaryTests(unittest.TestCase):
         generated = 0
         expected = {'Fn::If': ['HasPermissionsBoundary', {'Ref': 'PermissionsBoundaryArn'},
                               {'Ref': 'AWS::NoValue'}]}
+        expected_path = {'Fn::If': ['HasPermissionsBoundary', '/lma/application/',
+                                   {'Ref': 'AWS::NoValue'}]}
         for path in TEMPLATES:
             source = normalize(yaml_parse((ROOT / path).read_text()))
             original_roles = {name for name, resource in source['Resources'].items()
@@ -116,8 +118,17 @@ class ApplicationBoundaryTests(unittest.TestCase):
                     generated += name not in original_roles
                     with self.subTest(template=path, role=name):
                         self.assertEqual(resource['Properties']['PermissionsBoundary'], expected)
+                        self.assertEqual(resource['Properties']['Path'], expected_path)
         self.assertGreater(count, 102)
         self.assertGreater(generated, 0)
+
+    def test_application_iam_namespaces_preserve_default_paths(self):
+        for path, template in self.templates.items():
+            for name, resource in template['Resources'].items():
+                if resource['Type'] in {'AWS::IAM::Role', 'AWS::IAM::ManagedPolicy', 'AWS::IAM::InstanceProfile'}:
+                    with self.subTest(template=path, resource=name):
+                        self.assertEqual(resource['Properties']['Path'],
+                                         ['HasPermissionsBoundary', '/lma/application/', 'AWS::NoValue'])
 
 
 if __name__ == '__main__':

@@ -179,6 +179,7 @@ Resources:
     Condition: ShouldDeployStrandsFunction
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -356,6 +357,7 @@ Resources:
   SetupFunctionRole:
     Type: "AWS::IAM::Role"
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Statement:
           - Action: "sts:AssumeRole"

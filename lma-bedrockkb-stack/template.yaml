@@ -180,6 +180,7 @@ Resources:
     # checkov:skip=CKV_AWS_117: "Function does not require VPC access"
     # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency"
     Properties:
+      RolePath: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Handler: index.handler
       Runtime: python3.12
@@ -242,6 +243,7 @@ Resources:
   KnowledgeBaseServiceRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -364,6 +366,7 @@ Resources:
   StartIngestionJobFunctionRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -441,6 +444,7 @@ Resources:
   KBDataSourceSchedulerRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"

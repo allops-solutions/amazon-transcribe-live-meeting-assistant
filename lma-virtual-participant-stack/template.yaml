@@ -559,7 +559,7 @@ Resources:
           - id: AwsSolutions-IAM5
             reason: 'Wildcards scoped by service/resource or PassedToService condition; standard CFN least-privilege pattern'
     Properties:
-      Path: /
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -592,6 +592,7 @@ Resources:
             reason: 'Wildcards scoped by service/resource or PassedToService condition; standard CFN least-privilege pattern'
     # checkov:skip=CKV_AWS_111: "CodeBuild build role requires broad action access (ECR push, ECS/ASG deployment) scoped to specific resources; wildcards only on Action portion, not Resource"
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -863,7 +864,7 @@ Resources:
                 - lambda.amazonaws.com
             Action:
               - "sts:AssumeRole"
-      Path: "/"
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       ManagedPolicyArns:
         - !GetAtt LogsPolicy.PolicyArn
       PermissionsBoundary: !If
@@ -968,7 +969,7 @@ Resources:
                 - lambda.amazonaws.com
             Action:
               - "sts:AssumeRole"
-      Path: "/"
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       ManagedPolicyArns:
         - !GetAtt LogsPolicy.PolicyArn
       PermissionsBoundary: !If
@@ -1056,6 +1057,7 @@ Resources:
             reason: "Virtual participant requires broad Transcribe and Comprehend access for real-time processing"
     # checkov:skip=CKV_AWS_111: "Virtual participant requires broad Transcribe and Comprehend access for real-time processing"
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -1307,6 +1309,7 @@ Resources:
           - id: AwsSolutions-IAM4
             reason: 'AWS-managed policies are used intentionally for standard Lambda execution; scope is narrow'
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -1351,6 +1354,7 @@ Resources:
     Type: AWS::IAM::InstanceProfile
     Condition: UseEC2LaunchType
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       Roles:
         - !Ref VPInstanceRole
 
@@ -1363,6 +1367,7 @@ Resources:
             reason: 'AWS-managed policies are used intentionally for standard Lambda execution; scope is narrow'
     Condition: UseEC2LaunchType
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -1439,6 +1444,7 @@ Resources:
     Condition: UseEC2LaunchType
     # checkov:skip=CKV_AWS_111: "ASG deletion handler requires broad Autoscaling/EC2 API access for cleanup; wildcards only on Action, not Resource"
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -1815,6 +1821,7 @@ Resources:
               EC2 network-interface actions do not support resource-level
               permissions; this is the AWS-managed policy for the purpose.
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -1868,6 +1875,7 @@ Resources:
     Type: AWS::IAM::Role
     Condition: UseMicrovmLaunchType
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -2005,6 +2013,7 @@ Resources:
     Type: AWS::IAM::Role
     Condition: UseMicrovmLaunchType
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -2038,6 +2047,7 @@ Resources:
             reason: 'lambda-microvms actions are scoped by region/account; the service does not support resource-level permissions for RunMicrovm'
     Condition: UseMicrovmLaunchType
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -2403,6 +2413,7 @@ Resources:
           - id: AwsSolutions-IAM5
             reason: 'Wildcards scoped by service/resource or PassedToService condition; standard CFN least-privilege pattern'
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -2425,6 +2436,7 @@ Resources:
           - id: AwsSolutions-IAM5
             reason: 'Wildcards scoped by service/resource or PassedToService condition; standard CFN least-privilege pattern'
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -2484,7 +2496,7 @@ Resources:
             Principal:
               Service: states.amazonaws.com
             Action: "sts:AssumeRole"
-      Path: "/"
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       ManagedPolicyArns:
         - !GetAtt ECSPolicy.PolicyArn
       PermissionsBoundary: !If
@@ -3112,6 +3124,7 @@ Resources:
           - id: AwsSolutions-IAM5
             reason: 'Wildcards scoped by service/resource or PassedToService condition; standard CFN least-privilege pattern'
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -3159,6 +3172,7 @@ Resources:
           - id: AwsSolutions-IAM5
             reason: 'Wildcards scoped by service/resource or PassedToService condition; standard CFN least-privilege pattern'
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -3552,6 +3566,7 @@ Resources:
           - id: AwsSolutions-IAM5
             reason: 'Wildcards scoped by table/stream/log resources; standard CFN least-privilege pattern'
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:

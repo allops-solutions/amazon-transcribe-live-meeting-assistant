@@ -92,7 +92,7 @@ Resources:
           - id: AwsSolutions-IAM5
             reason: 'Wildcards scoped by service/resource or PassedToService condition; standard CFN least-privilege pattern'
     Properties:
-      Path: /
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -144,7 +144,7 @@ Resources:
     Properties:
       Description: !Sub >-
         Builds preconfigured browser extension for stack: ${AWS::StackName}
-      ServiceRole: !Ref BrowserExtensionCodeBuildServiceRole
+      ServiceRole: !GetAtt BrowserExtensionCodeBuildServiceRole.Arn
       EncryptionKey: alias/aws/s3
       Artifacts:
         Type: NO_ARTIFACTS
@@ -233,7 +233,7 @@ Resources:
             - lambda.amazonaws.com
           Action:
           - sts:AssumeRole
-      Path: "/"
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If
         - HasPermissionsBoundary
         - !Ref PermissionsBoundaryArn

@@ -639,6 +639,7 @@ Resources:
   EcrImagesDeleteLambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -749,7 +750,7 @@ Resources:
   TranscriberCodeBuildServiceRole:
     Type: AWS::IAM::Role
     Properties:
-      Path: /
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -817,7 +818,7 @@ Resources:
     Properties:
       Description: !Sub >-
         Builds docker images : ${AWS::StackName}
-      ServiceRole: !Ref TranscriberCodeBuildServiceRole
+      ServiceRole: !GetAtt TranscriberCodeBuildServiceRole.Arn
       EncryptionKey: alias/aws/s3
       Artifacts:
         Type: NO_ARTIFACTS
@@ -897,7 +898,7 @@ Resources:
                 - lambda.amazonaws.com
             Action:
               - sts:AssumeRole
-      Path: "/"
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       Policies:
         - PolicyName: root
           PolicyDocument:
@@ -1160,6 +1161,7 @@ Resources:
   TranscriberWebsocketTaskDefTaskRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Statement:
           - Action: sts:AssumeRole
@@ -1285,7 +1287,7 @@ Resources:
             Condition:
               StringEquals:
                 aws:SourceAccount: !Sub ${AWS::AccountId}
-      Path: /
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       Policies:
         - PolicyName: tca-post-call-policy
           PolicyDocument:
@@ -1483,6 +1485,7 @@ Resources:
   TranscriberWebsocketTaskDefExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Statement:
           - Action: sts:AssumeRole
@@ -1828,7 +1831,7 @@ Resources:
                 - lambda.amazonaws.com
             Action:
               - sts:AssumeRole
-      Path: /
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       ManagedPolicyArns:
         # CloudWatch Insights Managed Policy
         - arn:aws:iam::aws:policy/CloudWatchLambdaInsightsExecutionRolePolicy

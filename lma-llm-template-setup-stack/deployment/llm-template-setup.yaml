@@ -55,6 +55,7 @@ Resources:
   LLMPromptUploadRole:
     Type: "AWS::IAM::Role"
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Statement:

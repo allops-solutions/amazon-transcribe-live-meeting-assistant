@@ -111,7 +111,7 @@ Resources:
                 - vpc-flow-logs.amazonaws.com
             Action:
               - sts:AssumeRole
-      Path: /
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       Policies:
         - PolicyName: LogRolePolicy
           PolicyDocument:

@@ -50,8 +50,9 @@ Resources:
             Effect: Deny
             Action: 'iam:*'
             NotResource:
-              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/LMA-*'
-              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/LMA-*'
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/lma/application/LMA-*'
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/lma/application/LMA-*'
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/lma/application/LMA-*'
           - Sid: NoRoleAssumptionByProvisioner
             Effect: Deny
             Action: [sts:AssumeRole, sts:AssumeRoleWithSAML, sts:AssumeRoleWithWebIdentity]

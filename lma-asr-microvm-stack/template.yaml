@@ -252,6 +252,7 @@ Resources:
   AsrImageSourceRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -364,6 +365,7 @@ Resources:
   AsrMicrovmBuildRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -397,6 +399,7 @@ Resources:
   AsrMicrovmExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -497,6 +500,7 @@ Resources:
           - id: AwsSolutions-IAM5
             reason: "lambda-microvms actions are scoped by region and account; the service has no resource-level permissions for RunMicrovm"
     Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
