@@ -84,6 +84,33 @@ Resources:
             Effect: Allow
             Action: iam:PassRole
             Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/lma/application/LMA-*'
+          - Sid: PropagateCloudFormationRoleOnly
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/lma/isolation/LMA-CloudFormation'
+            Condition:
+              ArnEquals:
+                aws:PrincipalArn: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/lma/isolation/LMA-CloudFormation'
+              StringEquals:
+                iam:PassedToService: !Sub 'cloudformation.${AWS::URLSuffix}'
+          - Sid: ProtectAdministratorRoleChanges
+            Effect: Deny
+            NotAction: iam:PassRole
+            Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/lma/isolation/*'
+          - Sid: DenyAdministratorRolePassByOtherPrincipals
+            Effect: Deny
+            Action: iam:PassRole
+            Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/lma/isolation/*'
+            Condition:
+              ArnNotEquals:
+                aws:PrincipalArn: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/lma/isolation/LMA-CloudFormation'
+          - Sid: DenyAdministratorRolePassToOtherServices
+            Effect: Deny
+            Action: iam:PassRole
+            Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/lma/isolation/*'
+            Condition:
+              StringNotEquals:
+                iam:PassedToService: !Sub 'cloudformation.${AWS::URLSuffix}'
           - Sid: NoRoleAssumption
             Effect: Deny
             Action: [sts:AssumeRole, sts:AssumeRoleWithSAML, sts:AssumeRoleWithWebIdentity]
@@ -92,7 +119,6 @@ Resources:
             Effect: Deny
             Action: '*'
             Resource:
-              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/lma/isolation/*'
               - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/lma/isolation/*'
               - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/LMA-CICD-*'
               - !Sub 'arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/lma-ci-*'
@@ -172,7 +198,7 @@ Resources:
                 Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/*'
               - Sid: ManageApplicationStacks
                 Effect: Allow
-                Action: ['cloudformation:CreateStack', 'cloudformation:UpdateStack', 'cloudformation:DeleteStack', 'cloudformation:Describe*', 'cloudformation:ListStackResources', 'cloudformation:CreateChangeSet', 'cloudformation:ExecuteChangeSet', 'cloudformation:DeleteChangeSet', 'cloudformation:GetTemplate']
+                Action: ['cloudformation:CreateStack', 'cloudformation:UpdateStack', 'cloudformation:DeleteStack', 'cloudformation:Describe*', 'cloudformation:ListStackResources', 'cloudformation:CreateChangeSet', 'cloudformation:ExecuteChangeSet', 'cloudformation:DeleteChangeSet', 'cloudformation:GetTemplate', 'cloudformation:TagResource', 'cloudformation:UntagResource']
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/LMA/*'
                   - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/LMA-*/*'

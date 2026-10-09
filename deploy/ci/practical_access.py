@@ -71,8 +71,27 @@ def validate(session, account):
 
     iam = session.client('iam')
     role = f'arn:aws:iam::{account}:role/lma/application/LMA-Worker'
+    cfn_role = f'arn:aws:iam::{account}:role/lma/isolation/LMA-CloudFormation'
     ci_role = f'arn:aws:iam::{account}:role/LMA-CICD-Production-Runner'
     contexts = [{'ContextKeyName': 'aws:RequestedRegion', 'ContextKeyValues': ['us-east-1'], 'ContextKeyType': 'string'}]
+    for name, principal, service, target, expected in [
+        ('nested-stack-self-pass', cfn_role, 'cloudformation.amazonaws.com', cfn_role, 'allowed'),
+        ('application-cannot-pass-cfn', role, 'cloudformation.amazonaws.com', cfn_role, 'explicitDeny'),
+        ('cfn-cannot-pass-self-to-lambda', cfn_role, 'lambda.amazonaws.com', cfn_role, 'explicitDeny'),
+        ('cfn-cannot-pass-other-isolation-role', cfn_role, 'cloudformation.amazonaws.com', cfn_role + '-Other', 'implicitDeny'),
+        ('missing-principal-cannot-pass-cfn', None, 'cloudformation.amazonaws.com', cfn_role, 'explicitDeny'),
+        ('missing-service-cannot-pass-cfn', cfn_role, None, cfn_role, 'explicitDeny'),
+    ]:
+        extra = []
+        if principal:
+            extra.append({'ContextKeyName': 'aws:PrincipalArn', 'ContextKeyValues': [principal], 'ContextKeyType': 'string'})
+        if service:
+            extra.append({'ContextKeyName': 'iam:PassedToService', 'ContextKeyValues': [service], 'ContextKeyType': 'string'})
+        result = iam.simulate_custom_policy(PolicyInputList=[json.dumps(common), json.dumps(provision)],
+            ActionNames=['iam:PassRole'], ResourceArns=[target], ContextEntries=contexts + extra)['EvaluationResults'][0]
+        if result['EvalDecision'] != expected:
+            raise ValueError(f'{name}: {result["EvalDecision"]}, expected {expected}')
+        print(f'PASS {name}: {expected}')
     cases = [
         ('bounded-role-create', 'iam:CreateRole', role, boundary, 'allowed'),
         ('unbounded-role-create', 'iam:CreateRole', role, None, 'explicitDeny'),
@@ -97,6 +116,8 @@ def validate(session, account):
         ('outside-lambda', 'lambda:UpdateFunctionCode', f'arn:aws:lambda:us-east-1:{account}:function:OtherApplication', None, 'implicitDeny'),
         ('ci-build', 'codebuild:StartBuild', f'arn:aws:codebuild:us-east-1:{account}:project/lma-ci-production', None, 'explicitDeny'),
         ('nested-stack', 'cloudformation:CreateStack', f'arn:aws:cloudformation:us-east-1:{account}:stack/LMA-Ai/test', None, 'allowed'),
+        ('nested-stack-tags', 'cloudformation:TagResource', f'arn:aws:cloudformation:us-east-1:{account}:stack/LMA-Ai/test', None, 'allowed'),
+        ('outside-stack-tags', 'cloudformation:TagResource', f'arn:aws:cloudformation:us-east-1:{account}:stack/OtherApplication/test', None, 'implicitDeny'),
         ('ci-stack', 'cloudformation:UpdateStack', f'arn:aws:cloudformation:us-east-1:{account}:stack/LMA-CICD-Production/test', None, 'explicitDeny'),
         ('outside-stack', 'cloudformation:UpdateStack', f'arn:aws:cloudformation:us-east-1:{account}:stack/OtherApplication/test', None, 'implicitDeny'),
     ]
