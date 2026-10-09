@@ -30,8 +30,12 @@ class PracticalAccessTests(unittest.TestCase):
                     self.assertNotIn('sts:AssumeRole', statement['Action'])
         iam_grants = [s for s in boundary['Statement'] if s['Effect'] == 'Allow'
                       and 'iam:' in str(s['Action'])]
-        self.assertEqual([s['Action'] for s in iam_grants], ['iam:PassRole'])
+        self.assertEqual([s['Action'] for s in iam_grants], ['iam:PassRole', 'iam:PassRole'])
         self.assertIn('/lma/application/LMA-*', iam_grants[0]['Resource'])
+        nested = iam_grants[1]
+        self.assertEqual(nested['Resource'], 'arn:aws:iam::009853297978:role/lma/isolation/LMA-CloudFormation')
+        self.assertEqual(nested['Condition']['ArnEquals']['aws:PrincipalArn'], nested['Resource'])
+        self.assertEqual(nested['Condition']['StringEquals']['iam:PassedToService'], 'cloudformation.amazonaws.com')
 
     def test_boundary_pinned_on_role_creation(self):
         _, policy, boundary = access.policies('009853297978')
