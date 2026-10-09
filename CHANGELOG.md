@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Conventional administrator-owned production provisioning role and mandatory
+  application service boundary; preflight-only CI run defaults to no application
+  writes. Custom launcher/resource-controller isolation remains unused.
+
 - allOps GitHub CI checks and manually approved production deployment via an
   ephemeral CodeBuild runner, with OIDC credentials, private release artifacts,
   Secrets Manager configuration, and run-owned temporary dev stack cleanup.

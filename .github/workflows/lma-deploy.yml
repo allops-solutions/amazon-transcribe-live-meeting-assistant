@@ -11,6 +11,12 @@ on:
         description: Type DEPLOY LMA to authorize the selected environment
         type: string
         required: true
+      operation:
+        description: Preflight validates authenticated access without building or deploying the application
+        type: choice
+        options: [preflight, deploy]
+        default: preflight
+        required: true
 permissions:
   contents: read
 concurrency:
@@ -66,14 +72,16 @@ jobs:
         run: |
           python deploy/ci/deploy.py preflight --environment "$TARGET_ENVIRONMENT" --run-id "$GITHUB_RUN_ID" --template-url "https://s3.us-east-1.amazonaws.com/$LMA_ARTIFACT_BUCKET/releases/$GITHUB_SHA/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/lma-main.yaml"
       - name: Build and publish this exact commit privately
+        if: inputs.operation == 'deploy'
         run: |
           test -n "$LMA_ARTIFACT_BUCKET"
           test -n "$LMA_CONFIG_SECRET_ARN"
           test -n "$LMA_CFN_ROLE_ARN"
           lma publish --source-dir . --region us-east-1 --bucket-basename "${LMA_ARTIFACT_BUCKET%-us-east-1}" --prefix "releases/$GITHUB_SHA/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT" --force
       - name: Deploy and wait for CloudFormation
+        if: inputs.operation == 'deploy'
         run: |
           python deploy/ci/deploy.py deploy --environment "$TARGET_ENVIRONMENT" --run-id "$GITHUB_RUN_ID" --template-url "https://s3.us-east-1.amazonaws.com/$LMA_ARTIFACT_BUCKET/releases/$GITHUB_SHA/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/lma-main.yaml"
       - name: Clean up only this run's temporary dev stack
-        if: always() && inputs.environment == 'dev' && steps.aws.outcome == 'success'
+        if: always() && inputs.operation == 'deploy' && inputs.environment == 'dev' && steps.aws.outcome == 'success'
         run: python deploy/ci/deploy.py cleanup --environment dev --run-id "$GITHUB_RUN_ID"

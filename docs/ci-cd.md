@@ -210,7 +210,53 @@ tag, with a second exact run-ID/ownership check in Python.
 
 ## Running a release
 
-### Stronger isolation rollout (not yet activated)
+### Current production access decision (2026-10-09)
+
+Ahmed chose conventional, proportionate deployment security instead of completing
+the custom generated-resource controller and protected ECS launcher. Those drafts
+remain unused; they are not production prerequisites. The older stronger-isolation
+notes below are historical design work, not the current rollout requirement.
+
+`deploy/ci/practical-access.yaml` is the administrator-owned preparation stack
+`LMA-Isolation-Access`. It creates a conventional application service ceiling and
+`/lma/isolation/LMA-CloudFormation` service role. Application IAM writes and
+PassRole are limited to `/lma/application/LMA-*`; new roles must carry the exact
+approved boundary, and the provisioner cannot remove or edit it. Only three
+specific service-linked roles can be created (ECS, ELB, ECS autoscaling).
+Private CI configuration, CI identities/projects and preparation stacks are
+protected. Named application storage/functions/tables/builds use LMA prefixes.
+The service role reads release artifacts but cannot overwrite them.
+
+This is **not strict isolation from all other resources in the AWS account**.
+Generated-ID/network services have wider regional permissions; Bedrock and
+CloudFront have broader service permissions. Existing application identity policies
+still restrict runtime access, but malicious deployed code/template changes remain
+a risk to client data, service availability and costs. A permissions boundary is
+not an exfiltration prevention system or a substitute for trusted code review.
+No account-wide AdministratorAccess policy is used. No VP launch path is changed.
+
+Validate without writes:
+`AWS_PROFILE=default .venv/bin/python deploy/ci/practical_access.py --account 009853297978`.
+This checks policy quotas, Access Analyzer syntax, and positive/negative IAM
+simulations, including true boundary evaluation; it does not prove an application
+deployment will succeed. Administrator activation is separate from app deployment.
+
+Administrator preparation command (requires the production default-profile SSO
+session): `AWS_PROFILE=default .venv/bin/python deploy/ci/activate_practical_access.py --apply`.
+Without `--apply`, it only inspects the existing bootstrap. With it, change-set
+resource IDs/types are checked before execution: only the IAM-only preparation
+resources and the new deployment role are allowed. It preserves every existing
+runner parameter and secret value except the explicitly approved boundary pin;
+the prior secret version is retained. It refuses application/dev stack targets.
+Set the three printed non-secret ARNs as production GitHub environment variables.
+
+The manual **LMA deployment** workflow now defaults to `operation=preflight`.
+That exercises the real CodeBuild/OIDC deployment identity and secret-safe config
+check, without publishing or deploying the application. Actual deployment requires
+`operation=deploy`, environment `production`, confirmation `DEPLOY LMA`, and the
+protected `allops-main` branch. Dev stays intact until production acceptance passes.
+
+### Historical stronger isolation rollout (not activated)
 
 Ahmed selected stronger isolation on 2026-10-08. All application templates now
 accept and forward the optional `PermissionsBoundaryArn`; explicit IAM roles
