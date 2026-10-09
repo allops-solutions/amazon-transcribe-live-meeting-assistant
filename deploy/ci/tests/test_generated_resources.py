@@ -55,13 +55,52 @@ class GeneratedResourceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             inventory.collect(client, ACCOUNT, REGION)
 
+    def test_initial_creation_pins_root_and_only_reports_completed_ids(self):
+        client, root, child = self.client()
+        root['StackStatus'] = child['StackStatus'] = 'CREATE_IN_PROGRESS'
+        client.get_paginator.return_value.paginate.side_effect = [
+            [{'StackResourceSummaries': [entry('AWS::KMS::Key', KEY),
+                                         entry('AWS::CloudFormation::Stack', CHILD_ARN, 'CREATE_IN_PROGRESS')]}],
+            [{'StackResourceSummaries': [entry('AWS::AppSync::GraphQLApi', 'abcdefghijklmnop', 'CREATE_IN_PROGRESS')]}],
+        ]
+        result = inventory.collect(client, ACCOUNT, REGION, creating_root_arn=ROOT_ARN)
+        self.assertFalse(result['inventoryComplete'])
+        self.assertEqual(result['resourcesPending'], 1)
+        self.assertEqual(len(result['resources']['kms']), 1)
+        self.assertEqual(result['resources']['appsync'], [])
+        self.assertEqual({call[0] for call in client.method_calls}, {'describe_stacks', 'get_paginator'})
+
+    def test_bootstrap_mode_cannot_accept_different_existing_or_updating_root(self):
+        for arn, state in [(ROOT_ARN.replace('root-id', 'other-id'), 'CREATE_IN_PROGRESS'),
+                           (ROOT_ARN, 'UPDATE_IN_PROGRESS'), (ROOT_ARN, 'CREATE_COMPLETE')]:
+            with self.subTest(arn=arn, state=state), self.assertRaises(ValueError):
+                client, root, _ = self.client()
+                root['StackStatus'] = state
+                inventory.collect(client, ACCOUNT, REGION, creating_root_arn=arn)
+
     def test_incomplete_resource_rejected(self):
-        for status, physical in [('CREATE_IN_PROGRESS', KEY), ('CREATE_COMPLETE', '')]:
+        for status, physical in [('CREATE_IN_PROGRESS', KEY), ('CREATE_COMPLETE', ''), ('IMPORT_COMPLETE', KEY)]:
             client, _, _ = self.client()
             client.get_paginator.return_value.paginate.side_effect = [[
                 {'StackResourceSummaries': [entry('AWS::KMS::Key', physical, status)]}]]
             with self.assertRaises(ValueError):
                 inventory.collect(client, ACCOUNT, REGION)
+
+    def test_knowledge_vector_scheduler_and_orchestration_ids(self):
+        client, _, _ = self.client()
+        vector = f'arn:aws:s3vectors:{REGION}:{ACCOUNT}:bucket/lma-s3v-123456abcdef/index/lma-kb-index'
+        machine = f'arn:aws:states:{REGION}:{ACCOUNT}:stateMachine:LMA-LMAVirtualParticipantScheduler'
+        client.get_paginator.return_value.paginate.side_effect = [[{'StackResourceSummaries': [
+            entry('AWS::Bedrock::KnowledgeBase', 'ABC123DE45'),
+            entry('AWS::S3Vectors::Index', vector),
+            entry('AWS::StepFunctions::StateMachine', machine),
+            entry('AWS::Scheduler::ScheduleGroup', 'LMA-vp-schedules'),
+        ]}]]
+        result = inventory.collect(client, ACCOUNT, REGION)['resources']
+        self.assertEqual(result['knowledge_bases'], [f'arn:aws:bedrock:{REGION}:{ACCOUNT}:knowledge-base/ABC123DE45'])
+        self.assertEqual(result['vector_indexes'], [vector])
+        self.assertEqual(result['state_machines'], [machine])
+        self.assertEqual(result['schedule_groups'], [f'arn:aws:scheduler:{REGION}:{ACCOUNT}:schedule-group/LMA-vp-schedules'])
 
     def test_cross_account_and_wildcard_arns_rejected(self):
         for value in [f'arn:aws:kms:{REGION}:111111111111:key/{KEY}',

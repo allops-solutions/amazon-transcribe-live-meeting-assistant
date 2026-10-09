@@ -26,6 +26,66 @@ or changes to scheduling behavior are part of this pipeline.
 
 ## One-time bootstrap — requires administrator approval
 
+### Current production preparation status (2026-10-09)
+
+Production deployment remains disabled. PR8's required checks passed and it was
+merged into `allops-main`; this does not activate a deployment role or deploy LMA.
+
+For the approved initial release, ACS, ElevenLabs, Simli, Tavily and Zoom SDK
+credentials are intentionally empty. Teams/Zoom browser-based joining remains
+available; third-party voice/avatar/web-search integrations are disabled.
+Google Meet, Google SSO, Amazon Transcribe, Kimi summaries, Sonnet assistant and
+document/transcript knowledge bases remain selected.
+
+Enter the production Google secret directly into Secrets Manager's
+`lma/ci/production/parameters` JSON under `GoogleOAuthClientSecret`, preserving
+existing entries. Never put this value in Git, a command-line argument, logs or
+chat. The public client ID is already in `prod.json`.
+
+Run the read-only, secret-safe configuration check using production SSO:
+
+```bash
+AWS_PROFILE=default AWS_PAGER='' .venv/bin/python deploy/ci/production_config.py --check-models
+```
+
+It prints only missing parameter names/reasons and profile counts, never values.
+Production deployment preflight enforces the same initial-release configuration;
+a missing Google secret or unexpected integration/model override fails closed.
+An ACTIVE profile is metadata validation, **not** a successful model inference.
+
+The draft runtime ceiling now supports exact knowledge-base, vector-index,
+state-machine and scheduler-group identities plus approved profile/model ARNs.
+`--include-model-resources` reads the exact destinations of the three approved
+profiles and adds the local Titan embedding model. It invokes no model. The
+combined synthetic fixture fits the managed-policy limit; the real full inventory
+must still be checked, and oversized policies fail instead of dropping scopes.
+
+The read-only collector also has an initial-creation inspection mode:
+
+```bash
+AWS_PROFILE=default AWS_PAGER='' .venv/bin/python deploy/ci/generated_resources.py \
+  --account 009853297978 --creating-root-arn '<exact new LMA stack ARN>'
+```
+
+This accepts only that exact root in `CREATE_IN_PROGRESS` and new nested stacks
+in creation, reports only completed resource IDs, and marks the inventory partial.
+It cannot approve an existing/updating stack, unfinished IDs or imported records.
+It **does not attach/update IAM policies or by itself solve first deployment**.
+Imported historical resources still require separate administrator origin review;
+current stack membership alone is not proof of historical creation.
+
+The MicroVM launcher's unrestricted `DescribeTaskDefinition` call is not used by
+the selected Fargate path. Other runtime and provisioning permissions, including
+custom-resource setup operations, networking and the first-deployment permission
+bootstrap, remain unfinished. Do not enable the deployment role or claim the
+application ready from the configuration report or IAM simulations.
+
+Service scoping follows the official [Bedrock authorization table](https://docs.aws.amazon.com/service-authorization/latest/reference/list_bedrock.html),
+[S3 Vectors table](https://docs.aws.amazon.com/service-authorization/latest/reference/list_s3vectors.html),
+and [Scheduler table](https://docs.aws.amazon.com/service-authorization/latest/reference/list_scheduler.html).
+`RetrieveAndGenerate` is not ARN-scoped like `Retrieve`; its dependent permissions
+must be reviewed/verified before it is enabled in the ceiling. It remains denied.
+
 These files alone do not activate CI/CD. Commit and push them only after review.
 The following setup creates paid AWS infrastructure and GitHub configuration;
 it is not performed by running local tests.

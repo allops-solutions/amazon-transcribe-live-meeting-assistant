@@ -10,9 +10,17 @@ import json
 import re
 
 import boto3
+import sys
+from pathlib import Path
+
+# The builder is also loaded by filename in offline tests.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from generated_resources import RESOURCE_TYPES, validate_arn
+from model_resources import validate as validate_models
 
 
-def build_policy(account, region, artifact_bucket, documents_bucket='', partition='aws', generated_resources=None):
+def build_policy(account, region, artifact_bucket, documents_bucket='', partition='aws', generated_resources=None,
+                 model_resources=None):
     """Return a deny-by-default boundary; accept only the reviewed bucket namespaces."""
     if not re.fullmatch(r'[0-9]{12}', account) or not re.fullmatch(r'[a-z]{2}(?:-gov)?-[a-z]+-[0-9]', region):
         raise ValueError('Invalid account or region')
@@ -44,25 +52,14 @@ def build_policy(account, region, artifact_bucket, documents_bucket='', partitio
          [f'{arn}:ecr:{regional}:repository/lma-*']),
     ]
     generated_resources = {} if generated_resources is None else generated_resources
-    supported = {'kms', 'appsync', 'cognito', 'cloudfront', 'ecs_clusters', 'ecs_task_definitions'}
+    supported = {group for group, _, _ in RESOURCE_TYPES.values()}
     if not isinstance(generated_resources, dict) or set(generated_resources) - supported:
         raise ValueError('Unsupported generated resource group')
     for service, values in generated_resources.items():
         if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
             raise ValueError('Generated resources must be lists of exact ARNs')
-        patterns = {
-            'kms': ('kms', r'key/[0-9a-fA-F-]{36}'),
-            'appsync': ('appsync', r'apis/[A-Za-z0-9]{10,40}'),
-            'cognito': ('cognito-idp', rf'userpool/{re.escape(region)}_[A-Za-z0-9]+'),
-            'cloudfront': ('cloudfront', r'distribution/[A-Z0-9]{10,20}'),
-            'ecs_clusters': ('ecs', r'cluster/[A-Za-z0-9_-]{1,255}'),
-            'ecs_task_definitions': ('ecs', r'task-definition/[A-Za-z0-9_-]{1,255}:[1-9][0-9]*'),
-        }
-        arn_service, resource = patterns[service]
-        arn_region = '' if service == 'cloudfront' else region
-        pattern = rf'arn:{re.escape(partition)}:{arn_service}:{re.escape(arn_region)}:{account}:{resource}'
-        if any(not re.fullmatch(pattern, value) for value in values):
-            raise ValueError('Generated resource scope must be exact and account/region-local')
+        for value in values:
+            validate_arn(service, value, account, region, partition)
         if not values:
             continue
         if service == 'kms':
@@ -82,13 +79,37 @@ def build_policy(account, region, artifact_bucket, documents_bucket='', partitio
             tasks = [value.replace(':cluster/', ':task/') + '/*' for value in values]
             groups.append(('EcsClusters', ['ecs:DescribeClusters'], values))
             groups.append(('EcsTasks', ['ecs:StopTask', 'ecs:DescribeTasks', 'ecs:TagResource'], tasks))
-        elif generated_resources.get('ecs_clusters'):
+        elif service == 'knowledge_bases':
+            groups.append(('KnowledgeBases', ['bedrock:Retrieve', 'bedrock:GetKnowledgeBase',
+                                               'bedrock:StartIngestionJob', 'bedrock:GetIngestionJob'], values))
+        elif service == 'vector_indexes':
+            groups.append(('VectorIndexes', ['s3vectors:GetIndex', 's3vectors:QueryVectors',
+                                              's3vectors:GetVectors', 's3vectors:PutVectors',
+                                              's3vectors:DeleteVectors'], values))
+        elif service == 'state_machines':
+            executions = [value.replace(':stateMachine:', ':execution:') + ':*' for value in values]
+            groups.append(('StateMachines', ['states:StartExecution', 'states:StartSyncExecution',
+                                              'states:DescribeStateMachine'], values))
+            groups.append(('Executions', ['states:DescribeExecution', 'states:StopExecution'], executions))
+        elif service == 'schedule_groups':
+            schedules = [value.replace(':schedule-group/', ':schedule/') + '/*' for value in values]
+            groups.append(('Schedules', ['scheduler:CreateSchedule', 'scheduler:UpdateSchedule',
+                                          'scheduler:GetSchedule', 'scheduler:DeleteSchedule'], schedules))
+        elif service == 'ecs_task_definitions' and generated_resources.get('ecs_clusters'):
             groups.append(('EcsDefinitions', ['ecs:RunTask'], values))
         else:
             # DescribeTaskDefinition has no resource-level or definition-ID
             # condition scope. Do not enable account-wide metadata reads here.
             # A definition alone also cannot authorize launches into any cluster.
             groups.append(('EcsDefinitionsNoLaunch', [], values))
+    if model_resources is not None:
+        validate_models(model_resources, account, region, partition)
+        if model_resources['profiles']:
+            groups.append(('ModelProfiles', ['bedrock:GetInferenceProfile'], model_resources['profiles']))
+        invoke_scopes = model_resources['profiles'] + model_resources['models']
+        if invoke_scopes:
+            groups.append(('ModelInvocation', ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+                           invoke_scopes))
     s3_actions = ['s3:GetObject', 's3:GetObjectVersion', 's3:PutObject', 's3:DeleteObject',
                   's3:DeleteObjectVersion', 's3:ListBucket', 's3:GetBucketLocation',
                   's3:AbortMultipartUpload', 's3:ListMultipartUploadParts',
@@ -108,8 +129,7 @@ def build_policy(account, region, artifact_bucket, documents_bucket='', partitio
                                   [a for _, actions, _ in groups for a in actions]))
     statements = [{'Sid': 'DenyUnreviewedActions', 'Effect': 'Deny',
                    'NotAction': approved_actions, 'Resource': '*'}]
-    named_actions = sorted({action for _, actions, _ in groups for action in actions})
-    named_resources = [resource for _, _, resources in groups for resource in resources]
+    named_resources = sorted({resource for _, _, resources in groups for resource in resources})
     # Service-qualified ARNs retain separate namespaces; compact the common
     # allow/deny ceiling to stay within IAM's 6,144-character managed-policy cap.
     statements.extend([
@@ -122,16 +142,24 @@ def build_policy(account, region, artifact_bucket, documents_bucket='', partitio
          'NotAction': 'iam:*', 'Resource': '*'},
         {'Sid': 'AllowPassApplicationRoles', 'Effect': 'Allow', 'Action': 'iam:PassRole',
          'Resource': f'{arn}:iam::{account}:role/lma/application/LMA-*'},
-        {'Sid': 'DenyOutsideNamedResources', 'Effect': 'Deny', 'Action': named_actions, 'NotResource': named_resources},
+        # The exhaustive action ceiling above denies everything else. Exclude
+        # only operations with separate S3/cluster controls or no resource scope.
+        # This avoids repeating the action list, not relaxing resource rules.
+        {'Sid': 'DenyOutsideNamedResources', 'Effect': 'Deny',
+         'NotAction': sorted(set(['s3:*'] + global_actions + conditional_actions)),
+         'NotResource': named_resources},
     ])
     statements.extend([
         # The ceiling above already supplies the Allow. These explicit
         # Denies enforce both ARN and account constraints, including sessions.
-        {'Sid': 'DenyS3OutsideLma', 'Effect': 'Deny', 'Action': s3_actions,
+        # A wildcard in a Deny adds restrictions; it grants no new S3 action.
+        # Keep the reviewed Allow ceiling exhaustive, while avoiding three
+        # repetitions of the S3 action list in the managed-policy size budget.
+        {'Sid': 'DenyS3OutsideLma', 'Effect': 'Deny', 'Action': 's3:*',
          'NotResource': owned_s3 + artifact_resources},
-        {'Sid': 'DenyCrossAccountS3', 'Effect': 'Deny', 'Action': s3_actions, 'Resource': '*',
+        {'Sid': 'DenyCrossAccountS3', 'Effect': 'Deny', 'Action': 's3:*', 'Resource': '*',
          'Condition': {'StringNotEqualsIfExists': {'aws:ResourceAccount': account}}},
-        {'Sid': 'DenyMissingS3Owner', 'Effect': 'Deny', 'Action': s3_actions, 'Resource': '*',
+        {'Sid': 'DenyMissingS3Owner', 'Effect': 'Deny', 'Action': 's3:*', 'Resource': '*',
          'Condition': {'Null': {'aws:ResourceAccount': 'true'}}},
         {'Sid': 'ArtifactsAreReadOnly', 'Effect': 'Deny', 'NotAction': read_artifacts,
          'Resource': [f'{arn}:s3:::{artifact_bucket}', f'{arn}:s3:::{artifact_bucket}/*']},
@@ -201,8 +229,7 @@ def simulate(client, policy, account, region, bucket):
     """Only call IAM's read-only simulator; never attach the hypothetical Allow."""
     permissive = {'Version': '2012-10-17', 'Statement': [{'Effect': 'Allow', 'Action': '*', 'Resource': '*'}]}
     cases = simulation_cases(account, region, bucket)
-    scopes = next(s['NotResource'] for s in policy['Statement'] if 'NotResource' in s and
-                  'iam:PassRole' in s.get('Action', []))
+    scopes = next(s['NotResource'] for s in policy['Statement'] if 'NotResource' in s and 'NotAction' in s)
     for resource in scopes:
         if ':kms:' in resource:
             cases.extend([('reviewed-key', 'kms:Decrypt', resource, {}, 'allowed'),
@@ -221,6 +248,33 @@ def simulate(client, policy, account, region, bucket):
             cases.extend([('reviewed-distribution', 'cloudfront:CreateInvalidation', resource, {}, 'allowed'),
                           ('unrelated-distribution', 'cloudfront:CreateInvalidation', resource.rsplit('/', 1)[0] +
                            '/EZZZZZZZZZZZZZ', {}, 'explicitDeny')])
+        elif ':bedrock:' in resource and ':knowledge-base/' in resource:
+            cases.extend([('reviewed-knowledge-base', 'bedrock:Retrieve', resource, {}, 'allowed'),
+                          ('unrelated-knowledge-base', 'bedrock:Retrieve', resource.rsplit('/', 1)[0] +
+                           '/ZZZZZZZZZZ', {}, 'explicitDeny'),
+                          ('reviewed-ingestion', 'bedrock:StartIngestionJob', resource, {}, 'allowed')])
+        elif ':bedrock:' in resource and ':foundation-model/' in resource:
+            cases.extend([('reviewed-foundation-model', 'bedrock:InvokeModel', resource, {}, 'allowed'),
+                          ('unapproved-foundation-model', 'bedrock:InvokeModel', resource.rsplit('/', 1)[0] +
+                           '/unapproved-model', {}, 'explicitDeny')])
+        elif ':bedrock:' in resource and ':inference-profile/' in resource:
+            cases.extend([('reviewed-model-profile', 'bedrock:InvokeModel', resource, {}, 'allowed'),
+                          ('unapproved-model-profile', 'bedrock:InvokeModel', resource.rsplit('/', 1)[0] +
+                           '/unapproved-profile', {}, 'explicitDeny')])
+        elif ':s3vectors:' in resource:
+            cases.extend([('reviewed-vector-index', 's3vectors:PutVectors', resource, {}, 'allowed'),
+                          ('unrelated-vector-index', 's3vectors:PutVectors', resource.rsplit('/', 1)[0] +
+                           '/unrelated-index', {}, 'explicitDeny'),
+                          ('vector-policy-change-denied', 's3vectors:PutVectorBucketPolicy',
+                           resource.split('/index/')[0], {}, 'explicitDeny')])
+        elif ':states:' in resource and ':stateMachine:' in resource:
+            cases.extend([('reviewed-state-machine', 'states:StartExecution', resource, {}, 'allowed'),
+                          ('unrelated-state-machine', 'states:StartExecution', resource.rsplit(':', 1)[0] +
+                           ':UnrelatedMachine', {}, 'explicitDeny')])
+        elif ':scheduler:' in resource and ':schedule/' in resource:
+            cases.extend([('reviewed-vp-schedule', 'scheduler:DeleteSchedule', resource[:-1] + 'vp-test', {}, 'allowed'),
+                          ('unrelated-schedule-group', 'scheduler:DeleteSchedule', resource.split(':schedule/')[0] +
+                           ':schedule/UnrelatedGroup/vp-test', {}, 'explicitDeny')])
         elif ':ecs:' in resource and ':cluster/' in resource:
             cases.extend([('reviewed-cluster', 'ecs:ListTasks', '*', {'ecs:cluster': resource}, 'allowed'),
                           ('unrelated-cluster', 'ecs:ListTasks', '*', {'ecs:cluster': resource.rsplit('/', 1)[0] +
@@ -261,18 +315,24 @@ def main():
     parser.add_argument('--simulate', action='store_true')
     parser.add_argument('--include-generated-resources', action='store_true',
                         help='Read exact resource IDs from the stable, verified LMA stack; no IAM writes')
+    parser.add_argument('--include-model-resources', action='store_true',
+                        help='Read approved Bedrock profile destinations; never invoke a model')
     args = parser.parse_args()
     session = None
     generated = None
-    if args.simulate or args.include_generated_resources:
+    models = None
+    if args.simulate or args.include_generated_resources or args.include_model_resources:
         session = boto3.Session(profile_name='default', region_name=args.region)
         if session.client('sts').get_caller_identity()['Account'] != args.account:
             raise ValueError('Authenticated account differs from target')
     if args.include_generated_resources:
         from generated_resources import collect
         generated = collect(session.client('cloudformation'), args.account, args.region)['resources']
+    if args.include_model_resources:
+        from model_resources import collect as collect_models
+        models = collect_models(session.client('bedrock'), args.account, args.region)
     policy = build_policy(args.account, args.region, args.artifact_bucket, args.documents_bucket,
-                          generated_resources=generated)
+                          generated_resources=generated, model_resources=models)
     if not args.simulate:
         print(json.dumps(policy, indent=2))
         return
