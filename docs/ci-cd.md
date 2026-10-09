@@ -28,8 +28,10 @@ or changes to scheduling behavior are part of this pipeline.
 
 ### Current production preparation status (2026-10-09)
 
-Production deployment remains disabled. PR9's required checks passed and it was
-merged into `allops-main`; this does not activate a deployment role or deploy LMA.
+The current rollout uses the conventional access setup described under
+**Current production access decision** below. The custom resource controller and
+launcher are not required. Preparation activates CI access, not the production
+application; the first application deployment is a separate manual workflow run.
 
 For the approved initial release, ACS, ElevenLabs, Simli, Tavily and Zoom SDK
 credentials are intentionally empty. Teams/Zoom browser-based joining remains
@@ -52,6 +54,9 @@ It prints only missing parameter names/reasons and profile counts, never values.
 Production deployment preflight enforces the same initial-release configuration;
 a missing Google secret or unexpected integration/model override fails closed.
 An ACTIVE profile is metadata validation, **not** a successful model inference.
+
+<details>
+<summary>Historical stronger-isolation work — unused, not current deployment prerequisites</summary>
 
 The draft runtime ceiling now supports exact knowledge-base, vector-index,
 state-machine and scheduler-group identities plus approved profile/model ARNs.
@@ -124,6 +129,10 @@ Service scoping follows the official [Bedrock authorization table](https://docs.
 and [Scheduler table](https://docs.aws.amazon.com/service-authorization/latest/reference/list_scheduler.html).
 `RetrieveAndGenerate` is not ARN-scoped like `Retrieve`; its dependent permissions
 must be reviewed/verified before it is enabled in the ceiling. It remains denied.
+
+</details>
+
+### Runner bootstrap steps
 
 These files alone do not activate CI/CD. Commit and push them only after review.
 The following setup creates paid AWS infrastructure and GitHub configuration;
@@ -398,7 +407,9 @@ Neither option deploys the application. A passing build test does not prove
 CloudFormation permissions or production runtime behavior.
 
 Open Actions → **LMA deployment** → Run workflow. Select `allops-main`, choose
-the environment, and type `DEPLOY LMA`. Checks must pass before deployment can
+the environment and `operation=deploy`, and type `DEPLOY LMA`. The default
+`operation=preflight` validates access/configuration without building or deploying.
+Checks must pass before deployment can
 start. No separate environment reviewer is currently required, but the manual
 `DEPLOY LMA` confirmation and main-branch restriction remain.
 
