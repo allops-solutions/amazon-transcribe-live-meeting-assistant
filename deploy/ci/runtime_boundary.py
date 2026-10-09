@@ -19,9 +19,40 @@ from generated_resources import RESOURCE_TYPES, validate_arn
 from model_resources import validate as validate_models
 
 
+CAPABILITIES = frozenset({
+    'PassApplicationRoles', 'DynamoDB', 'Lambda', 'Kinesis', 'Logs', 'CodeBuild',
+    'Secrets', 'Parameters', 'EcrRepositories', 'KmsData', 'AppSyncData',
+    'CognitoUsers', 'CloudFrontInvalidation', 'EcsClusters', 'EcsTasks',
+    'KnowledgeBases', 'VectorIndexes', 'StateMachines', 'Executions',
+    'Schedules', 'EcsDefinitions', 'ModelProfiles', 'ModelInvocation',
+    'StreamingTranscription', 'TextProcessing',
+})
+COMPUTATION_ACTIONS = {
+    # These operations process caller-supplied audio/text. They do not inspect
+    # another application's stored jobs, vocabularies or custom endpoints.
+    'StreamingTranscription': ['transcribe:StartStreamTranscription',
+                               'transcribe:StartCallAnalyticsStreamTranscription'],
+    'TextProcessing': ['comprehend:DetectSentiment', 'comprehend:DetectPiiEntities',
+                       'comprehend:DetectDominantLanguage', 'translate:TranslateText'],
+}
+
+
 def build_policy(account, region, artifact_bucket, documents_bucket='', partition='aws', generated_resources=None,
-                 model_resources=None):
-    """Return a deny-by-default boundary; accept only the reviewed bucket namespaces."""
+                 model_resources=None, capabilities=None):
+    """Build a ceiling, optionally narrowed to explicit administrator capabilities.
+
+    Omitted capabilities preserve the existing draft exactly. Selection is never
+    inferred from an application's submitted policy, and does not attach policies
+    or relax the mandatory-boundary guard. Role assignment remains a separate
+    administrator-reviewed integration step.
+    """
+    if capabilities is not None:
+        if (not isinstance(capabilities, (list, tuple, frozenset, set)) or not capabilities
+                or not all(isinstance(value, str) for value in capabilities)
+                or len(set(capabilities)) != len(capabilities)
+                or set(capabilities) - CAPABILITIES):
+            raise ValueError('Capabilities must be a nonempty unique reviewed selection')
+        capabilities = frozenset(capabilities)
     if not re.fullmatch(r'[0-9]{12}', account) or not re.fullmatch(r'[a-z]{2}(?:-gov)?-[a-z]+-[0-9]', region):
         raise ValueError('Invalid account or region')
     if partition not in {'aws', 'aws-us-gov', 'aws-cn'}:
@@ -110,6 +141,14 @@ def build_policy(account, region, artifact_bucket, documents_bucket='', partitio
         if invoke_scopes:
             groups.append(('ModelInvocation', ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
                            invoke_scopes))
+    # Validate every supplied generated/model ARN above, even if a capability
+    # is not selected. Never conceal invalid inputs by filtering them first.
+    if capabilities is not None:
+        groups = [group for group in groups if group[0] in capabilities]
+    selected_groups = {name for name, _, _ in groups}
+    computation_actions = sorted({action for name, actions in COMPUTATION_ACTIONS.items()
+                                  if capabilities is not None and name in capabilities
+                                  for action in actions})
     s3_actions = ['s3:GetObject', 's3:GetObjectVersion', 's3:PutObject', 's3:DeleteObject',
                   's3:DeleteObjectVersion', 's3:ListBucket', 's3:GetBucketLocation',
                   's3:AbortMultipartUpload', 's3:ListMultipartUploadParts',
@@ -124,8 +163,8 @@ def build_policy(account, region, artifact_bucket, documents_bucket='', partitio
     global_actions = ['ecr:GetAuthorizationToken', 'xray:PutTraceSegments', 'xray:PutTelemetryRecords']
     # ListTasks is authorized through ecs:cluster context, not a cluster resource
     # ARN. Keep it outside named_actions and apply mandatory cluster Denies.
-    conditional_actions = ['ecs:ListTasks'] if generated_resources.get('ecs_clusters') else []
-    approved_actions = sorted(set(s3_actions + global_actions + conditional_actions +
+    conditional_actions = ['ecs:ListTasks'] if 'EcsClusters' in selected_groups else []
+    approved_actions = sorted(set(s3_actions + global_actions + conditional_actions + computation_actions +
                                   [a for _, actions, _ in groups for a in actions]))
     statements = [{'Sid': 'DenyUnreviewedActions', 'Effect': 'Deny',
                    'NotAction': approved_actions, 'Resource': '*'}]
@@ -140,15 +179,23 @@ def build_policy(account, region, artifact_bucket, documents_bucket='', partitio
         # excluded from this ceiling and receives only scoped PassRole.
         {'Sid': 'AllowNonIamWithinExplicitDenies', 'Effect': 'Allow',
          'NotAction': 'iam:*', 'Resource': '*'},
-        {'Sid': 'AllowPassApplicationRoles', 'Effect': 'Allow', 'Action': 'iam:PassRole',
-         'Resource': f'{arn}:iam::{account}:role/lma/application/LMA-*'},
         # The exhaustive action ceiling above denies everything else. Exclude
         # only operations with separate S3/cluster controls or no resource scope.
         # This avoids repeating the action list, not relaxing resource rules.
         {'Sid': 'DenyOutsideNamedResources', 'Effect': 'Deny',
-         'NotAction': sorted(set(['s3:*'] + global_actions + conditional_actions)),
-         'NotResource': named_resources},
+         'NotAction': sorted(set(['s3:*'] + global_actions + conditional_actions + computation_actions)),
+         **({'NotResource': named_resources} if named_resources else {'Resource': '*'})},
     ])
+    if 'PassApplicationRoles' in selected_groups:
+        statements.insert(2, {'Sid': 'AllowPassApplicationRoles', 'Effect': 'Allow',
+                             'Action': 'iam:PassRole',
+                             'Resource': f'{arn}:iam::{account}:role/lma/application/LMA-*'})
+    if computation_actions:
+        # These AWS actions have no resource-level authorization. A missing or
+        # foreign requested region is denied, including direct session grants.
+        statements.append({'Sid': 'DenyComputationOutsideRegion', 'Effect': 'Deny',
+                           'Action': computation_actions, 'Resource': '*',
+                           'Condition': {'StringNotEqualsIfExists': {'aws:RequestedRegion': region}}})
     statements.extend([
         # The ceiling above already supplies the Allow. These explicit
         # Denies enforce both ARN and account constraints, including sessions.
@@ -180,8 +227,8 @@ def build_policy(account, region, artifact_bucket, documents_bucket='', partitio
             f'{arn}:logs:{regional}:log-group:*LMA-Isolation-*',
         ]},
     ])
-    if generated_resources.get('ecs_clusters'):
-        cluster_actions = conditional_actions + (['ecs:RunTask'] if generated_resources.get('ecs_task_definitions') else [])
+    if conditional_actions or 'EcsDefinitions' in selected_groups:
+        cluster_actions = conditional_actions + (['ecs:RunTask'] if 'EcsDefinitions' in selected_groups else [])
         statements.append({'Sid': 'DenyEcsLaunchOutsideReviewedClusters', 'Effect': 'Deny',
                            'Action': cluster_actions, 'Resource': '*',
                            'Condition': {'ArnNotEqualsIfExists': {

@@ -1,5 +1,12 @@
 # Changelog
 
+### Production CI/CD preparation (inactive)
+
+- Add administrator-selected runtime capability ceilings and read-only AWS
+  validation for live transcription/text processing. Preserve the existing
+  default draft and explicit control-plane protections. Role assignment and
+  production activation remain unfinished; no application deployment implied.
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),

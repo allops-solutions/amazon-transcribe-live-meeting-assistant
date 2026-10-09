@@ -125,6 +125,46 @@ and [Scheduler table](https://docs.aws.amazon.com/service-authorization/latest/r
 `RetrieveAndGenerate` is not ARN-scoped like `Retrieve`; its dependent permissions
 must be reviewed/verified before it is enabled in the ceiling. It remains denied.
 
+### Capability-specific runtime drafts
+
+`runtime_boundary.build_policy(..., capabilities=[...])` can now generate a
+narrower administrator-selected ceiling. Omitting the selection preserves the
+previous document; unknown, empty or duplicate selections fail. All supplied
+generated/model ARNs are validated before filtering. Unselected services and
+`iam:PassRole` remain explicitly denied, not merely absent from an Allow.
+
+`StreamingTranscription` permits only the two HTTP/2 live streaming operations.
+`TextProcessing` permits the existing sentiment, PII, dominant-language and
+plain-text translation operations. These AWS APIs have no resource-level scope;
+an explicit requested-region Deny restricts them to the target region. Neither
+capability grants access to stored transcription jobs, vocabularies, Comprehend
+jobs/custom endpoints, or document translation. See the official
+[Transcribe](https://docs.aws.amazon.com/service-authorization/latest/reference/list_transcribe.html),
+[Comprehend](https://docs.aws.amazon.com/service-authorization/latest/reference/list_comprehend.html)
+and [Translate](https://docs.aws.amazon.com/service-authorization/latest/reference/list_translate.html)
+authorization tables. These calls can incur usage charges if eventually granted
+by a role identity policy; the boundary is not itself a grant or a cost limit.
+
+Reproduce the read-only speech/text policy validation with:
+
+```bash
+AWS_PROFILE=default AWS_PAGER='' .venv/bin/python deploy/ci/simulate_runtime_capabilities.py \
+  --account 009853297978
+```
+
+This uses Access Analyzer and `PermissionsBoundaryPolicyInputList` with a
+hypothetical broad identity grant. It does not attach a policy or invoke an
+application API. The simulator supplies a default requested region when omitted;
+the negative cases explicitly supply foreign/empty region values instead.
+Speech/text fixtures validated with zero findings and 42 simulation cases.
+These are not runtime acceptance tests or proof about direct session policies.
+
+**Not activated:** capability-to-role assignment, the mandatory-boundary guard
+for multiple approved policies, custom-resource/first-CREATE barriers and
+non-IAM provisioning/network controls still require integration. This builder
+must not be used as evidence to enable deployment. The existing administrator
+controller still builds the unchanged common draft, not these variants.
+
 These files alone do not activate CI/CD. Commit and push them only after review.
 The following setup creates paid AWS infrastructure and GitHub configuration;
 it is not performed by running local tests.
