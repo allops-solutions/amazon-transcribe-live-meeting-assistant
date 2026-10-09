@@ -1,0 +1,155 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Administrator-owned first-CREATE permission controller draft. Not application CI; inactive by default.
+Parameters:
+  EnableController:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+  EnablePolicyWrites:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+  ExpectedRootStackArn:
+    Type: String
+    Default: ''
+    AllowedPattern: '^(|arn:[a-z0-9-]+:cloudformation:[a-z0-9-]+:[0-9]{12}:stack/LMA/[A-Za-z0-9-]+)$'
+  ApplicationBoundaryArn:
+    Type: String
+    Default: ''
+    AllowedPattern: '^(|arn:[a-z0-9-]+:iam::[0-9]{12}:policy/lma/isolation/LMA-[A-Za-z0-9+=,.@_-]+)$'
+  ExpectedInitialPolicySha256:
+    Type: String
+    Default: ''
+    AllowedPattern: '^(|[0-9a-f]{64})$'
+  AdministratorCodeKey:
+    Type: String
+    Default: ''
+    AllowedPattern: '^(|reviewed/[0-9a-f]{64}/bootstrap.zip)$'
+  AdministratorCodeVersion:
+    Type: String
+    Default: ''
+    Description: Reviewed immutable S3 object version. Never use an unversioned key.
+  LogEncryptionKeyArn:
+    Type: String
+    Default: ''
+    Description: Administrator-owned key permitting this dedicated log group.
+  PermissionsBoundaryArn:
+    Type: String
+    Default: ''
+    Description: Optional separately reviewed administrator boundary, not the application ceiling.
+Rules:
+  ActivationRequiresAdministratorPins:
+    RuleCondition: !Equals [!Ref EnableController, 'true']
+    Assertions:
+      - Assert: !Not [!Equals [!Ref ExpectedRootStackArn, '']]
+        AssertDescription: Pin the new root ARN before activating.
+      - Assert: !Not [!Equals [!Ref ApplicationBoundaryArn, '']]
+        AssertDescription: Pin one administrator-owned boundary.
+      - Assert: !Not [!Equals [!Ref ExpectedInitialPolicySha256, '']]
+        AssertDescription: Pin the reviewed initial policy fingerprint.
+      - Assert: !Not [!Equals [!Ref AdministratorCodeKey, '']]
+        AssertDescription: A reviewed artifact key is mandatory.
+      - Assert: !And
+          - !Not [!Equals [!Ref AdministratorCodeVersion, '']]
+          - !Not [!Equals [!Ref AdministratorCodeVersion, 'null']]
+        AssertDescription: A non-null immutable object version is mandatory.
+      - Assert: !Not [!Equals [!Ref LogEncryptionKeyArn, '']]
+        AssertDescription: Dedicated encrypted logs are mandatory.
+  WritesRequireController:
+    RuleCondition: !Equals [!Ref EnablePolicyWrites, 'true']
+    Assertions:
+      - Assert: !Equals [!Ref EnableController, 'true']
+        AssertDescription: Writes cannot be activated without the controller.
+Conditions:
+  Enabled: !Equals [!Ref EnableController, 'true']
+  WritesEnabled: !Equals [!Ref EnablePolicyWrites, 'true']
+  HasBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
+Resources:
+  ControllerLogs:
+    Type: AWS::Logs::LogGroup
+    Condition: Enabled
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: /LMA-Isolation-Bootstrap
+      RetentionInDays: 180
+      KmsKeyId: !Ref LogEncryptionKeyArn
+  ControllerRole:
+    Type: AWS::IAM::Role
+    Condition: Enabled
+    Properties:
+      RoleName: LMA-Isolation-Bootstrap
+      Path: /lma/isolation/
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref 'AWS::NoValue']
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'lambda.${AWS::URLSuffix}'
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ExactBootstrapAuthority
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [cloudformation:DescribeStacks, cloudformation:ListStackResources, cloudformation:DescribeStackEvents]
+                Resource:
+                  - !Ref ExpectedRootStackArn
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/LMA-*/*'
+              - Effect: Allow
+                Action: [iam:GetPolicy, iam:GetPolicyVersion, iam:ListPolicyVersions]
+                Resource: !Ref ApplicationBoundaryArn
+              - !If
+                - WritesEnabled
+                - Effect: Allow
+                  Action: iam:CreatePolicyVersion
+                  Resource: !Ref ApplicationBoundaryArn
+                - !Ref 'AWS::NoValue'
+              - Effect: Allow
+                Action: bedrock:GetInferenceProfile
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/global.anthropic.claude-sonnet-4-6'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/global.moonshotai.kimi-k3'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/global.anthropic.claude-haiku-4-5-20251001-v1:0'
+              # ValidatePolicy evaluates submitted JSON only; AWS provides no
+              # resource ARN for this read-only validation action.
+              - Effect: Allow
+                Action: access-analyzer:ValidatePolicy
+                Resource: '*'
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt ControllerLogs.Arn
+  Controller:
+    Type: AWS::Lambda::Function
+    Condition: Enabled
+    DependsOn: ControllerLogs
+    Properties:
+      FunctionName: LMA-Isolation-Bootstrap
+      Role: !GetAtt ControllerRole.Arn
+      Handler: permission_bootstrap_handler.handler
+      Runtime: python3.12
+      Timeout: 120
+      MemorySize: 256
+      ReservedConcurrentExecutions: 1
+      Code:
+        # Fixed namespace, not caller/CI-controlled release storage. The admin
+        # must separately create/verify account ownership of this private bucket.
+        S3Bucket: !Sub 'allops-lma-isolation-${AWS::AccountId}-${AWS::Region}'
+        S3Key: !Ref AdministratorCodeKey
+        S3ObjectVersion: !Ref AdministratorCodeVersion
+      LoggingConfig:
+        LogGroup: !Ref ControllerLogs
+      Environment:
+        Variables:
+          ENABLE_POLICY_WRITES: !Ref EnablePolicyWrites
+          ADMIN_BOOTSTRAP_CONFIG: !Sub
+            - '{"account":"${AWS::AccountId}","region":"${AWS::Region}","partition":"${AWS::Partition}","rootStackArn":"${Root}","boundaryArn":"${Boundary}","expectedPolicySha256":"${PolicyHash}","artifactBucket":"allops-lma-ci-${AWS::AccountId}-production-${AWS::Region}","documentsBucket":"allops-lma-documents-${AWS::AccountId}-${AWS::Region}"}'
+            - Root: !Ref ExpectedRootStackArn
+              Boundary: !Ref ApplicationBoundaryArn
+              PolicyHash: !Ref ExpectedInitialPolicySha256
+Outputs:
+  ControllerArn:
+    Condition: Enabled
+    Value: !GetAtt Controller.Arn

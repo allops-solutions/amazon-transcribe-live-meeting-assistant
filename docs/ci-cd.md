@@ -28,7 +28,7 @@ or changes to scheduling behavior are part of this pipeline.
 
 ### Current production preparation status (2026-10-09)
 
-Production deployment remains disabled. PR8's required checks passed and it was
+Production deployment remains disabled. PR9's required checks passed and it was
 merged into `allops-main`; this does not activate a deployment role or deploy LMA.
 
 For the approved initial release, ACS, ElevenLabs, Simli, Tavily and Zoom SDK
@@ -57,8 +57,47 @@ The draft runtime ceiling now supports exact knowledge-base, vector-index,
 state-machine and scheduler-group identities plus approved profile/model ARNs.
 `--include-model-resources` reads the exact destinations of the three approved
 profiles and adds the local Titan embedding model. It invokes no model. The
-combined synthetic fixture fits the managed-policy limit; the real full inventory
-must still be checked, and oversized policies fail instead of dropping scopes.
+combined synthetic fixture fits the managed-policy limit after consolidating
+redundant S3 ownership Denies and compacting only protective Deny ARN patterns.
+The separate account-local PassRole Allow remains. All controller protections remain.
+The negated [StringNotEqualsIfExists condition](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html)
+in a Deny rejects both foreign and missing owner context; a separate Null Deny
+would repeat the same restriction. No Allow scope was broadened to fit.
+The real complete inventory may still require capability-specific ceilings before
+activation. Oversized policies fail instead of dropping scopes or protections.
+
+The production secret-safe check now passes: the user entered the required Google
+secret directly in Secrets Manager, and no secret value was displayed. Profile
+availability and actual inference are separate from this configuration check.
+Four tiny live inference probes succeeded in production under the administrator
+session: Sonnet4.6, KimiK3, Haiku4.5 and Titan embeddings. This verifies account
+model access, not application-role permissions or application functionality.
+
+`permission_bootstrap.py` and `permission-bootstrap.yaml` prepare an **inactive**
+administrator-owned first-CREATE reconciler. The template defaults both the
+controller and policy writes off. Code must be a reviewed immutable object version
+in separate administrator storage, never the editable application release prefix.
+The function accepts no authority-bearing invocation input and has no application
+invocation permission. Reserved concurrency 1 serializes that controller's calls;
+administrators must also avoid concurrent policy edits because IAM has no policy
+compare-and-swap API.
+
+It pins one root and one administrator policy, inspects every creation-history
+page, rejects imports/updates/failures/rollbacks, recomputes scopes from AWS, and
+compares the entire previous document against the administrator initial digest
+or a reconstructed exact prior subset. Repeated identical reconciliation is a
+no-op. Access Analyzer findings, truncation, scope drift, or policy-size/version
+limits stop before a write. It never deletes policy versions to make room.
+At IAM's [five-version limit](https://docs.aws.amazon.com/IAM/latest/APIReference/API_CreatePolicyVersion.html),
+an administrator must review history/capacity. This is deliberately fail-closed,
+not a complete autonomous first-deployment controller yet.
+
+Runtime and provisioning drafts explicitly deny application access to the
+`LMA-Isolation-*` controller/code/logs and administrator storage/configuration.
+These draft protections have not been attached to AWS roles. Runtime permission
+compatibility, capability-policy sizing, non-IAM provisioning/network controls,
+first-CREATE dependency barriers and activation remain blockers. Do not deploy
+this component or declare production ready from its unit tests.
 
 The read-only collector also has an initial-creation inspection mode:
 

@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   duplicate VPs across flow retries and employees. New update/cancel tools
   reconcile pending EventBridge launches without deleting meeting data.
 - Production parameter draft uses 180-day CloudWatch log retention.
+- Inactive administrator-only first-CREATE permission-bootstrap draft, with
+  immutable code-version pins, exact stack/policy validation, protected control
+  plane and fail-closed policy reconciliation. Production deployment remains disabled.
 
 ## [0.3.8] - 2026-09-02
 

@@ -72,6 +72,16 @@ class RuntimeBoundaryTests(unittest.TestCase):
         self.assertLessEqual(len(json.dumps(policy, separators=(',', ':'))), 6144)
         scopes = next(s['NotResource'] for s in policy['Statement'] if 'NotResource' in s and 'NotAction' in s)
         self.assertTrue(set(profiles + models).issubset(scopes))
+        protected = [r for s in policy['Statement'] if s['Effect'] == 'Deny' and s.get('Action') == '*'
+                     for r in s['Resource']]
+        self.assertIn(f'arn:aws:lambda:{REGION}:{ACCOUNT}:function:LMA-Isolation-*', protected)
+
+    def test_administrator_code_and_invocation_are_explicitly_protected(self):
+        policy = boundary.build_policy(ACCOUNT, REGION, BUCKET)
+        protection = next(s for s in policy['Statement'] if s.get('Sid') == 'ProtectIsolationResources')
+        self.assertEqual(protection['Effect'], 'Deny')
+        self.assertEqual(protection['Action'], '*')
+        self.assertIn(f'arn:aws:lambda:{REGION}:{ACCOUNT}:function:LMA-Isolation-*', protection['Resource'])
 
     def test_combined_services_fit_and_enforce_launch_cluster(self):
         generated = generated_fixture()
@@ -82,6 +92,15 @@ class RuntimeBoundaryTests(unittest.TestCase):
         self.assertEqual(deny['Condition']['ArnNotEqualsIfExists']['ecs:cluster'], generated['ecs_clusters'])
         ceiling = next(s for s in policy['Statement'] if s['Effect'] == 'Allow' and 'NotAction' in s)
         self.assertEqual(ceiling['NotAction'], 'iam:*')
+
+    def test_missing_s3_owner_is_denied_by_negated_if_exists(self):
+        policy = boundary.build_policy(ACCOUNT, REGION, BUCKET)
+        deny = next(s for s in policy['Statement'] if s.get('Sid') == 'DenyCrossAccountS3')
+        self.assertEqual(deny['Effect'], 'Deny')
+        self.assertEqual(deny['Action'], 's3:*')
+        self.assertEqual(deny['Condition'], {'StringNotEqualsIfExists': {'aws:ResourceAccount': ACCOUNT}})
+        # AWS defines a negated ...IfExists in a Deny as denial when absent;
+        # do not replace this with StringNotEquals or a positive IfExists.
 
     def test_definition_without_cluster_cannot_launch(self):
         generated = {'ecs_task_definitions': generated_fixture()['ecs_task_definitions']}
@@ -152,7 +171,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
         client.simulate_custom_policy.side_effect = [
             {'EvaluationResults': [{'EvalDecision': row[-1]}]} for row in cases]
         boundary.simulate(client, boundary.build_policy(ACCOUNT, REGION, BUCKET), ACCOUNT, REGION, BUCKET)
-        self.assertEqual(client.simulate_custom_policy.call_count, 25)
+        self.assertEqual(client.simulate_custom_policy.call_count, len(cases))
         self.assertEqual({call[0] for call in client.method_calls}, {'simulate_custom_policy'})
 
     def test_unexpected_simulator_result_is_failure(self):

@@ -26,7 +26,7 @@ def load_policy(account):
             return [resolve(item) for item in value]
         if value == 'ApplicationBoundaryArn':
             return boundary
-        return value.replace('${AWS::Partition}', 'aws').replace('${AWS::AccountId}', account)
+        return value.replace('${AWS::Partition}', 'aws').replace('${AWS::AccountId}', account).replace('${AWS::Region}', 'us-east-1')
 
     policy = template['Resources']['ProvisioningIamGuardrails']['Properties']['PolicyDocument']
     return resolve(policy), boundary
@@ -59,6 +59,16 @@ def cases(account, boundary):
         ('assume-unrelated-role', 'sts:AssumeRole', other, None, 'explicitDeny'),
         ('read-application-role', 'iam:GetRole', role, None, 'allowed'),
         ('delete-application-role', 'iam:DeleteRole', role, None, 'allowed'),
+        ('edit-isolation-code', 'lambda:UpdateFunctionCode',
+         f'arn:aws:lambda:us-east-1:{account}:function:LMA-Isolation-Bootstrap', None, 'explicitDeny'),
+        ('invoke-isolation', 'lambda:InvokeFunction',
+         f'arn:aws:lambda:us-east-1:{account}:function:LMA-Isolation-Bootstrap:live', None, 'explicitDeny'),
+        ('replace-isolation-stack', 'cloudformation:UpdateStack',
+         f'arn:aws:cloudformation:us-east-1:{account}:stack/LMA-Isolation-Bootstrap/test-id', None, 'explicitDeny'),
+        ('overwrite-isolation-artifact', 's3:PutObject',
+         f'arn:aws:s3:::allops-lma-isolation-{account}-us-east-1/reviewed/bootstrap.zip', None, 'explicitDeny'),
+        ('edit-isolation-pins', 'ssm:PutParameter',
+         f'arn:aws:ssm:us-east-1:{account}:parameter/lma/isolation/bootstrap', None, 'explicitDeny'),
     ]
 
 
