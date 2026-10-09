@@ -1,0 +1,193 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Administrator-owned conventional LMA deployment access; not strict account-resource isolation.
+Parameters:
+  ArtifactBucketName:
+    Type: String
+    AllowedPattern: '^allops-lma-ci-[0-9]{12}-production-[a-z0-9-]+$'
+  PermissionsBoundaryArn:
+    Type: String
+    Default: ''
+    Description: Optional administrator boundary for the provisioning role itself, not the application boundary.
+Conditions:
+  HasBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
+Resources:
+  ApplicationBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: LMA-ApplicationBoundary
+      Path: /lma/isolation/
+      Description: Conventional LMA service ceiling; generated-ID services have broader permissions. Identity policies still required.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Shared as the service-role's non-IAM grant. On application roles this
+          # is a boundary ONLY, and grants nothing without an identity policy.
+          - Sid: NamedApplicationServices
+            Effect: Allow
+            Action: ['lambda:*', 'dynamodb:*', 'kinesis:*', 'ecr:*', 'codebuild:*', 'states:*', 'scheduler:*', 'ssm:*', 'secretsmanager:*', 'logs:*', 's3vectors:*']
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:LMA-*'
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:layer:LMA-*'
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:event-source-mapping:*'
+              - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/LMA-*'
+              - !Sub 'arn:${AWS::Partition}:kinesis:${AWS::Region}:${AWS::AccountId}:stream/LMA-*'
+              - !Sub 'arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/lma-*'
+              - !Sub 'arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/LMA-*'
+              - !Sub 'arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:build/LMA-*'
+              - !Sub 'arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:LMA-*'
+              - !Sub 'arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:LMA-*'
+              - !Sub 'arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/*/LMA-*'
+              - !Sub 'arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/LMA-*/*'
+              - !Sub 'arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule-group/LMA-*'
+              - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/LMA-*'
+              - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:LMA-*'
+              - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:LMA/*'
+              - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/LMA-*'
+              - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/LMA-*'
+              - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/LMA-*'
+              - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/ecs/LMA-*'
+              - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/vendedlogs/states/LMA-*'
+              - !Sub 'arn:${AWS::Partition}:s3vectors:${AWS::Region}:${AWS::AccountId}:bucket/lma-*'
+          - Sid: ApplicationBuckets
+            Effect: Allow
+            Action: 's3:*'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:s3:::lma-*'
+              - !Sub 'arn:${AWS::Partition}:s3:::allops-lma-documents-${AWS::AccountId}-${AWS::Region}'
+              - !Sub 'arn:${AWS::Partition}:s3:::allops-lma-documents-${AWS::AccountId}-${AWS::Region}/*'
+          - Sid: PrivateReleaseRead
+            Effect: Allow
+            Action: [s3:GetObject, s3:GetObjectVersion, s3:GetBucketLocation, s3:ListBucket]
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}'
+              - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketName}/releases/*'
+          # These services have generated resource IDs, multi-resource creation
+          # or unscopable operations. This is deliberately NOT strict isolation.
+          - Sid: RegionalGeneratedServices
+            Effect: Allow
+            Action: ['ec2:*', 'ecs:*', 'elasticloadbalancing:*', 'application-autoscaling:*', 'autoscaling:*', 'kms:*', 'appsync:*', 'cognito-idp:*', 'cognito-identity:*', 'apigateway:*', 'events:*', 'sns:*', 'transcribe:*', 'translate:TranslateText', 'comprehend:Detect*', 'ses:SendEmail', 'ses:SendRawEmail']
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: !Ref AWS::Region
+          - Sid: GlobalAndModelServices
+            Effect: Allow
+            Action: ['cloudfront:*', 'bedrock:*', 'bedrock-agentcore:*', 'xray:PutTraceSegments', 'xray:PutTelemetryRecords', 'xray:GetSamplingRules', 'xray:GetSamplingTargets', 'cloudwatch:PutMetricData']
+            Resource: '*'
+          - Sid: UnscopableDiscoveryAndAuthorization
+            Effect: Allow
+            Action: [ecr:GetAuthorizationToken, logs:DescribeLogGroups, logs:CreateLogDelivery, logs:GetLogDelivery, logs:UpdateLogDelivery, logs:DeleteLogDelivery, logs:ListLogDeliveries, logs:PutResourcePolicy, logs:DescribeResourcePolicies, scheduler:ListSchedules, scheduler:ListScheduleGroups, s3:ListAllMyBuckets, lambda:ListFunctions, codebuild:ListProjects, cloudformation:DescribeStacks, cloudformation:DescribeStackResources, cloudformation:ListStackResources]
+            Resource: '*'
+          - Sid: PassApplicationRoles
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/lma/application/LMA-*'
+          - Sid: NoRoleAssumption
+            Effect: Deny
+            Action: [sts:AssumeRole, sts:AssumeRoleWithSAML, sts:AssumeRoleWithWebIdentity]
+            Resource: '*'
+          - Sid: ProtectCiAndAdministratorResources
+            Effect: Deny
+            Action: '*'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/lma/isolation/*'
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/lma/isolation/*'
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/LMA-CICD-*'
+              - !Sub 'arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/lma-ci-*'
+              - !Sub 'arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:build/lma-ci-*'
+              - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:lma/ci/*'
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:LMA-Isolation-*'
+              - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/LMA-CICD-*'
+              - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/LMA-Isolation-*'
+              - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/lma/isolation/*'
+              - !Sub 'arn:${AWS::Partition}:s3:::allops-lma-isolation-${AWS::AccountId}-${AWS::Region}*'
+  CloudFormationRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: Stable administrator-owned deployment role referenced by CI configuration.
+          - id: W11
+            reason: Generated-ID provisioning and service-linked-role discovery need wider service permissions; residual risk documented.
+          - id: F38
+            reason: No unrestricted IAM write or PassRole; selected read-only discovery APIs have no resource scope.
+    Properties:
+      RoleName: LMA-CloudFormation
+      Path: /lma/isolation/
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref 'AWS::NoValue']
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'cloudformation.${AWS::URLSuffix}'
+            Action: sts:AssumeRole
+      ManagedPolicyArns: [!Ref ApplicationBoundary]
+      Policies:
+        - PolicyName: ProvisionApplicationIdentityAndStacks
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ApplicationIam
+                Effect: Allow
+                Action: [iam:CreateRole, iam:DeleteRole, iam:GetRole, iam:UpdateRole, iam:UpdateAssumeRolePolicy, iam:AttachRolePolicy, iam:DetachRolePolicy, iam:PutRolePolicy, iam:DeleteRolePolicy, iam:GetRolePolicy, iam:ListRolePolicies, iam:ListAttachedRolePolicies, iam:TagRole, iam:UntagRole, iam:PutRolePermissionsBoundary, iam:CreatePolicy, iam:DeletePolicy, iam:GetPolicy, iam:GetPolicyVersion, iam:ListPolicyVersions, iam:ListEntitiesForPolicy, iam:CreatePolicyVersion, iam:DeletePolicyVersion, iam:SetDefaultPolicyVersion, iam:TagPolicy, iam:UntagPolicy, iam:CreateInstanceProfile, iam:DeleteInstanceProfile, iam:AddRoleToInstanceProfile, iam:RemoveRoleFromInstanceProfile, iam:GetInstanceProfile, iam:TagInstanceProfile, iam:UntagInstanceProfile, iam:ListInstanceProfilesForRole]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/lma/application/LMA-*'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/lma/application/LMA-*'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/lma/application/LMA-*'
+              - Sid: ReadManagedPolicyMetadata
+                Effect: Allow
+                Action: [iam:GetPolicy, iam:GetPolicyVersion]
+                Resource: !Sub 'arn:${AWS::Partition}:iam::aws:policy/*'
+              - Sid: RequireApprovedBoundary
+                Effect: Deny
+                Action: [iam:CreateRole, iam:PutRolePermissionsBoundary]
+                Resource: '*'
+                Condition:
+                  ArnNotEquals:
+                    iam:PermissionsBoundary: !Ref ApplicationBoundary
+              - Sid: NeverRemoveBoundaries
+                Effect: Deny
+                Action: iam:DeleteRolePermissionsBoundary
+                Resource: '*'
+              - Sid: RequiredServiceLinkedRolesOnly
+                Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/ecs.${AWS::URLSuffix}/AWSServiceRoleForECS'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/elasticloadbalancing.${AWS::URLSuffix}/AWSServiceRoleForElasticLoadBalancing'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.${AWS::URLSuffix}/AWSServiceRoleForApplicationAutoScaling_ECSService'
+                Condition:
+                  StringEquals:
+                    iam:AWSServiceName:
+                      - !Sub 'ecs.${AWS::URLSuffix}'
+                      - !Sub 'elasticloadbalancing.${AWS::URLSuffix}'
+                      - !Sub 'ecs.application-autoscaling.${AWS::URLSuffix}'
+              - Sid: ReadServiceLinkedRoles
+                Effect: Allow
+                Action: iam:GetRole
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/*'
+              - Sid: ManageApplicationStacks
+                Effect: Allow
+                Action: ['cloudformation:CreateStack', 'cloudformation:UpdateStack', 'cloudformation:DeleteStack', 'cloudformation:Describe*', 'cloudformation:ListStackResources', 'cloudformation:CreateChangeSet', 'cloudformation:ExecuteChangeSet', 'cloudformation:DeleteChangeSet', 'cloudformation:GetTemplate']
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/LMA/*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/LMA-*/*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/*/*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31'
+              - Sid: ProtectPreparationStacks
+                Effect: Deny
+                Action: 'cloudformation:*'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/LMA-CICD-*/*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/LMA-Isolation-*/*'
+              - Sid: ValidateTemplates
+                Effect: Allow
+                Action: cloudformation:ValidateTemplate
+                Resource: '*'
+Outputs:
+  ApplicationBoundaryArn:
+    Value: !Ref ApplicationBoundary
+  CloudFormationRoleArn:
+    Value: !GetAtt CloudFormationRole.Arn
