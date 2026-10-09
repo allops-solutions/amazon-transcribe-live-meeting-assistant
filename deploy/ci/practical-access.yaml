@@ -78,7 +78,7 @@ Resources:
             Resource: '*'
           - Sid: UnscopableDiscoveryAndAuthorization
             Effect: Allow
-            Action: [ecr:GetAuthorizationToken, logs:DescribeLogGroups, logs:CreateLogDelivery, logs:GetLogDelivery, logs:UpdateLogDelivery, logs:DeleteLogDelivery, logs:ListLogDeliveries, logs:PutResourcePolicy, logs:DescribeResourcePolicies, scheduler:ListSchedules, scheduler:ListScheduleGroups, s3:ListAllMyBuckets, lambda:ListFunctions, codebuild:ListProjects, cloudformation:DescribeStacks, cloudformation:DescribeStackResources, cloudformation:ListStackResources]
+            Action: [ecr:GetAuthorizationToken, secretsmanager:GetRandomPassword, logs:DescribeLogGroups, logs:CreateLogDelivery, logs:GetLogDelivery, logs:UpdateLogDelivery, logs:DeleteLogDelivery, logs:ListLogDeliveries, logs:PutResourcePolicy, logs:DescribeResourcePolicies, scheduler:ListSchedules, scheduler:ListScheduleGroups, s3:ListAllMyBuckets, lambda:ListFunctions, codebuild:ListProjects, cloudformation:DescribeStacks, cloudformation:DescribeStackResources, cloudformation:ListStackResources]
             Resource: '*'
           - Sid: PassApplicationRoles
             Effect: Allow

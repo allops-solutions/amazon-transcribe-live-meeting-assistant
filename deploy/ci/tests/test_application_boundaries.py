@@ -42,6 +42,34 @@ class ApplicationBoundaryTests(unittest.TestCase):
                 self.assertEqual(template['Parameters']['PermissionsBoundaryArn']['Default'], '')
                 self.assertIn('HasPermissionsBoundary', template['Conditions'])
 
+    def test_application_build_projects_have_stack_scoped_names(self):
+        count = 0
+        for path, template in self.templates.items():
+            for logical, resource in template['Resources'].items():
+                if resource['Type'] == 'AWS::CodeBuild::Project':
+                    count += 1
+                    with self.subTest(template=path, resource=logical):
+                        name = resource['Properties']['Name']
+                        if isinstance(name, list):
+                            self.assertEqual(name[0], 'HasPermissionsBoundary')
+                            self.assertEqual(name[2], 'AWS::NoValue')
+                            name = name[1]
+                        self.assertTrue(name.startswith('${AWS::StackName}-'))
+        self.assertEqual(count, 6)
+
+    def test_application_secret_names_preserve_legacy_when_unconfigured(self):
+        count = 0
+        for path, template in self.templates.items():
+            for logical, resource in template['Resources'].items():
+                if resource['Type'] == 'AWS::SecretsManager::Secret':
+                    count += 1
+                    with self.subTest(template=path, resource=logical):
+                        name = resource['Properties']['Name']
+                        self.assertEqual(name[0], 'HasPermissionsBoundary')
+                        self.assertTrue(name[1].startswith('${AWS::StackName}-'))
+                        self.assertEqual(name[2], 'AWS::NoValue')
+        self.assertEqual(count, 3)
+
     def test_all_explicit_roles_have_conditional_boundary(self):
         count = 0
         for path, template in self.templates.items():

@@ -816,6 +816,7 @@ Resources:
   WebsocketTranscriberCodeBuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
+      Name: !If [HasPermissionsBoundary, !Sub '${AWS::StackName}-TranscriberBuild', !Ref 'AWS::NoValue']
       Description: !Sub >-
         Builds docker images : ${AWS::StackName}
       ServiceRole: !GetAtt TranscriberCodeBuildServiceRole.Arn
@@ -1599,6 +1600,7 @@ Resources:
   CustomHeaderNameSecret:
     Type: "AWS::SecretsManager::Secret"
     Properties:
+      Name: !If [HasPermissionsBoundary, !Sub '${AWS::StackName}-HeaderName', !Ref 'AWS::NoValue']
       Description:
         Generates a random value for custom header name and stores it in
         secrets manager
@@ -1613,6 +1615,7 @@ Resources:
   CustomHeaderValueSecret:
     Type: "AWS::SecretsManager::Secret"
     Properties:
+      Name: !If [HasPermissionsBoundary, !Sub '${AWS::StackName}-HeaderValue', !Ref 'AWS::NoValue']
       Description:
         Generates a random value for custom header value and stores it
         in secrets manager

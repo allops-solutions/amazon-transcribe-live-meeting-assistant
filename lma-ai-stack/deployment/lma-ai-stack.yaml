@@ -1231,6 +1231,7 @@ Resources:
   LMAUICodeBuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
+      Name: !If [HasPermissionsBoundary, !Sub '${AWS::StackName}-UIBuild', !Ref 'AWS::NoValue']
       Description: !Sub >-
         Builds docker images and the website of stack: ${AWS::StackName}
       ServiceRole: !GetAtt LMAUICodeBuildServiceRole.Arn
@@ -5167,6 +5168,7 @@ Resources:
   VncHmacSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
+      Name: !If [HasPermissionsBoundary, !Sub '${AWS::StackName}-VncHmac', !Ref 'AWS::NoValue']
       Description: !Sub "VP-scoped VNC auth token HMAC key for ${AWS::StackName}"
       KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
       GenerateSecretString:

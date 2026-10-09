@@ -670,6 +670,7 @@ Resources:
           - id: AwsSolutions-CB4
             reason: 'CodeBuild encryption uses AWS-managed KMS (default); customer can override via EncryptionKey parameter'
     Properties:
+      Name: !If [HasPermissionsBoundary, !Sub '${AWS::StackName}-VPBuild', !Ref 'AWS::NoValue']
       Source:
         Location: !Sub "arn:aws:s3:::${SourceCodeLocation}"
         Type: S3
