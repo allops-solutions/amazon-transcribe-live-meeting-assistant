@@ -55,6 +55,13 @@ class PracticalAccessTests(unittest.TestCase):
         self.assertTrue(all('009853297978:role/aws-service-role/' in arn for arn in linked['Resource']))
         self.assertEqual(len(linked['Condition']['StringEquals']['iam:AWSServiceName']), 3)
 
+    def test_nested_stack_tagging_is_scoped(self):
+        _, policy, _ = access.policies('009853297978')
+        stacks = next(s for s in policy['Statement'] if s['Sid'] == 'ManageApplicationStacks')
+        self.assertIn('cloudformation:TagResource', stacks['Action'])
+        self.assertIn('cloudformation:UntagResource', stacks['Action'])
+        self.assertNotIn('*', stacks['Resource'])
+
     def test_runtime_schedule_names_and_logs_supported(self):
         policy, _, _ = access.policies('009853297978')
         resources = next(s for s in policy['Statement'] if s['Sid'] == 'NamedApplicationServices')['Resource']

@@ -116,6 +116,8 @@ def validate(session, account):
         ('outside-lambda', 'lambda:UpdateFunctionCode', f'arn:aws:lambda:us-east-1:{account}:function:OtherApplication', None, 'implicitDeny'),
         ('ci-build', 'codebuild:StartBuild', f'arn:aws:codebuild:us-east-1:{account}:project/lma-ci-production', None, 'explicitDeny'),
         ('nested-stack', 'cloudformation:CreateStack', f'arn:aws:cloudformation:us-east-1:{account}:stack/LMA-Ai/test', None, 'allowed'),
+        ('nested-stack-tags', 'cloudformation:TagResource', f'arn:aws:cloudformation:us-east-1:{account}:stack/LMA-Ai/test', None, 'allowed'),
+        ('outside-stack-tags', 'cloudformation:TagResource', f'arn:aws:cloudformation:us-east-1:{account}:stack/OtherApplication/test', None, 'implicitDeny'),
         ('ci-stack', 'cloudformation:UpdateStack', f'arn:aws:cloudformation:us-east-1:{account}:stack/LMA-CICD-Production/test', None, 'explicitDeny'),
         ('outside-stack', 'cloudformation:UpdateStack', f'arn:aws:cloudformation:us-east-1:{account}:stack/OtherApplication/test', None, 'implicitDeny'),
     ]
