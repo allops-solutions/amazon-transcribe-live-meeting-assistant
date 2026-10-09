@@ -157,18 +157,27 @@ def build_policy(account, region, artifact_bucket, documents_bucket='', partitio
         # repetitions of the S3 action list in the managed-policy size budget.
         {'Sid': 'DenyS3OutsideLma', 'Effect': 'Deny', 'Action': 's3:*',
          'NotResource': owned_s3 + artifact_resources},
+        # A negated IfExists condition in a Deny is true for a missing key.
+        # This one statement rejects both foreign and missing S3 ownership;
+        # a separate Null Deny would repeat the same effective restriction.
         {'Sid': 'DenyCrossAccountS3', 'Effect': 'Deny', 'Action': 's3:*', 'Resource': '*',
          'Condition': {'StringNotEqualsIfExists': {'aws:ResourceAccount': account}}},
-        {'Sid': 'DenyMissingS3Owner', 'Effect': 'Deny', 'Action': 's3:*', 'Resource': '*',
-         'Condition': {'Null': {'aws:ResourceAccount': 'true'}}},
         {'Sid': 'ArtifactsAreReadOnly', 'Effect': 'Deny', 'NotAction': read_artifacts,
-         'Resource': [f'{arn}:s3:::{artifact_bucket}', f'{arn}:s3:::{artifact_bucket}/*']},
+         # Broader matching here only DENIES writes; the exact S3 read/resource
+         # ceilings above are unchanged. Do not use this prefix in an Allow.
+         'Resource': f'{arn}:s3:::{artifact_bucket}*'},
         {'Sid': 'ProtectCiResources', 'Effect': 'Deny', 'Action': '*', 'Resource': [
             f'{arn}:iam::{account}:role/lma/application/LMA-CICD-*',
             f'{arn}:lambda:{regional}:function:LMA-CICD-*',
-            f'{arn}:codebuild:{regional}:project/LMA-CICD-*',
-            f'{arn}:codebuild:{regional}:build/LMA-CICD-*',
+            f'{arn}:codebuild:{regional}:*LMA-CICD-*',
             f'{arn}:logs:{regional}:log-group:/aws/codebuild/LMA-CICD-*',
+        ]},
+        # Administrator-owned permission code must never be writable/invocable
+        # under the otherwise reviewed LMA-* function/build namespace.
+        {'Sid': 'ProtectIsolationResources', 'Effect': 'Deny', 'Action': '*', 'Resource': [
+            f'{arn}:lambda:{regional}:function:LMA-Isolation-*',
+            f'{arn}:codebuild:{regional}:*LMA-Isolation-*',
+            f'{arn}:logs:{regional}:log-group:*LMA-Isolation-*',
         ]},
     ])
     if generated_resources.get('ecs_clusters'):
@@ -200,6 +209,11 @@ def simulation_cases(account, region, bucket):
         ('lma-lambda-invoke', 'lambda:InvokeFunction', base.format(service='lambda') + 'function:LMA-Ai-Worker', {}, 'allowed'),
         ('unrelated-lambda-edit', 'lambda:UpdateFunctionCode', base.format(service='lambda') + 'function:BillingWorker', {}, 'explicitDeny'),
         ('ci-lambda-edit', 'lambda:UpdateFunctionCode', base.format(service='lambda') + 'function:LMA-CICD-Worker', {}, 'explicitDeny'),
+        ('isolation-code-edit', 'lambda:UpdateFunctionCode', base.format(service='lambda') + 'function:LMA-Isolation-Bootstrap', {}, 'explicitDeny'),
+        ('isolation-invoke', 'lambda:InvokeFunction', base.format(service='lambda') + 'function:LMA-Isolation-Bootstrap', {}, 'explicitDeny'),
+        ('isolation-qualified-invoke', 'lambda:InvokeFunction', base.format(service='lambda') + 'function:LMA-Isolation-Bootstrap:live', {}, 'explicitDeny'),
+        ('isolation-build', 'codebuild:StartBuild', base.format(service='codebuild') + 'project/LMA-Isolation-Builder', {}, 'explicitDeny'),
+        ('isolation-log-delete', 'logs:DeleteLogGroup', base.format(service='logs') + 'log-group:/LMA-Isolation-Bootstrap', {}, 'explicitDeny'),
         ('lma-build', 'codebuild:StartBuild', base.format(service='codebuild') + 'project/LMA-Ai-Builder', {}, 'allowed'),
         ('real-ci-build', 'codebuild:StartBuild', base.format(service='codebuild') + 'project/lma-ci-production', {}, 'explicitDeny'),
         ('ci-prefixed-build', 'codebuild:StartBuild', base.format(service='codebuild') + 'project/LMA-CICD-Builder', {}, 'explicitDeny'),

@@ -33,7 +33,7 @@ class GuardrailTests(unittest.TestCase):
         client.simulate_custom_policy.side_effect = [
             {'EvaluationResults': [{'EvalDecision': row[-1]}]} for row in cases]
         guardrails.simulate(client, '009853297978')
-        self.assertEqual(client.simulate_custom_policy.call_count, 20)
+        self.assertEqual(client.simulate_custom_policy.call_count, len(cases))
         self.assertEqual({call[0] for call in client.method_calls}, {'simulate_custom_policy'})
 
     def test_simulation_fails_on_incorrect_decision(self):

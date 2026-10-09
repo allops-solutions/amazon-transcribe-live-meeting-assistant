@@ -57,6 +57,16 @@ Resources:
             Effect: Deny
             Action: [sts:AssumeRole, sts:AssumeRoleWithSAML, sts:AssumeRoleWithWebIdentity]
             Resource: '*'
+          - Sid: ProtectAdministratorControlPlane
+            Effect: Deny
+            Action: '*'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:LMA-Isolation-*'
+              - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/LMA-Isolation-*/*'
+              - !Sub 'arn:${AWS::Partition}:s3:::allops-lma-isolation-${AWS::AccountId}-${AWS::Region}'
+              - !Sub 'arn:${AWS::Partition}:s3:::allops-lma-isolation-${AWS::AccountId}-${AWS::Region}/*'
+              - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/lma/isolation/*'
+              - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/LMA-Isolation-*'
 Outputs:
   GuardrailPolicyArn:
     Condition: Enabled

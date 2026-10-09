@@ -1,0 +1,2 @@
+# These dependencies belong in the reviewed administrator-only bootstrap ZIP.
+aws-lambda-powertools==3.34.0
