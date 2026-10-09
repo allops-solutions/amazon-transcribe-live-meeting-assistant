@@ -143,6 +143,7 @@ Resources:
           - id: AwsSolutions-CB4
             reason: 'CodeBuild encryption uses AWS-managed KMS (default)'
     Properties:
+      Name: !If [HasPermissionsBoundary, !Sub '${AWS::StackName}-DesktopBuild', !Ref 'AWS::NoValue']
       Description: !Sub >-
         Packages preconfigured desktop capture app source for stack: ${AWS::StackName}
       ServiceRole: !GetAtt DesktopCaptureAppCodeBuildServiceRole.Arn
