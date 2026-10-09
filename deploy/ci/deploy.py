@@ -11,6 +11,9 @@ from pathlib import Path
 import boto3
 from botocore.exceptions import ClientError, WaiterError
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from production_config import issues as production_config_issues
+
 ACCOUNTS = {"production": "009853297978", "dev": "135755363077"}
 REPOSITORY = "allops-solutions/amazon-transcribe-live-meeting-assistant"
 
@@ -47,6 +50,12 @@ def merge_parameters(base, overrides, environment):
         raise ValueError("Model validation must remain enabled")
     # Only brand-new, run-owned temporary dev stacks are disposable.
     values["EnableDataRetentionOnDelete"] = "true" if environment == "production" else "false"
+    if environment == 'production':
+        found = production_config_issues(
+            [{'ParameterKey': key, 'ParameterValue': value} for key, value in values.items()], {})
+        if found:
+            raise ValueError('Production configuration requires attention: ' +
+                             ', '.join(sorted({item['parameter'] for item in found})))
     return [{"ParameterKey": k, "ParameterValue": v} for k, v in values.items()]
 
 

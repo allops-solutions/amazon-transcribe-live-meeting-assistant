@@ -53,6 +53,8 @@ class SafetyTests(unittest.TestCase):
         for environment, filename in [('production', 'prod'), ('dev', 'dev')]:
             base = json.loads((ROOT / f'deploy/params/{filename}.json').read_text())
             overrides = {p['ParameterKey']: '' for p in base if 'TODO_' in p['ParameterValue'] or 'FILL_IN_FROM_SECRET_STORE' in p['ParameterValue']}
+            if environment == 'production':
+                overrides['GoogleOAuthClientSecret'] = 'test-secret-not-real'
             result = {p['ParameterKey']: p['ParameterValue'] for p in deploy.merge_parameters(base, overrides, environment)}
             self.assertEqual(result['EnableDataRetentionOnDelete'], 'true' if environment == 'production' else 'false')
 
@@ -104,6 +106,8 @@ class SafetyTests(unittest.TestCase):
         session.client.return_value.get_caller_identity.return_value = {'Account': account}
         base = json.loads((ROOT / f"deploy/params/{'prod' if environment == 'production' else 'dev'}.json").read_text())
         overrides = {p['ParameterKey']: '' for p in base if 'TODO_' in p['ParameterValue'] or 'FILL_IN_FROM_SECRET_STORE' in p['ParameterValue']}
+        if environment == 'production':
+            overrides['GoogleOAuthClientSecret'] = 'test-secret-not-real'
         boundary = f'arn:aws:iam::{account}:policy/lma/isolation/application-boundary'
         overrides['PermissionsBoundaryArn'] = boundary if environment == 'production' else ''
         session.client.return_value.get_secret_value.return_value = {'SecretString': json.dumps(overrides)}

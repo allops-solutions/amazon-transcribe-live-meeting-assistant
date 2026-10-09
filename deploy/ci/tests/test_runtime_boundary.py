@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[3]
 spec = importlib.util.spec_from_file_location('runtime_boundary', ROOT / 'deploy/ci/runtime_boundary.py')
 boundary = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(boundary)
+from model_resources import PROFILES
 ACCOUNT = '009853297978'
 REGION = 'us-east-1'
 BUCKET = f'allops-lma-ci-{ACCOUNT}-production-{REGION}'
@@ -28,7 +29,50 @@ def generated_fixture():
     }
 
 
+def service_fixture():
+    generated = generated_fixture()
+    base = f'arn:aws:{{service}}:{REGION}:{ACCOUNT}:'
+    generated.update({
+        'knowledge_bases': [base.format(service='bedrock') + 'knowledge-base/ABC123DE45'],
+        'vector_indexes': [base.format(service='s3vectors') + 'bucket/lma-s3v-123456abcdef/index/lma-kb-index'],
+        'state_machines': [base.format(service='states') + 'stateMachine:LMA-LMAVirtualParticipantScheduler'],
+        'schedule_groups': [base.format(service='scheduler') + 'schedule-group/LMA-vp-schedules'],
+    })
+    return generated
+
+
 class RuntimeBoundaryTests(unittest.TestCase):
+    def test_additional_services_fit_and_use_exact_verified_resources(self):
+        generated = service_fixture()
+        policy = boundary.build_policy(ACCOUNT, REGION, BUCKET, DOCS, generated_resources=generated)
+        self.assertLessEqual(len(json.dumps(policy, separators=(',', ':'))), 6144)
+        scopes = next(s['NotResource'] for s in policy['Statement'] if 'NotResource' in s and 'NotAction' in s)
+        for group in ['knowledge_bases', 'vector_indexes', 'state_machines']:
+            self.assertIn(generated[group][0], scopes)
+        self.assertIn(f'arn:aws:scheduler:{REGION}:{ACCOUNT}:schedule/LMA-vp-schedules/*', scopes)
+
+    def test_model_scope_must_be_approved_not_arbitrary(self):
+        models = {'profiles': [f'arn:aws:bedrock:{REGION}:{ACCOUNT}:inference-profile/global.moonshotai.kimi-k3'],
+                  'models': ['arn:aws:bedrock:us-east-1::foundation-model/moonshotai.kimi-k3']}
+        policy = boundary.build_policy(ACCOUNT, REGION, BUCKET, model_resources=models)
+        scopes = next(s['NotResource'] for s in policy['Statement'] if 'NotResource' in s and 'NotAction' in s)
+        self.assertIn(models['models'][0], scopes)
+        with self.assertRaises(ValueError):
+            boundary.build_policy(ACCOUNT, REGION, BUCKET, model_resources={'profiles': [], 'models': ['*']})
+
+    def test_combined_model_and_service_ceiling_fits_without_omitting_scope(self):
+        profiles = [f'arn:aws:bedrock:{REGION}:{ACCOUNT}:inference-profile/{name}'
+                    for name in PROFILES]
+        models = [f'arn:aws:bedrock:{destination}::foundation-model/{name.removeprefix("global.")}'
+                  for name in PROFILES for destination in ['', REGION]]
+        models.append(f'arn:aws:bedrock:{REGION}::foundation-model/amazon.titan-embed-text-v2:0')
+        policy = boundary.build_policy(ACCOUNT, REGION, BUCKET, DOCS,
+                                       generated_resources=service_fixture(),
+                                       model_resources={'profiles': profiles, 'models': models})
+        self.assertLessEqual(len(json.dumps(policy, separators=(',', ':'))), 6144)
+        scopes = next(s['NotResource'] for s in policy['Statement'] if 'NotResource' in s and 'NotAction' in s)
+        self.assertTrue(set(profiles + models).issubset(scopes))
+
     def test_combined_services_fit_and_enforce_launch_cluster(self):
         generated = generated_fixture()
         policy = boundary.build_policy(ACCOUNT, REGION, BUCKET, DOCS, generated_resources=generated)
@@ -63,7 +107,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
         policy = boundary.build_policy(ACCOUNT, REGION, BUCKET, DOCS, generated_resources=generated)
         self.assertLessEqual(len(json.dumps(policy, separators=(',', ':'))), 6144)
         scopes = next(s for s in policy['Statement'] if 'NotResource' in s and
-                      'iam:PassRole' in s.get('Action', []))['NotResource']
+                      'NotAction' in s)['NotResource']
         self.assertIn(generated['kms'][0], scopes)
         self.assertIn(generated['appsync'][0] + '/*', scopes)
         for invalid in [[], {'unknown': []}, {'kms': ['*']},

@@ -1,7 +1,7 @@
 [
   {
     "ParameterKey": "AcsConnectionString",
-    "ParameterValue": "FILL_IN_FROM_SECRET_STORE"
+    "ParameterValue": ""
   },
   {
     "ParameterKey": "AdminEmail",
@@ -85,7 +85,7 @@
   },
   {
     "ParameterKey": "ElevenLabsApiKey",
-    "ParameterValue": "FILL_IN_FROM_SECRET_STORE"
+    "ParameterValue": ""
   },
   {
     "ParameterKey": "EnableAppSyncApiCache",
@@ -181,7 +181,7 @@
   },
   {
     "ParameterKey": "SimliApiKey",
-    "ParameterValue": "FILL_IN_FROM_SECRET_STORE"
+    "ParameterValue": ""
   },
   {
     "ParameterKey": "SimliFaceId",
@@ -193,7 +193,7 @@
   },
   {
     "ParameterKey": "TavilyApiKey",
-    "ParameterValue": "FILL_IN_FROM_SECRET_STORE"
+    "ParameterValue": ""
   },
   {
     "ParameterKey": "TranscribeContentRedactionType",
@@ -289,7 +289,7 @@
   },
   {
     "ParameterKey": "ZoomMeetingSdkClientSecret",
-    "ParameterValue": "FILL_IN_FROM_SECRET_STORE"
+    "ParameterValue": ""
   },
   {
     "ParameterKey": "SsoPoolMode",
