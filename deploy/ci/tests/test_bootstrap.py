@@ -16,6 +16,22 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(self.template['Outputs']['DeploymentRoleArn']['Condition'], 'DeploymentEnabled')
         self.assertIn('DeploymentInputs', self.template['Rules'])
 
+    def test_change_sets_pin_service_role_and_private_release_source(self):
+        statements = [s for s in self.template['Resources']['DeploymentRole']['Properties']['Policies'][0]['PolicyDocument']['Statement']
+                      if isinstance(s, dict)]
+        pinned = next(s for s in statements if s.get('Sid') == 'CreatePinnedReleaseChangeSet')
+        self.assertEqual(pinned['Condition']['ArnEquals']['cloudformation:RoleArn'], 'CloudFormationServiceRoleArn')
+        self.assertEqual(pinned['Condition']['StringLike']['cloudformation:TemplateUrl'],
+                         'https://s3.${AWS::Region}.${AWS::URLSuffix}/${Artifacts}/releases/*/lma-main.yaml')
+        self.assertEqual(pinned['Resource'][0], 'Production')
+        self.assertIn('DenyUnapprovedChangeSetRole', [s.get('Sid') for s in statements])
+        self.assertIn('DenyUnapprovedChangeSetSource', [s.get('Sid') for s in statements])
+        other = [s for s in statements if s.get('Effect') == 'Allow' and 'cloudformation:CreateChangeSet'
+                 in ([s.get('Action')] if isinstance(s.get('Action'), str) else s.get('Action', []))
+                 and s is not pinned]
+        self.assertEqual(len(other), 1)
+        self.assertEqual(other[0]['Sid'], 'PermitReviewedSamTransform')
+
     def test_runner_has_no_deployment_permissions(self):
         policies = self.template['Resources']['RunnerRole']['Properties']['Policies']
         statements = policies[0]['PolicyDocument']['Statement']

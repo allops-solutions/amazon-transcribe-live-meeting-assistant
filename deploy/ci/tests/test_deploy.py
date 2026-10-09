@@ -87,6 +87,14 @@ class SafetyTests(unittest.TestCase):
     def test_dev_boundary_remains_optional(self):
         deploy.validate_application_boundary([], '135755363077', 'dev')
 
+    def test_cfn_role_rejects_legacy_admin_cross_account_and_wildcard(self):
+        role = 'arn:aws:iam::009853297978:role/lma/isolation/LMA-CloudFormation'
+        deploy.validate_cloudformation_role(role, '009853297978')
+        for invalid in ['', role.replace('009853297978', '135755363077'),
+                        'arn:aws:iam::009853297978:role/Admin', role + '*']:
+            with self.subTest(role=invalid), self.assertRaises(ValueError):
+                deploy.validate_cloudformation_role(invalid, '009853297978')
+
     def run_main(self, action, environment, existing=None):
         account = deploy.ACCOUNTS[environment]
         cfn = MagicMock()
@@ -105,7 +113,7 @@ class SafetyTests(unittest.TestCase):
         with patch.dict(os.environ, {
             'LMA_ARTIFACT_BUCKET': 'test-us-east-1', 'GITHUB_SHA': 'abc', 'GITHUB_RUN_ATTEMPT': '1',
             'LMA_CONFIG_SECRET_ARN': f'arn:aws:secretsmanager:us-east-1:{account}:secret:test',
-            'LMA_CFN_ROLE_ARN': f'arn:aws:iam::{account}:role/cfn',
+            'LMA_CFN_ROLE_ARN': f'arn:aws:iam::{account}:role/lma/isolation/LMA-CloudFormation',
             'LMA_APPLICATION_BOUNDARY_ARN': boundary,
         }), patch.object(deploy.boto3, 'Session', return_value=session), patch.object(deploy, 'describe_stack', return_value=existing), patch.object(deploy.sys, 'argv', ['deploy.py', action, '--environment', environment, '--run-id', '123', '--template-url', url]):
             deploy.main()

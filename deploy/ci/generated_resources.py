@@ -15,6 +15,10 @@ RESOURCE_TYPES = {
     'AWS::KMS::Key': ('kms', 'kms', 'key/'),
     'AWS::AppSync::GraphQLApi': ('appsync', 'appsync', 'apis/'),
     'AWS::AppSync::Api': ('appsync', 'appsync', 'apis/'),
+    'AWS::Cognito::UserPool': ('cognito', 'cognito-idp', 'userpool/'),
+    'AWS::CloudFront::Distribution': ('cloudfront', 'cloudfront', 'distribution/'),
+    'AWS::ECS::Cluster': ('ecs_clusters', 'ecs', 'cluster/'),
+    'AWS::ECS::TaskDefinition': ('ecs_task_definitions', 'ecs', 'task-definition/'),
 }
 STABLE_STACK_STATES = {'CREATE_COMPLETE', 'UPDATE_COMPLETE', 'UPDATE_ROLLBACK_COMPLETE'}
 STABLE_RESOURCE_STATES = {'CREATE_COMPLETE', 'UPDATE_COMPLETE', 'IMPORT_COMPLETE'}
@@ -22,8 +26,17 @@ STABLE_RESOURCE_STATES = {'CREATE_COMPLETE', 'UPDATE_COMPLETE', 'IMPORT_COMPLETE
 
 def validate_arn(kind, value, account, region, partition='aws'):
     """Validate exact account/region ARNs, never wildcard or cross-account scopes."""
-    resource = {'kms': r'key/[0-9a-fA-F-]{36}', 'appsync': r'apis/[A-Za-z0-9]{10,40}'}[kind]
-    pattern = rf'arn:{re.escape(partition)}:{kind}:{re.escape(region)}:{account}:{resource}'
+    patterns = {
+        'kms': ('kms', r'key/[0-9a-fA-F-]{36}'),
+        'appsync': ('appsync', r'apis/[A-Za-z0-9]{10,40}'),
+        'cognito': ('cognito-idp', rf'userpool/{re.escape(region)}_[A-Za-z0-9]+'),
+        'cloudfront': ('cloudfront', r'distribution/[A-Z0-9]{10,20}'),
+        'ecs_clusters': ('ecs', r'cluster/[A-Za-z0-9_-]{1,255}'),
+        'ecs_task_definitions': ('ecs', r'task-definition/[A-Za-z0-9_-]{1,255}:[1-9][0-9]*'),
+    }
+    service, resource = patterns[kind]
+    arn_region = '' if kind == 'cloudfront' else region
+    pattern = rf'arn:{re.escape(partition)}:{service}:{re.escape(arn_region)}:{account}:{resource}'
     if not re.fullmatch(pattern, value):
         raise ValueError('Generated resource ARN is not an exact supported account/region resource')
     return value
@@ -36,7 +49,7 @@ def collect(cfn, account, region, partition='aws'):
     prefix = f'arn:{partition}:cloudformation:{region}:{account}:stack/'
     if not root_arn.startswith(prefix + 'LMA/') or root.get('ParentId'):
         raise ValueError('Unexpected production root stack identity')
-    resources = {'kms': [], 'appsync': []}
+    resources = {group: [] for group, _, _ in RESOURCE_TYPES.values()}
     seen = set()
 
     def walk(stack, parent=None):
@@ -66,8 +79,9 @@ def collect(cfn, account, region, partition='aws'):
                     walk(child, stack_arn)
                     continue
                 group, service, resource_prefix = RESOURCE_TYPES[kind]
+                arn_region = '' if service == 'cloudfront' else region
                 arn = physical if physical.startswith('arn:') else (
-                    f'arn:{partition}:{service}:{region}:{account}:{resource_prefix}{physical}')
+                    f'arn:{partition}:{service}:{arn_region}:{account}:{resource_prefix}{physical}')
                 validate_arn(group, arn, account, region, partition)
                 resources[group].append(arn)
 
