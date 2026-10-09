@@ -56,6 +56,8 @@ class PracticalAccessTests(unittest.TestCase):
         resources = next(s for s in policy['Statement'] if s['Sid'] == 'NamedApplicationServices')['Resource']
         self.assertIn('arn:aws:scheduler:us-east-1:009853297978:schedule/LMA-*/*', resources)
         self.assertIn('arn:aws:logs:us-east-1:009853297978:log-group:/aws/vendedlogs/states/LMA-*', resources)
+        self.assertIn('arn:aws:logs:us-east-1:009853297978:log-group:LMA-*', resources)
+        self.assertIn('arn:aws:logs:us-east-1:009853297978:log-group:/LMA/*', resources)
         self.assertTrue(any('event-source-mapping:*' in arn for arn in resources))
 
     def test_preflight_is_default_and_skips_all_writes(self):
