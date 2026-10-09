@@ -2372,6 +2372,7 @@ Resources:
     Metadata:
       BuildMethod: python3.12
     Properties:
+      LayerName: !If [HasPermissionsBoundary, !Sub '${AWS::StackName}-TranscriptEnrichment', !Ref 'AWS::NoValue']
       Description: !Sub "Transcript Enrichment Python Layer for stack: ${AWS::StackName}"
       ContentUri: ../source/lambda_layers/transcript_enrichment_layer
       CompatibleArchitectures:

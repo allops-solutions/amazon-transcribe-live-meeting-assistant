@@ -70,6 +70,14 @@ class ApplicationBoundaryTests(unittest.TestCase):
                         self.assertEqual(name[2], 'AWS::NoValue')
         self.assertEqual(count, 3)
 
+    def test_sam_layers_and_legacy_schedule_groups_are_scoped(self):
+        layer = self.templates['lma-ai-stack/deployment/lma-ai-stack.yaml']['Resources']['TranscriptEnrichmentPythonLayer']
+        self.assertEqual(layer['Properties']['LayerName'],
+                         ['HasPermissionsBoundary', '${AWS::StackName}-TranscriptEnrichment', 'AWS::NoValue'])
+        group = self.templates['lma-virtual-participant-stack/template.yaml']['Resources']['ScheduleGroup']
+        self.assertEqual(group['Properties']['Name'],
+                         ['HasPermissionsBoundary', '${AWS::StackName}-Schedules', 'AWS::NoValue'])
+
     def test_all_explicit_roles_have_conditional_boundary(self):
         count = 0
         for path, template in self.templates.items():
