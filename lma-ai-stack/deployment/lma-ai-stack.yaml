@@ -7271,7 +7271,9 @@ Resources:
     Condition: ShouldEnableMCPServer
     Properties:
       Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
-      RoleName: !Sub "${LMAStackName}-MCPServerGatewayRole"
+      # Fixed names trigger a pre-create GetRole lookup of a nonexistent role
+      # against the root IAM path. Use CFN-generated names under scoped access.
+      RoleName: !If [HasPermissionsBoundary, !Ref AWS::NoValue, !Sub '${LMAStackName}-MCPServerGatewayRole']
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
