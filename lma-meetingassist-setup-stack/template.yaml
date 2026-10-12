@@ -379,13 +379,13 @@ Resources:
             Statement:
               - Action:
                   - cloudformation:DescribeStacks
-                  - cloudformation:DescribeStackResource
+                  - cloudformation:DescribeStackResources
                 Effect: Allow
                 Resource:
                   - !Ref AISTACK
               - Action:
                   - cloudformation:DescribeStacks
-                  - cloudformation:DescribeStackResource
+                  - cloudformation:DescribeStackResources
                 Effect: Allow
                 Resource:
                   - !Ref COGNITOSTACK
