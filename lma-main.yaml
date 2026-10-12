@@ -2724,7 +2724,10 @@ Resources:
         CloudFrontPriceClass: !Ref CloudFrontPriceClass
         CloudFrontAllowedGeos: !Ref CloudFrontAllowedGeos
         IsLambdaAgentAssistEnabled: "true"
-        AgentAssistExistingLambdaFunctionArn: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:STRANDS-${AWS::StackName}-MeetingAssist"
+        AgentAssistExistingLambdaFunctionArn: !If
+          - HasPermissionsBoundary
+          - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-StrandsMeetingAssist'
+          - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:STRANDS-${AWS::StackName}-MeetingAssist'
         MeetingRecordExpirationInDays: !Ref MeetingRecordExpirationInDays
         TranscriptionExpirationInDays: !Ref TranscriptionExpirationInDays
         TranscriptLambdaHookFunctionArn: !Ref TranscriptLambdaHookFunctionArn
@@ -3037,7 +3040,7 @@ Resources:
         LMAStackName: !Ref AWS::StackName
         StrandsLambdaArn: !If
           - ShouldUseAnyStrandsBedrock
-          - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:STRANDS-${AWS::StackName}-MeetingAssist"
+          - !GetAtt MEETINGASSISTSETUP.Outputs.StrandsMeetingAssistFunctionArn
           - ""
         EnableAudioRecording: !Ref EnableAudioRecording
         ZoomMeetingSdkClientId: !Ref ZoomMeetingSdkClientId

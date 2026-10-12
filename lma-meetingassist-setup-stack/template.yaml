@@ -160,6 +160,7 @@ Resources:
   Boto3Layer:
     Type: "AWS::Lambda::LayerVersion"
     Properties:
+      LayerName: !If [HasPermissionsBoundary, !Sub '${AWS::StackName}-Boto3', !Ref AWS::NoValue]
       Content: ./boto3_layer
       CompatibleRuntimes:
         - python3.12
@@ -309,7 +310,7 @@ Resources:
     # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency as it scales based on demand"
     # checkov:skip=CKV_AWS_173: "Environment variables do not contain sensitive data - only configuration values like feature flags and non-sensitive settings"
     Properties:
-      FunctionName: !Sub "STRANDS-${LMAStackName}-MeetingAssist"
+      FunctionName: !If [HasPermissionsBoundary, !Sub '${LMAStackName}-StrandsMeetingAssist', !Sub 'STRANDS-${LMAStackName}-MeetingAssist']
       Role: !GetAtt StrandsMeetingAssistFunctionRole.Arn
       Handler: strands_meeting_assist_function.handler
       Runtime: python3.12

@@ -1490,7 +1490,7 @@ Resources:
                     aws lambda publish-layer-version --layer-name "$STACK_NAME-mcp-servers" --description "MCP servers and dependencies" --zip-file fileb://mcp-layer.zip --compatible-runtimes python3.12 --query 'Version' --output text > /tmp/version.txt;
                   fi
                 - echo "Published layer version $(cat /tmp/version.txt)"
-                - FUNCTION_NAME="STRANDS-${LMA_STACK_NAME}-MeetingAssist"
+                - FUNCTION_NAME="$MEETING_ASSIST_FUNCTION_NAME"
                 - echo "Target Lambda function $FUNCTION_NAME"
                 - |
                   if aws lambda get-function --function-name "$FUNCTION_NAME" > /dev/null 2>&1; then
@@ -1517,6 +1517,8 @@ Resources:
             Value: !Ref AWS::StackName
           - Name: LMA_STACK_NAME
             Value: !Ref LMAStackName
+          - Name: MEETING_ASSIST_FUNCTION_NAME
+            Value: !If [HasPermissionsBoundary, !Sub '${LMAStackName}-StrandsMeetingAssist', !Sub 'STRANDS-${LMAStackName}-MeetingAssist']
           - Name: MCP_SERVERS_TABLE
             Value: !Ref MCPServersTable
           - Name: AWS_ACCOUNT_ID
