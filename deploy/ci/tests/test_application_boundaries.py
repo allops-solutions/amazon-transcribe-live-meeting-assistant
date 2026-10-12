@@ -78,6 +78,51 @@ class ApplicationBoundaryTests(unittest.TestCase):
         self.assertEqual(group['Properties']['Name'],
                          ['HasPermissionsBoundary', '${AWS::StackName}-Schedules', 'AWS::NoValue'])
 
+    def test_all_lambda_layer_and_explicit_function_names_are_scoped(self):
+        layers = 0
+        for path, template in self.templates.items():
+            for logical, resource in template['Resources'].items():
+                resource_type = resource['Type']
+                if resource_type in {'AWS::Lambda::LayerVersion', 'AWS::Serverless::LayerVersion'}:
+                    field = 'LayerName'
+                    layers += 1
+                elif resource_type in {'AWS::Lambda::Function', 'AWS::Serverless::Function'}:
+                    field = 'FunctionName'
+                    if field not in resource['Properties']:
+                        continue  # CloudFormation-generated names include the stack prefix.
+                else:
+                    continue
+                with self.subTest(template=path, resource=logical):
+                    name = resource['Properties'][field]
+                    if isinstance(name, list):
+                        self.assertEqual(name[0], 'HasPermissionsBoundary')
+                        name = name[1]
+                    self.assertTrue(name.startswith(('${AWS::StackName}-', '${LMAStackName}-')))
+        self.assertEqual(layers, 3)
+
+    def test_meetingassist_scoped_names_preserve_legacy_defaults(self):
+        resources = self.templates['lma-meetingassist-setup-stack/template.yaml']['Resources']
+        self.assertEqual(resources['Boto3Layer']['Properties']['LayerName'],
+                         ['HasPermissionsBoundary', '${AWS::StackName}-Boto3', 'AWS::NoValue'])
+        self.assertEqual(resources['StrandsMeetingAssistFunction']['Properties']['FunctionName'],
+                         ['HasPermissionsBoundary', '${LMAStackName}-StrandsMeetingAssist',
+                          'STRANDS-${LMAStackName}-MeetingAssist'])
+        main = self.templates['lma-main.yaml']['Resources']
+        self.assertEqual(main['VIRTUALPARTICIPANTSTACK']['Properties']['Parameters']['StrandsLambdaArn'],
+                         ['ShouldUseAnyStrandsBedrock',
+                          'MEETINGASSISTSETUP.Outputs.StrandsMeetingAssistFunctionArn', ''])
+        arn = main['AISTACK']['Properties']['Parameters']['AgentAssistExistingLambdaFunctionArn']
+        self.assertEqual(arn[0], 'HasPermissionsBoundary')
+        self.assertTrue(arn[1].endswith(':function:${AWS::StackName}-StrandsMeetingAssist'))
+        self.assertTrue(arn[2].endswith(':function:STRANDS-${AWS::StackName}-MeetingAssist'))
+        project = self.templates['lma-ai-stack/deployment/lma-ai-stack.yaml']['Resources']['MCPLayerBuildProject']
+        env = {item['Name']: item['Value'] for item in project['Properties']['Environment']['EnvironmentVariables']}
+        self.assertEqual(env['MEETING_ASSIST_FUNCTION_NAME'],
+                         resources['StrandsMeetingAssistFunction']['Properties']['FunctionName'])
+        buildspec = project['Properties']['Source']['BuildSpec']
+        self.assertIn('FUNCTION_NAME="$MEETING_ASSIST_FUNCTION_NAME"', buildspec)
+        self.assertNotIn('FUNCTION_NAME="STRANDS-', buildspec)
+
     def test_all_explicit_roles_have_conditional_boundary(self):
         count = 0
         for path, template in self.templates.items():
