@@ -81,6 +81,34 @@ class MeetingAssistSetupTests(unittest.TestCase):
         self.assertTrue(any(stmt["Effect"] == "Allow" and "cloudformation:DescribeStackResources" in stmt.get("Action", [])
                             for stmt in boundary))
 
+    def test_bounded_vp_bootstrap_never_calls_iam(self):
+        template = yaml.load((ROOT / "lma-virtual-participant-stack/template.yaml").read_text(), Loader=yaml.BaseLoader)
+        properties = template["Resources"]["ECSRoleCustomResourceFunction"]["Properties"]
+        self.assertEqual(properties["Environment"]["Variables"]["ENSURE_ECS_SERVICE_ROLE"],
+                         ["HasPermissionsBoundary", "false", "true"])
+        response = MagicMock()
+        scope = {}
+        with patch.dict("sys.modules", {"cfnresponse": response}), \
+                patch.dict(os.environ, {"ENSURE_ECS_SERVICE_ROLE": "false"}), \
+                patch("boto3.client") as client:
+            exec(properties["Code"]["ZipFile"], scope)
+            for request in ("Create", "Update", "Delete"):
+                scope["handler"]({"RequestType": request}, MagicMock())
+            client.assert_not_called()
+        self.assertEqual(response.send.call_count, 3)
+
+    def test_unbounded_vp_bootstrap_preserves_existing_role_check(self):
+        template = yaml.load((ROOT / "lma-virtual-participant-stack/template.yaml").read_text(), Loader=yaml.BaseLoader)
+        scope = {}
+        with patch.dict("sys.modules", {"cfnresponse": MagicMock()}), \
+                patch.dict(os.environ, {"ENSURE_ECS_SERVICE_ROLE": "true"}), \
+                patch("boto3.client", return_value=MagicMock()) as client:
+            exec(template["Resources"]["ECSRoleCustomResourceFunction"]["Properties"]["Code"]["ZipFile"], scope)
+            scope["handler"]({"RequestType": "Create"}, MagicMock())
+            client.assert_called_once_with("iam")
+            client.return_value.get_role.assert_called_once_with(RoleName="AWSServiceRoleForECS")
+            client.return_value.create_service_linked_role.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
