@@ -18,10 +18,15 @@ lam = boto3.client('lambda')
 
 def getStackResource(stackName, logicaResourceId):
     print(f"LogicalResourceId={logicaResourceId}")
-    physicalResourceId = cf.describe_stack_resource(
+    resources = cf.describe_stack_resources(
         StackName=stackName,
         LogicalResourceId=logicaResourceId
-    )["StackResourceDetail"]["PhysicalResourceId"]
+    )["StackResources"]
+    matches = [resource for resource in resources
+               if resource.get("LogicalResourceId") == logicaResourceId]
+    if len(matches) != 1:
+        raise ValueError(f"Expected one stack resource for {logicaResourceId}")
+    physicalResourceId = matches[0]["PhysicalResourceId"]
     print(f"PhysicalResourceId={physicalResourceId}")
     return (physicalResourceId)
 

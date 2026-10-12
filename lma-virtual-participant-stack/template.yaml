@@ -1014,9 +1014,15 @@ Resources:
       Runtime: python3.12
       TracingConfig:
         Mode: Active
+      Environment:
+        Variables:
+          # Bounded deployments provision service-linked roles through CFN,
+          # never through an application Lambda with IAM administration.
+          ENSURE_ECS_SERVICE_ROLE: !If [HasPermissionsBoundary, "false", "true"]
       Code:
         ZipFile: !Sub |
           import boto3
+          import os
           from botocore.exceptions import ClientError
           import cfnresponse
 
@@ -1025,7 +1031,7 @@ Resources:
             request_type = event['RequestType']
             print(request_type)
 
-            if request_type == 'Create':
+            if request_type == 'Create' and os.environ.get('ENSURE_ECS_SERVICE_ROLE', 'true') == 'true':
               desired_role_name = "AWSServiceRoleForECS"
               iam_client = boto3.client('iam')
 
