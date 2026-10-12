@@ -88,6 +88,18 @@ class ApplicationBoundaryTests(unittest.TestCase):
                         self.assertEqual(resource['Properties']['PermissionsBoundary'], BOUNDARY)
         self.assertGreaterEqual(count, 102)
 
+    def test_application_roles_do_not_preflight_fixed_names_when_bounded(self):
+        count = 0
+        for path, template in self.templates.items():
+            for logical, resource in template['Resources'].items():
+                if resource['Type'] == 'AWS::IAM::Role' and 'RoleName' in resource['Properties']:
+                    count += 1
+                    with self.subTest(template=path, role=logical):
+                        name = resource['Properties']['RoleName']
+                        self.assertEqual(name[:2], ['HasPermissionsBoundary', 'AWS::NoValue'])
+                        self.assertTrue(name[2].startswith('${LMAStackName}-'))
+        self.assertEqual(count, 1)
+
     def test_sam_generated_function_roles_have_conditional_boundary(self):
         count = 0
         for path, template in self.templates.items():
