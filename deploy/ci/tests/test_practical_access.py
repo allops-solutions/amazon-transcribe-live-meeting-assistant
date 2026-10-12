@@ -51,9 +51,24 @@ class PracticalAccessTests(unittest.TestCase):
         _, policy, _ = access.policies('009853297978')
         linked = next(s for s in policy['Statement'] if s['Sid'] == 'RequiredServiceLinkedRolesOnly')
         self.assertEqual(linked['Action'], 'iam:CreateServiceLinkedRole')
-        self.assertEqual(len(linked['Resource']), 3)
+        self.assertEqual(len(linked['Resource']), 6)
         self.assertTrue(all('009853297978:role/aws-service-role/' in arn for arn in linked['Resource']))
-        self.assertEqual(len(linked['Condition']['StringEquals']['iam:AWSServiceName']), 3)
+        self.assertEqual(len(linked['Condition']['StringEquals']['iam:AWSServiceName']), 6)
+        for service, name in [('replicator.lambda.amazonaws.com', 'AWSServiceRoleForLambdaReplicator'),
+                              ('logger.cloudfront.amazonaws.com', 'AWSServiceRoleForCloudFrontLogger'),
+                              ('ops.apigateway.amazonaws.com', 'AWSServiceRoleForAPIGateway')]:
+            self.assertIn(f'arn:aws:iam::009853297978:role/aws-service-role/{service}/{name}', linked['Resource'])
+            self.assertIn(service, linked['Condition']['StringEquals']['iam:AWSServiceName'])
+
+    def test_deleted_mapping_read_is_provisioning_only(self):
+        boundary, provisioning, _ = access.policies('009853297978')
+        read = next(s for s in provisioning['Statement'] if s['Sid'] == 'ObserveDeletedEventSourceMappings')
+        self.assertEqual(read['Action'], 'lambda:GetEventSourceMapping')
+        self.assertEqual(read['Resource'], '*')
+        self.assertEqual(read['Condition']['StringEquals']['aws:RequestedRegion'], 'us-east-1')
+        for s in boundary['Statement']:
+            if s['Effect'] == 'Allow' and s['Resource'] == '*':
+                self.assertNotIn('lambda:GetEventSourceMapping', s['Action'])
 
     def test_nested_stack_tagging_is_scoped(self):
         _, policy, _ = access.policies('009853297978')

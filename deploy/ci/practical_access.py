@@ -93,6 +93,8 @@ def validate(session, account):
             raise ValueError(f'{name}: {result["EvalDecision"]}, expected {expected}')
         print(f'PASS {name}: {expected}')
     cases = [
+        ('deleted-mapping-read', 'lambda:GetEventSourceMapping', '*', None, 'allowed'),
+        ('deleted-mapping-write-not-widened', 'lambda:DeleteEventSourceMapping', '*', None, 'implicitDeny'),
         ('bounded-role-create', 'iam:CreateRole', role, boundary, 'allowed'),
         ('unbounded-role-create', 'iam:CreateRole', role, None, 'explicitDeny'),
         ('wrong-boundary', 'iam:CreateRole', role, boundary + '-other', 'explicitDeny'),
@@ -132,6 +134,19 @@ def validate(session, account):
         if result['EvalDecision'] != expected:
             raise ValueError(f'{name}: {result["EvalDecision"]}, expected {expected}')
         print(f'PASS {name}: {expected}')
+    for service, name in [('replicator.lambda.amazonaws.com', 'AWSServiceRoleForLambdaReplicator'),
+                          ('logger.cloudfront.amazonaws.com', 'AWSServiceRoleForCloudFrontLogger'),
+                          ('ops.apigateway.amazonaws.com', 'AWSServiceRoleForAPIGateway'),
+                          ('other.amazonaws.com', 'AWSServiceRoleForOther')]:
+        target = f'arn:aws:iam::{account}:role/aws-service-role/{service}/{name}'
+        for action, expected in [('iam:CreateServiceLinkedRole', 'implicitDeny' if service == 'other.amazonaws.com' else 'allowed'),
+                                 ('iam:DeleteRole', 'implicitDeny'), ('iam:PassRole', 'implicitDeny')]:
+            extra = [{'ContextKeyName': 'iam:AWSServiceName', 'ContextKeyValues': [service], 'ContextKeyType': 'string'}]
+            result = iam.simulate_custom_policy(PolicyInputList=[json.dumps(common), json.dumps(provision)],
+                ActionNames=[action], ResourceArns=[target], ContextEntries=contexts + extra)['EvaluationResults'][0]
+            if result['EvalDecision'] != expected:
+                raise ValueError(f'service-linked {service} {action}: {result["EvalDecision"]}, expected {expected}')
+            print(f'PASS service-linked {service} {action}: {expected}')
     # True boundary evaluation: a malicious application's broad identity policy
     # cannot grant IAM administration through the boundary or assume another role.
     broad = json.dumps({'Version': '2012-10-17', 'Statement': [{'Effect': 'Allow', 'Action': '*', 'Resource': '*'}]})
@@ -142,6 +157,7 @@ def validate(session, account):
         ('s3:GetObject', 'arn:aws:s3:::other-production-data/test', 'implicitDeny'),
         ('bedrock:InvokeModel', 'arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0', 'allowed'),
         ('transcribe:StartStreamTranscription', '*', 'allowed'),
+        ('lambda:GetEventSourceMapping', '*', 'implicitDeny'),
     ]:
         result = iam.simulate_custom_policy(PolicyInputList=[broad],
             PermissionsBoundaryPolicyInputList=[json.dumps(common)], ActionNames=[action],
