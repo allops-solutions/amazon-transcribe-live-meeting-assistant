@@ -93,6 +93,25 @@ appeared in the UI. The probe is reusable standalone:
 
 ## Notes
 
+### Isolated OAuth gateway validation
+
+After the OAuth interceptor revision is deployed, run:
+
+```bash
+AWS_PROFILE=default .venv/bin/python integ-tests/mcp_oauth_probe.py \
+  --stack LMA-CI-254333 --owner-run 38377254333 \
+  --meeting-link https://meet.google.com/your-test-link
+```
+
+This helper is restricted to dev account `135755363077` and the exact retained
+CI-owned stack. It creates a temporary non-admin Cognito user (invitation
+suppressed), obtains a real access token for the MCP client, and tests schedule,
+duplicate prevention, update and cancellation through the HTTP AgentCore gateway.
+It verifies owner/time/language/status in DynamoDB, cancels the future test VP,
+and deletes its temporary user. Secrets and tokens stay in memory. A supplied
+test link must be disposable; the helper never submits an immediate join.
+This proves the deployed OAuth gateway path, not Quick UI or Calendar retrieval.
+
 - `/health/check` is the **ALB target-group** health path and is deliberately
   NOT routed through the public CloudFront distribution (which only forwards
   `/api/v1/ws`), so it can't be probed over the internet. The transcriber health

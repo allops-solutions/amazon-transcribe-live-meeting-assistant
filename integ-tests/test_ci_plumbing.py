@@ -33,6 +33,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ci_assume_role  # noqa: E402
 import cognito_test_user  # noqa: E402
 import kds_pipeline_probe  # noqa: E402
+import mcp_oauth_probe  # noqa: E402
+
+
+def test_oauth_probe_unwraps_gateway_and_lambda_payloads():
+    vp = {"virtualParticipantId": "test-vp", "status": "CANCELLED"}
+    payload = {"result": {"content": [{"text": json.dumps({
+        "statusCode": 200, "body": json.dumps({"content": [{"text": json.dumps(vp)}]})
+    })}]}}
+    assert vp in list(mcp_oauth_probe.result_objects(payload))
+
+
+@pytest.mark.parametrize("payload", [{"isError": True}, {"error": {}}, {"statusCode": 403}])
+def test_oauth_probe_does_not_mistake_tool_errors_for_success(payload):
+    with pytest.raises(RuntimeError):
+        list(mcp_oauth_probe.result_objects(payload))
+
+
+def test_oauth_probe_refuses_production_before_any_user_or_meeting_writes(monkeypatch):
+    session = mock.Mock()
+    session.client.return_value.get_caller_identity.return_value = {"Account": "009853297978"}
+    monkeypatch.setattr(mcp_oauth_probe.boto3, "Session", mock.Mock(return_value=session))
+    with pytest.raises(ValueError, match="dev AWS account"):
+        mcp_oauth_probe.run("LMA-CI-254333", "38377254333", "https://meet.google.com/vng-fbkk-chh")
+    assert session.client.call_args_list == [mock.call("sts")]
+
+
+def test_oauth_probe_refuses_original_dev_before_resource_lookup(monkeypatch):
+    session = mock.Mock()
+    session.client.return_value.get_caller_identity.return_value = {"Account": "135755363077"}
+    monkeypatch.setattr(mcp_oauth_probe.boto3, "Session", mock.Mock(return_value=session))
+    with pytest.raises(ValueError, match="exact isolated stack"):
+        mcp_oauth_probe.run("LMA-Dev", "38377254333", "https://meet.google.com/vng-fbkk-chh")
+    assert session.client.call_args_list == [mock.call("sts")]
 
 
 def _cleanup_clients(monkeypatch, detail=None):
