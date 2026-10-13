@@ -47,8 +47,10 @@ optional engine or voice integration is enabled merely by this merge.
 2. Deploy the integration revision through the dev CI lane. Production remains
    restricted to `allops-main`; dev accepts maintained feature branches allowed
    explicitly by the GitHub dev environment. `keep_dev=true` leaves the run-owned
-   `LMA-CI-<run-id>` stack up for acceptance, with data retention enabled. It never
+   `LMA-CI-<last-six-run-id-digits>` stack up for acceptance, with data retention enabled. It never
    targets the existing `LMA-Dev` stack. Otherwise automatic cleanup remains on.
+   The full run ID is recorded in ownership tags; a short-name collision fails
+   closed rather than updating another run's stack.
 3. Verify Google SSO and the real Quick connector user identity.
 4. Verify Google Meet schedule, duplicate prevention, reschedule and explicit
    Calendar cancellation against the same VP.

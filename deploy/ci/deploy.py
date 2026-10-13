@@ -18,12 +18,23 @@ ACCOUNTS = {"production": "009853297978", "dev": "135755363077"}
 REPOSITORY = "allops-solutions/amazon-transcribe-live-meeting-assistant"
 
 
+def dev_stack_name(run_id):
+    """Keep nested Lambda/Scheduler names within limits; full run ID stays in tags.
+
+    A suffix collision never overwrites a stack: existing dev stacks are rejected
+    before deployment and cleanup checks the full owning run ID.
+    """
+    if not re.fullmatch(r"[0-9]+", run_id):
+        raise ValueError("Invalid workflow run ID")
+    return f"LMA-CI-{run_id[-6:]}"
+
+
 def check_context(environment, account, stack, run_id):
     if account != ACCOUNTS[environment]:
         raise ValueError("Authenticated AWS account does not match the target environment")
     if not re.fullmatch(r"[0-9]+", run_id):
         raise ValueError("Invalid workflow run ID")
-    expected = "LMA" if environment == "production" else f"LMA-CI-{run_id}"
+    expected = "LMA" if environment == "production" else dev_stack_name(run_id)
     if stack != expected:
         raise ValueError("Stack name does not match the protected target")
     if os.environ.get("GITHUB_REPOSITORY") != REPOSITORY:
@@ -65,7 +76,7 @@ def merge_parameters(base, overrides, environment):
 
 
 def validate_cleanup(stack, tags, run_id):
-    if stack != f"LMA-CI-{run_id}" or tags.get("LmaCiRun") != run_id or tags.get("LmaCiManaged") != "true":
+    if stack != dev_stack_name(run_id) or tags.get("LmaCiRun") != run_id or tags.get("LmaCiManaged") != "true":
         raise ValueError("Refusing cleanup: stack identity or workflow ownership tags do not match")
 
 
@@ -107,7 +118,7 @@ def main():
     parser.add_argument("--template-url")
     args = parser.parse_args()
     session = boto3.Session(region_name="us-east-1")
-    stack = "LMA" if args.environment == "production" else f"LMA-CI-{args.run_id}"
+    stack = "LMA" if args.environment == "production" else dev_stack_name(args.run_id)
     account = session.client("sts").get_caller_identity()["Account"]
     check_context(args.environment, account, stack, args.run_id)
     cfn = session.client("cloudformation")

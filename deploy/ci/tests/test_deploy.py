@@ -28,6 +28,16 @@ class SafetyTests(unittest.TestCase):
     def test_dev_context(self):
         deploy.check_context('dev', '135755363077', 'LMA-CI-123', '123')
 
+    def test_long_run_ids_do_not_exceed_nested_resource_name_limits(self):
+        run = '38375628033'
+        name = deploy.dev_stack_name(run)
+        self.assertEqual(name, 'LMA-CI-628033')
+        self.assertLessEqual(len(name), 13)
+        deploy.check_context('dev', '135755363077', name, run)
+        with self.assertRaises(ValueError):
+            deploy.validate_cleanup(name, {'LmaCiRun': '123628033', 'LmaCiManaged': 'true'}, run)
+        deploy.validate_cleanup(name, {'LmaCiRun': run, 'LmaCiManaged': 'true'}, run)
+
     def test_feature_branch_is_dev_only(self):
         with patch.dict(os.environ, {'GITHUB_REF': 'refs/heads/feature/upstream-v0.3.10'}):
             deploy.check_context('dev', '135755363077', 'LMA-CI-123', '123')
