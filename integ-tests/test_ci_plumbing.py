@@ -32,6 +32,58 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import ci_assume_role  # noqa: E402
 import cognito_test_user  # noqa: E402
+import kds_pipeline_probe  # noqa: E402
+
+
+def _cleanup_clients(monkeypatch, detail=None):
+    ddb = mock.Mock()
+    ddb.get_item.return_value = {"Item": detail} if detail else {}
+    session = mock.Mock()
+    session.client.side_effect = lambda name: ddb if name == "dynamodb" else mock.Mock()
+    monkeypatch.setattr(kds_pipeline_probe.boto3, "Session", mock.Mock(return_value=session))
+    monkeypatch.setattr(kds_pipeline_probe, "_event_sourcing_table", lambda *_args: "test-table")
+    return ddb
+
+
+def test_probe_cleanup_paginates_call_and_separate_listing_rows(monkeypatch):
+    call_id = "integ-test-kds-20261013T120000"
+    key = {"PK": {"S": "c#" + call_id}, "SK": {"S": "c#" + call_id}}
+    listing = {"PK": {"S": "cls#2026-10-13#s#02"}, "SK": {"S": "ts#time#id#" + call_id}}
+    ddb = _cleanup_clients(monkeypatch, {**key, "Owner": {"S": "integ-test@lma.aws"}})
+    # Even an empty filtered page may carry a continuation key.
+    ddb.scan.side_effect = [{"Items": [], "LastEvaluatedKey": key}, {"Items": [listing]}]
+    ddb.query.side_effect = [{"Items": [key], "LastEvaluatedKey": key}, {"Items": []}]
+    kds_pipeline_probe.cleanup("LMA-CI-123", call_id)
+    assert ddb.scan.call_count == ddb.query.call_count == 2
+    assert [c.kwargs["Key"] for c in ddb.delete_item.call_args_list] == [key, listing]
+    assert "#owner = :owner" in ddb.delete_item.call_args_list[-1].kwargs["ConditionExpression"]
+
+
+def test_probe_cleanup_removes_orphan_listing_even_without_detail(monkeypatch):
+    ddb = _cleanup_clients(monkeypatch)
+    listing = {"PK": {"S": "cls#date#s#01"}, "SK": {"S": "ts#time#id#synthetic"}}
+    ddb.scan.return_value = {"Items": [listing]}
+    ddb.query.return_value = {"Items": []}
+    kds_pipeline_probe.cleanup("LMA-CI-123", "integ-test-kds-20261013T120000")
+    assert ddb.delete_item.call_args.kwargs["Key"] == listing
+
+
+def test_probe_cleanup_rejects_foreign_owner_and_non_test_ids(monkeypatch):
+    ddb = _cleanup_clients(monkeypatch, {"Owner": {"S": "customer@allops.co"}})
+    with pytest.raises(ValueError, match="owner"):
+        kds_pipeline_probe.cleanup("LMA-CI-123", "integ-test-kds-20261013T120000")
+    with pytest.raises(ValueError, match="synthetic"):
+        kds_pipeline_probe.cleanup("LMA-CI-123", "customer-meeting")
+    ddb.delete_item.assert_not_called()
+
+
+def test_probe_cleanup_does_not_hide_delete_failures(monkeypatch):
+    ddb = _cleanup_clients(monkeypatch, {"Owner": {"S": "integ-test@lma.aws"}})
+    ddb.scan.return_value = {"Items": []}
+    ddb.query.return_value = {"Items": [{"PK": {"S": "pk"}, "SK": {"S": "sk"}}]}
+    ddb.delete_item.side_effect = RuntimeError("failed")
+    with pytest.raises(RuntimeError, match="failed"):
+        kds_pipeline_probe.cleanup("LMA-CI-123", "integ-test-kds-20261013T120000")
 
 
 @pytest.fixture(autouse=True)

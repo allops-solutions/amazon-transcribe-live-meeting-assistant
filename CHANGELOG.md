@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Dev CI can validate maintained feature branches in a separate run-owned stack,
+  optionally kept running for acceptance; production remains main-branch-only.
+- Synthetic pipeline test cleanup removes paginated detail and listing rows,
+  checks the test owner, and reports failures instead of leaving Unknown entries.
+
 - Integrate upstream LMA v0.3.10 while preserving allOps Google Meet VPs,
   Calendar scheduling/idempotency, Google Workspace SSO, company-wide meeting
   visibility, on-demand summary profiles, and bounded CI deployment roles.
