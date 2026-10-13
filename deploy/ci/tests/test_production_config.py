@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import unittest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 spec = importlib.util.spec_from_file_location('production_config', ROOT / 'deploy/ci/production_config.py')
@@ -11,6 +12,14 @@ spec.loader.exec_module(config)
 
 
 class ProductionConfigTests(unittest.TestCase):
+    def test_saved_ci_parameter_names_remain_supported_by_root_template(self):
+        template = yaml.load((ROOT / 'lma-main.yaml').read_text(), Loader=yaml.BaseLoader)
+        for environment in ('dev', 'prod'):
+            parameters = json.loads((ROOT / f'deploy/params/{environment}.json').read_text())
+            unknown = {item['ParameterKey'] for item in parameters} - set(template['Parameters'])
+            self.assertEqual(unknown, set(), environment)
+        self.assertEqual(template['Parameters']['EnableMicrovmAsr']['Default'], 'false')
+
     def setUp(self):
         self.base = json.loads((ROOT / 'deploy/params/prod.json').read_text())
 

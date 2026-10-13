@@ -162,6 +162,11 @@ def test_evolving_partials_then_final() -> None:
     partials = [e for e in events if e.kind == "partial"]
     finals = [e for e in events if e.kind == "final"]
 
+    # A partial's end is the audio decoded so far, so a live row sorts by a time that
+    # grows rather than staying pinned at the utterance start.
+    chunk_sec = len(_tone_chunk()) / 2 / SAMPLE_RATE
+    assert [p.end for p in partials] == pytest.approx([chunk_sec * n for n in (1, 2, 3, 4)])
+
     # Evolving partials: text strictly grows across updates.
     assert [p.text for p in partials] == [
         "let",
@@ -805,3 +810,29 @@ def test_word_reconstruction_handles_the_space_prefixed_tokens_sherpa_returns() 
     assert words[1].s == 2.20
     assert words[1].e == 2.36
     assert words[2].s == 2.52
+
+
+def test_streaming_engine_lets_an_utterance_run_a_minute_before_a_forced_cut(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A forced reset drops the word in flight, so the streaming engine allows 60 s."""
+    import asr_server.recognizer as rec_mod
+
+    monkeypatch.delenv("ASR_MODEL_DIR", raising=False)
+    cfg = rec_mod.build_model_config(model_dir="/nonexistent", endpointing_ms=1200)
+    assert cfg.rule3_min_utterance_length == pytest.approx(60.0)
+    assert cfg.rule2_min_trailing_silence == pytest.approx(1.2)
+
+    captured: dict[str, object] = {}
+
+    class _FakeSherpa:
+        class OnlineRecognizer:
+            @staticmethod
+            def from_transducer(**kwargs: object) -> str:
+                captured.update(kwargs)
+                return "recognizer"
+
+    monkeypatch.setattr(rec_mod, "_load_sherpa", lambda: _FakeSherpa)
+    monkeypatch.setattr(rec_mod, "_require_model_files", lambda config: None)
+    rec_mod._build_online_recognizer(cfg)
+    assert captured["rule3_min_utterance_length"] == pytest.approx(60.0)

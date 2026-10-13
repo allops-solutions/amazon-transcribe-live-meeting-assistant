@@ -10,7 +10,7 @@ permissions:
   contents: read
 jobs:
   identity:
-    if: github.repository == 'allops-solutions/amazon-transcribe-live-meeting-assistant' && github.ref == 'refs/heads/allops-main'
+    if: github.repository == 'allops-solutions/amazon-transcribe-live-meeting-assistant' && (github.ref == 'refs/heads/allops-main' || (inputs.environment == 'dev' && startsWith(github.ref, 'refs/heads/feature/')))
     environment: ${{ inputs.environment }}
     runs-on: ubuntu-24.04
     permissions:

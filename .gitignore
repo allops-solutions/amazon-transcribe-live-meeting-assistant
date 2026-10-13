@@ -48,23 +48,29 @@ samconfig.toml
 .ui-test-checksum
 .ui-lint-checksum
 .claude/settings.json
+# Per-agent git worktrees created under the repo (see `git worktree list`).
+.claude/worktrees/
 
-# DSR (legacy) — keep historical artifacts; new scans use .srt/
+# DSR (legacy) — superseded by .srt/. Nothing here is tracked: scanner exports
+# and per-machine settings are generated output, and the review write-up is kept
+# internally.
 .dsr/*
-!.dsr/issues.json
-!.dsr/settings.json
-!.dsr/feature-security-review-v0.1.0-to-v0.3.2.md
 
 # SRT (https://github.com/aws-samples/sample-security-review-tool)
-# Track only the suppression DB; everything else is machine-specific or ephemeral.
+# Only the hand-curated review decisions (.srt/suppressions.json) are tracked.
+# Everything else in here — the binary, its venv, per-machine config, the
+# dashboard and the full issues.json export — is generated per run and per
+# machine, so it is regenerated rather than committed. See
+# docs/security-scanning.md.
 .srt/*
-!.srt/issues.json
+!.srt/suppressions.json
 
 .ash/
 
 # Node
 node_modules/
-.nvmrc
+# .nvmrc is tracked on purpose: it is the single Node.js version pin shared by
+# `make setup-node`, .github/workflows/code-checks.yml and .gitlab-ci.yml.
 
 # Python
 __pycache__/
@@ -118,3 +124,12 @@ utilities/load-simulator/examples/bobmeetings.yaml
 # see deploy/params/README.md. The tracked dev.json/prod.json always keep
 # FILL_IN_FROM_SECRET_STORE placeholders.
 deploy/params/*.local.json
+# JUnit report written by `make integ-tests-nightly` (collected as a CI
+# artifact by the nightly_integ_tests job, never committed).
+integ-tests-report.xml
+# Coverage artifacts. `make test-coverage` writes everything to a temp dir and
+# leaves nothing behind, but a coverage tool invoked by hand will not.
+.coverage
+.coverage.*
+coverage/
+coverage-summary.json

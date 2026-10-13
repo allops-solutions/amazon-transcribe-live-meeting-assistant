@@ -130,6 +130,17 @@ Parameters:
     Default: ""
     Description: LMA build date/time (used in welcome email footer)
 
+  EnableDataRetentionOnDelete:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >-
+      Enable data retention on stack deletion for compliance requirements.
+      When true (default), the Cognito user pool will be retained. When false,
+      all resources deleted.
+
 Rules:
   GoogleConfiguration:
     RuleCondition: !Equals [!Ref EnableGoogleSso, "true"]
@@ -152,6 +163,7 @@ Conditions:
   ShouldAllowSignUpEmailDomain:
     !Not [!Equals [!Ref AllowedSignUpEmailDomain, ""]]
   HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
+  ShouldRetainDataOnDelete: !Equals [!Ref EnableDataRetentionOnDelete, "true"]
 
 Outputs:
   CognitoLoginUrl:
@@ -182,7 +194,9 @@ Resources:
   ##########################################################################
   UserPool:
     Type: AWS::Cognito::UserPool
-    DeletionPolicy: Retain
+    # The user pool holds the only copy of every user identity and group
+    # membership; it cannot be rebuilt from anywhere else in the stack.
+    DeletionPolicy: !If [ShouldRetainDataOnDelete, Retain, Delete]
     UpdateReplacePolicy: Retain
     Properties:
       AdminCreateUserConfig:
@@ -253,7 +267,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
       PermissionsBoundary: !If
         - HasPermissionsBoundary
         - !Ref PermissionsBoundaryArn
@@ -351,6 +365,10 @@ Resources:
 
   IdentityPool:
     Type: AWS::Cognito::IdentityPool
+    # Identity ids are minted per user and referenced by anything that stored
+    # data against them, so the pool is retained alongside the user pool.
+    DeletionPolicy: !If [ShouldRetainDataOnDelete, Retain, Delete]
+    UpdateReplacePolicy: Retain
     Properties:
       IdentityPoolName: !Sub "${AWS::StackName}-IdentityPool"
       AllowUnauthenticatedIdentities: false
@@ -388,15 +406,31 @@ Resources:
           PolicyDocument:
             Version: 2012-10-17
             Statement:
+              # Meeting playback in the web UI signs its own GET against the
+              # recording object (see RecordingPlayer.jsx / VideoPlayer.jsx,
+              # which call generate-s3-presigned-url.js with the browser's
+              # Cognito identity-pool credentials), so this role needs
+              # s3:GetObject on the recording objects themselves.
+              #
+              # The two prefixes below are the only keys the players ever ask
+              # for: the audio prefix (AudioFilePrefix, passed to the
+              # transcriber, virtual participant and upload finalizer as
+              # "lma-audio-recordings/") and the video prefix
+              # (VideoRecordingsPrefix, "lma-video-recordings/"). Naming them
+              # explicitly keeps the grant equal to what playback reads, so the
+              # other prefixes this bucket holds — lma-transcripts/,
+              # lma-uploads-pending/, lma-video-chunks/ — stay reachable only by
+              # the backend roles that own them. If a new playback prefix is
+              # introduced in lma-main.yaml it must be added here as well.
               - Effect: Allow
                 Action:
                   - "s3:GetObject"
                 Resource:
                   - !Sub
-                    - "arn:aws:s3:::${bucket}"
+                    - "arn:${AWS::Partition}:s3:::${bucket}/lma-audio-recordings/*"
                     - bucket: !Ref S3BucketName
                   - !Sub
-                    - "arn:aws:s3:::${bucket}/*"
+                    - "arn:${AWS::Partition}:s3:::${bucket}/lma-video-recordings/*"
                     - bucket: !Ref S3BucketName
         - PolicyName: accessParameterStore
           PolicyDocument:
@@ -406,7 +440,7 @@ Resources:
                 Action:
                   - ssm:GetParameter
                 Resource:
-                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${LMASettingsParameterName}"
+                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${LMASettingsParameterName}"
         - PolicyName: accessTranslateAPI
           PolicyDocument:
             Version: 2012-10-17
@@ -425,7 +459,7 @@ Resources:
                   - states:StartSyncExecution
                   - states:StartExecution
                 Resource:
-                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${LMAStackName}-LMAVirtualParticipantScheduler"
+                  - !Sub "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${LMAStackName}-LMAVirtualParticipantScheduler"
     Metadata:
       cfn_nag:
         rules_to_suppress:
@@ -581,7 +615,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
       PermissionsBoundary: !If
         - HasPermissionsBoundary
         - !Ref PermissionsBoundaryArn

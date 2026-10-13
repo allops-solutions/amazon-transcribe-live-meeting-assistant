@@ -6,9 +6,35 @@ import { defaultProvider } from '@aws-sdk/credential-provider-node';
 import { spawn, ChildProcess } from 'child_process';
 import { createWriteStream } from 'fs';
 import { details } from './details.js';
-import { sendAddTranscriptSegment, sendStartMeeting, sendEndMeeting, kinesisStreamManager } from './kinesis-stream.js';
+import {
+    sendAddTranscriptSegment,
+    sendAsrTranscriptSegment,
+    sendStartMeeting,
+    sendEndMeeting,
+    kinesisStreamManager,
+} from './kinesis-stream.js';
+import {
+    AsrSegment,
+    MicrovmAsrSession,
+    acquireLease,
+    fetchAsrRuntimeSwitches,
+    releaseLease,
+    resolveVpAsrEngine,
+    speakerNameFor,
+} from './asr-microvm-client.js';
 import { voiceAssistant } from './voice-assistant.js';
+import { RosterTimeline } from './roster-timeline.js';
 import { agentSpeakingDetector } from './agent-speaking-detector.js';
+
+const ASR_STOP_RELEASE_TIMEOUT_MS = 10_000;
+
+export function rosterLagSeconds(platform: string = details.invite.meetingPlatform): number {
+    const configured = Number.parseFloat(process.env.ASR_ROSTER_LAG_SECONDS ?? '');
+    if (Number.isFinite(configured) && configured >= 0) {
+        return configured;
+    }
+    return platform.toUpperCase() === 'ZOOM' ? 2.0 : 0.75;
+}
 
 // Global current speaker (matching Python)
 let currentSpeaker = "none";
@@ -114,6 +140,16 @@ export class TranscriptionService {
     private readonly channels = 1;
     private readonly sampleRate = 16000; // in hertz
     private transcribeClient: TranscribeStreamingClient;
+    // Live only while this meeting is transcribed by the on-demand MicroVM engine: one
+    // session per audio source, like Stream Audio's two channels.
+    private meetingSession: MicrovmAsrSession | null = null;
+    private agentSession: MicrovmAsrSession | null = null;
+    private agentAudioProcess: ChildProcess | null = null;  // FFmpeg: agent_output.monitor → assistant session
+    private engineRuns = 0;
+    private engineTimeBase = 0;
+    private sessionsFinishing: Promise<void> = Promise.resolve();
+    private microvmRun: Promise<boolean> | null = null;
+    private readonly rosterTimeline = new RosterTimeline([details.lmaIdentity, details.scribeIdentity]);
     private isTranscribing = false;
     private mockTranscriptionInterval: NodeJS.Timeout | null = null;
     // Applied once per meeting, not on every reconnect/restart — see the
@@ -302,6 +338,18 @@ export class TranscriptionService {
         // closed once when the meeting ends (below).
         const recordingStream = createWriteStream(details.tmpRecordingFilename, { flags: 'a' });
 
+        // The deployment's runtime switch, read per meeting; ASR_ENGINE overrides it
+        // per VP. A MicroVM that cannot be acquired falls through to Amazon Transcribe.
+        const switches = await fetchAsrRuntimeSwitches();
+        if (resolveVpAsrEngine(switches) === 'microvm') {
+            const ran = await this.runMicrovmTranscription(recordingStream, switches.diarizeVirtualParticipant);
+            if (ran) {
+                this.finishMeeting(recordingStream);
+                return;
+            }
+            console.warn('[ASR] MicroVM ASR unavailable; Amazon Transcribe takes over for the rest of this meeting');
+        }
+
         // "Auto-detect (locks in early)" (TRANSCRIBE_LANGUAGE_CODE=identify-language)
         // identifies the dominant language once, from whatever audio Transcribe
         // hears first, and never re-evaluates for the rest of the meeting. Opening
@@ -399,18 +447,7 @@ export class TranscriptionService {
                     sessionId = response.SessionId;
                     console.log(`New transcription session ID: ${sessionId}`);
                     
-                    // Update status to ACTIVE when transcription starts
-                    const vpId = process.env.VIRTUAL_PARTICIPANT_ID;
-                    if (vpId) {
-                        try {
-                            const { VirtualParticipantStatusManager } = await import('./status-manager.js');
-                            const statusManager = new VirtualParticipantStatusManager(vpId);
-                            await statusManager.setActive();
-                            console.log(`VP ${vpId} status: ACTIVE (transcription started)`);
-                        } catch (error) {
-                            console.log(`Failed to update VP status to ACTIVE: ${error}`);
-                        }
-                    }
+                    await this.markActive();
                 }
 
                 // In local test mode, wrap with error handlers to prevent crashes
@@ -556,15 +593,339 @@ export class TranscriptionService {
             }
         }
 
-        // Meeting is over: close the recording stream exactly once.
+        this.finishMeeting(recordingStream);
+    }
+
+    /** Report ACTIVE once transcription is actually producing, whichever engine runs it. */
+    private async markActive(): Promise<void> {
+        const vpId = process.env.VIRTUAL_PARTICIPANT_ID;
+        if (!vpId) {
+            return;
+        }
+        try {
+            const { VirtualParticipantStatusManager } = await import('./status-manager.js');
+            const statusManager = new VirtualParticipantStatusManager(vpId);
+            await statusManager.setActive();
+            console.log(`VP ${vpId} status: ACTIVE (transcription started)`);
+        } catch (error) {
+            console.log(`Failed to update VP status to ACTIVE: ${error}`);
+        }
+    }
+
+    /** Meeting is over: close the recording stream exactly once and mark the service stopped. */
+    private finishMeeting(recordingStream: NodeJS.WritableStream): void {
         try {
             recordingStream.end();
         } catch (error: any) {
             console.error('Failed to close recording stream:', error?.message ?? error);
         }
-
         this.isTranscribing = false;
         console.log('Transcription service stopped');
+    }
+
+    /**
+     * Transcribe on the MicroVM engine. Returns false if no MicroVM could be acquired
+     * or the engine never became ready, so the caller falls back to Amazon Transcribe;
+     * otherwise returns when the meeting ends or the session exhausts its retries.
+     */
+    private async runMicrovmTranscription(
+        recordingStream: NodeJS.WritableStream,
+        diarize: boolean,
+    ): Promise<boolean> {
+        const run = this.runMicrovmTranscriptionOnce(recordingStream, diarize);
+        this.microvmRun = run;
+        try {
+            return await run;
+        } finally {
+            if (this.microvmRun === run) {
+                this.microvmRun = null;
+            }
+        }
+    }
+
+    private async runMicrovmTranscriptionOnce(
+        recordingStream: NodeJS.WritableStream,
+        diarize: boolean,
+    ): Promise<boolean> {
+        const callId = kinesisStreamManager.currentCallId;
+        const lease = await acquireLease(callId);
+        if (!lease) {
+            return false;
+        }
+        if (!this.isTranscribing) {
+            if (lease.microvmId) {
+                await releaseLease(lease.microvmId).catch(() => undefined);
+            }
+            return true;
+        }
+        const run = this.engineRuns;
+        this.engineRuns += 1;
+        const common = {
+            callId,
+            lease,
+            run,
+            timeBaseSeconds: Math.max(this.engineTimeBase, this.transcribeTimeOffsetSeconds),
+            // A paused meeting is not over: the sessions stay up and are fed silence.
+            isMeetingLive: () => this.isTranscribing,
+        };
+        const meetingSession = new MicrovmAsrSession({
+            ...common,
+            channel: 'CALLER',
+            diarize,
+            onSegment: (segment) => this.handleMeetingAsrSegment(segment),
+        });
+        const agentSession = voiceAssistant.isEnabled() && details.meetingMode !== 'translator'
+            ? new MicrovmAsrSession({
+                  ...common,
+                  channel: 'AGENT',
+                  diarize: false,
+                  onSegment: (segment) => this.handleAgentAsrSegment(segment),
+              })
+            : null;
+        this.meetingSession = meetingSession;
+        this.agentSession = agentSession;
+        const agentReady = agentSession ? agentSession.start() : Promise.resolve(true);
+        const meetingReady = await meetingSession.start();
+        if (!meetingReady && !this.isTranscribing) {
+            await this.finishMicrovmSessions();
+            await this.releaseMicrovm(meetingSession);
+            return true;
+        }
+        if (!meetingReady) {
+            console.error('[ASR] MicroVM ASR session never became ready');
+            // Finish first, or the sessions keep reconnecting against a released MicroVM.
+            await this.finishMicrovmSessions();
+            await this.releaseMicrovm(meetingSession);
+            return false;
+        }
+        void agentReady.then((ready) => {
+            if (!ready && this.agentSession === agentSession) {
+                console.warn("[ASR AGENT] session not ready at start; the assistant's replies appear once it connects");
+            }
+        });
+        const agent = this.agentSession;
+        console.log(
+            `[ASR] MicroVM ASR active for ${callId} (speaker labels: ${meetingSession.speakerLabelsActive}, assistant channel: ${agent ? 'AGENT' : 'none'})`,
+        );
+        await this.markActive();
+
+        // Both feeds start together so the two engine clocks share one meeting timeline.
+        this.startMeetingAudioFanout((chunk) => meetingSession.pushPcm(chunk));
+        if (agent) {
+            this.startAgentAudioCapture((chunk) => agent.pushPcm(chunk));
+        }
+        let fellBack = false;
+        let agentGaveUpLogged = false;
+        try {
+            // The combined stream is consumed only for the recording tee and liveness;
+            // the engine hears the two separate sources above.
+            for await (const frame of this.audioStream(recordingStream)) {
+                void frame;
+                if (!this.isTranscribing) {
+                    break;
+                }
+                if (meetingSession.hasGivenUp) {
+                    console.error('[ASR] MicroVM ASR session gave up; Amazon Transcribe takes over for the rest of this meeting');
+                    fellBack = true;
+                    break;
+                }
+                if (agent?.hasGivenUp && !agentGaveUpLogged) {
+                    console.error("[ASR AGENT] session gave up; the assistant's replies are no longer transcribed");
+                    agentGaveUpLogged = true;
+                }
+            }
+        } catch (error: any) {
+            console.error(`[ASR] audio stream error: ${error?.message || error}`);
+        } finally {
+            this.teardownSessionProcesses();
+            this.engineTimeBase = Math.max(
+                this.engineTimeBase,
+                meetingSession.audioSeconds,
+                agent?.audioSeconds ?? 0,
+            );
+            await this.finishMicrovmSessions();
+            await this.releaseMicrovm(meetingSession);
+        }
+        if (fellBack) {
+            this.transcribeTimeOffsetSeconds = Math.max(this.transcribeTimeOffsetSeconds, this.engineTimeBase);
+            return false;
+        }
+        return true;
+    }
+
+    private async finishMicrovmSessions(): Promise<void> {
+        const sessions = [this.meetingSession, this.agentSession].filter(
+            (session): session is MicrovmAsrSession => session !== null,
+        );
+        this.meetingSession = null;
+        this.agentSession = null;
+        const finishing = Promise.all(
+            sessions.map(async (session) => {
+                try {
+                    await session.finish();
+                } catch (error: any) {
+                    console.error(`[ASR] error finishing MicroVM session: ${error?.message || error}`);
+                }
+            }),
+        );
+        this.sessionsFinishing = Promise.all([this.sessionsFinishing, finishing]).then(() => undefined);
+        await this.sessionsFinishing;
+    }
+
+    private async releaseMicrovm(session: MicrovmAsrSession): Promise<void> {
+        if (!session.microvmId) {
+            return; // ASR_DIRECT_ENDPOINT: nothing was launched
+        }
+        try {
+            await releaseLease(session.microvmId);
+            console.log(`[ASR] released ASR MicroVM ${session.microvmId}`);
+        } catch (error: any) {
+            console.error(`[ASR] error releasing MicroVM ${session.microvmId}: ${error?.message || error}`);
+        }
+    }
+
+    /** A meeting row: the roster name at the row's START, plus the voice id when per-voice labels are on. */
+    private handleMeetingAsrSegment(segment: AsrSegment): void {
+        const roster = this.rosterTimeline.speakerFor(segment.startSec, segment.endSec, rosterLagSeconds());
+        const speaker = speakerNameFor(roster, segment.speaker);
+        sendAsrTranscriptSegment({
+            channel: 'CALLER',
+            segmentId: segment.segmentId,
+            startTime: segment.startSec,
+            endTime: segment.endSec,
+            transcript: segment.text,
+            isPartial: segment.isPartial,
+            speaker,
+        }).catch((error) => {
+            console.error('Failed to send transcript to Kinesis:', error);
+        });
+
+        // Wake-phrase detection works on the text alone; the engine sends no word
+        // timings on this path, so the caption log (which needs them) is skipped.
+        this.processTranscriptResult({
+            IsPartial: segment.isPartial,
+            Alternatives: [{ Transcript: segment.text, Items: [] }],
+        });
+    }
+
+    /** The assistant's own voice from its own session: labelled as the VP, never diarized, never a wake phrase. */
+    private handleAgentAsrSegment(segment: AsrSegment): void {
+        sendAsrTranscriptSegment({
+            channel: 'AGENT',
+            segmentId: segment.segmentId,
+            startTime: segment.startSec,
+            endTime: segment.endSec,
+            transcript: segment.text,
+            isPartial: segment.isPartial,
+            speaker: (details.lmaIdentity || details.scribeIdentity || 'LMA').trim(),
+        }).catch((error) => {
+            console.error('Failed to send transcript to Kinesis:', error);
+        });
+    }
+
+    private spawnPcmCapture(source: string, label: string): ChildProcess {
+        const capture = spawn('ffmpeg', [
+            '-f', 'pulse',
+            '-i', source,
+            '-ac', '1',
+            '-ar', '16000',
+            '-acodec', 'pcm_s16le',
+            '-f', 's16le',
+            '-loglevel', 'warning',
+            '-',
+        ]);
+        capture.stderr?.on('data', (data: any) => {
+            const msg = data.toString();
+            if (!msg.includes('size=') && !msg.includes('time=')) {
+                console.log('FFmpeg (%s): %s', label, msg.trim());
+            }
+        });
+        return capture;
+    }
+
+    /** The assistant's own voice (agent_output.monitor) for its transcript session; silence while paused. */
+    private startAgentAudioCapture(onPcm: (chunk: Buffer) => void): void {
+        this.agentAudioProcess = this.spawnPcmCapture('agent_output.monitor', 'assistant audio');
+        this.agentAudioProcess.on('error', (error: any) => {
+            console.error(`FFmpeg (assistant audio) process error: ${error.message}`);
+        });
+        this.agentAudioProcess.stdout?.on('data', (chunk: Buffer) => {
+            if (!this.isTranscribing) {
+                return;
+            }
+            onPcm(details.start ? chunk : Buffer.alloc(chunk.length));
+        });
+    }
+
+    /** Meeting audio to combined_audio, the voice assistant and, on the engine path, the meeting session. */
+    private startMeetingAudioFanout(onMeetingPcm?: (chunk: Buffer) => void): void {
+        // The only writer of meeting audio on combined_audio (entrypoint.sh has no
+        // loopback for it); an active pacat stream also keeps the null sink from
+        // suspending (#542, #569).
+        this.meetingToCombinedPipe = spawn('pacat', [
+            '--playback',
+            '--device=combined_audio',
+            '--format=s16le',
+            '--rate=16000',
+            '--channels=1',
+            '--raw',
+            '--latency-msec=80',
+        ]);
+
+        this.meetingToCombinedPipe.on('error', (error: any) => {
+            console.error(`pacat (meeting→combined) error: ${error.message}`);
+        });
+
+        this.meetingToCombinedPipe.stderr?.on('data', (data: any) => {
+            const msg = data.toString().trim();
+            if (msg) console.log(`pacat (meeting→combined): ${msg}`);
+        });
+
+        this.novaAudioProcess = this.spawnPcmCapture('meeting_audio.monitor', 'meeting audio');
+
+        // Add error handlers for the process
+        this.novaAudioProcess.on('error', (error: any) => {
+            const msg = `FFmpeg (Nova audio) process error: ${error.message}`;
+            if (isLocalTest) {
+                console.error(msg + ' (non-fatal in local test)');
+            } else {
+                console.error(msg + ' (fatal in production)');
+                throw error;
+            }
+        });
+
+        // Process audio chunks from meeting_audio.monitor
+        this.novaAudioProcess.stdout?.on('data', async (chunk: Buffer) => {
+            if (!this.isTranscribing) {
+                return;
+            }
+            if (!details.start) {
+                // Paused: nothing is forwarded, but the engine clock keeps meeting time.
+                onMeetingPcm?.(Buffer.alloc(chunk.length));
+                return;
+            }
+            try {
+                // Not written to the recording: this stream is meeting-only (Nova
+                // must not hear itself); audioStream() tees the recording from
+                // combined_audio.monitor. Sole route into combined_audio (#542).
+                if (this.meetingToCombinedPipe?.stdin && !this.meetingToCombinedPipe.stdin.destroyed) {
+                    this.meetingToCombinedPipe.stdin.write(chunk);
+                }
+
+                if (voiceAssistant.isEnabled() && voiceAssistant.isActive() && voiceAssistant.isActivated()) {
+                    voiceAssistant.sendAudioChunk(chunk);
+                }
+                onMeetingPcm?.(chunk);
+            } catch (error: any) {
+                const msg = `Audio chunk processing error: ${error.message}`;
+                if (isLocalTest) {
+                    console.log(msg + ' (non-fatal in local test)');
+                } else {
+                    console.error(msg);
+                    throw error;
+                }
+            }
+        });
     }
 
     private processTranscriptResult(result: any): void {
@@ -671,6 +1032,10 @@ export class TranscriptionService {
             try { this.novaAudioProcess.kill(); } catch (_) { /* ignore */ }
             this.novaAudioProcess = null;
         }
+        if (this.agentAudioProcess) {
+            try { this.agentAudioProcess.kill(); } catch (_) { /* ignore */ }
+            this.agentAudioProcess = null;
+        }
         if (this.meetingToCombinedPipe) {
             try {
                 if (this.meetingToCombinedPipe.stdin && !this.meetingToCombinedPipe.stdin.destroyed) {
@@ -687,6 +1052,17 @@ export class TranscriptionService {
         this.isTranscribing = false;
 
         this.teardownSessionProcesses();
+
+        // Flush the engine's tail utterance now; the run loop's own teardown releases
+        // the MicroVM once the capture process above has ended its audio stream.
+        await this.finishMicrovmSessions();
+        const run = this.microvmRun;
+        if (run) {
+            await Promise.race([
+                run.catch(() => false),
+                new Promise<void>((resolve) => setTimeout(resolve, ASR_STOP_RELEASE_TIMEOUT_MS).unref()),
+            ]);
+        }
 
         // Stop voice assistant if running
         if (voiceAssistant.isEnabled()) {
@@ -716,6 +1092,7 @@ export class TranscriptionService {
         
         const timestamp = Date.now();
         details.speakers.push({ name: speaker, timestamp });
+        this.rosterTimeline.record(this.meetingSession?.audioSeconds ?? this.engineTimeBase, speaker);
         
         const formattedTime = this.formatTimestamp(timestamp);
         console.log(`[${formattedTime}] Speaker changed to: ${speaker}`);
@@ -779,90 +1156,7 @@ export class TranscriptionService {
     // Channel separation (meeting vs combined) prevents Nova from hearing its own voice.
     private async writeAudio(transcribeResponse: any): Promise<void> {
         try {
-            // Pipe meeting audio into combined_audio for Transcribe. This is the
-            // ONLY writer for meeting audio on that sink (entrypoint.sh
-            // deliberately has no loopback for it), so there is no duplication —
-            // and unlike a loopback, an active pacat stream keeps the null sink
-            // from suspending (#542, #569).
-            this.meetingToCombinedPipe = spawn('pacat', [
-                '--playback',
-                '--device=combined_audio',
-                '--format=s16le',
-                '--rate=16000',
-                '--channels=1',
-                '--raw',
-                '--latency-msec=80',
-            ]);
-
-            this.meetingToCombinedPipe.on('error', (error: any) => {
-                console.error(`pacat (meeting→combined) error: ${error.message}`);
-            });
-
-            this.meetingToCombinedPipe.stderr?.on('data', (data: any) => {
-                const msg = data.toString().trim();
-                if (msg) console.log(`pacat (meeting→combined): ${msg}`);
-            });
-
-            // Capture meeting-only audio for Nova and recording
-            this.novaAudioProcess = spawn('ffmpeg', [
-                '-f', 'pulse',
-                '-i', 'meeting_audio.monitor',  // Meeting audio only (no agent feedback)
-                '-ac', '1',
-                '-ar', '16000',
-                '-acodec', 'pcm_s16le',
-                '-f', 's16le',
-                '-loglevel', 'warning',
-                '-'
-            ]);
-
-            // Add error handlers for the process
-            this.novaAudioProcess.on('error', (error: any) => {
-                const msg = `FFmpeg (Nova audio) process error: ${error.message}`;
-                if (isLocalTest) {
-                    console.error(msg + ' (non-fatal in local test)');
-                } else {
-                    console.error(msg + ' (fatal in production)');
-                    throw error;
-                }
-            });
-
-            this.novaAudioProcess.stderr?.on('data', (data: any) => {
-                const msg = data.toString();
-                if (!msg.includes('size=') && !msg.includes('time=')) {
-                    console.log('FFmpeg:', msg.trim());
-                }
-            });
-
-            // Process audio chunks from meeting_audio.monitor
-            this.novaAudioProcess.stdout?.on('data', async (chunk: Buffer) => {
-                if (details.start && this.isTranscribing) {
-                    try {
-                        // NOT written to the recording: this stream is meeting-only
-                        // by design (Nova must not hear itself), so recording it
-                        // silently dropped the assistant's replies. The recording is
-                        // teed from combined_audio.monitor in audioStream() instead.
-                        //
-                        // Sole route for meeting audio into combined_audio (see
-                        // the pacat spawn above). entrypoint.sh has no loopback
-                        // for it, so this does not duplicate (#542).
-                        if (this.meetingToCombinedPipe?.stdin && !this.meetingToCombinedPipe.stdin.destroyed) {
-                            this.meetingToCombinedPipe.stdin.write(chunk);
-                        }
-
-                        if (voiceAssistant.isEnabled() && voiceAssistant.isActive() && voiceAssistant.isActivated()) {
-                            voiceAssistant.sendAudioChunk(chunk);
-                        }
-                    } catch (error: any) {
-                        const msg = `Audio chunk processing error: ${error.message}`;
-                        if (isLocalTest) {
-                            console.log(msg + ' (non-fatal in local test)');
-                        } else {
-                            console.error(msg);
-                            throw error;
-                        }
-                    }
-                }
-            });
+            this.startMeetingAudioFanout();
 
             // Keep processing while the meeting is active AND this session is
             // still current. reconnectRequested is set when Transcribe closes

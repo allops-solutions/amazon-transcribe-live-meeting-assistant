@@ -34,7 +34,27 @@ make integ-tests-live STACK=lma-integtest1 PLATFORM=ZOOM \
 # Include the live WebSocket streaming test (needs a Cognito user's creds):
 LMA_TEST_USERNAME=you@example.com LMA_TEST_PASSWORD=... \
     make integ-tests STACK=lma-integtest1
+
+# Or take that user from a Secrets Manager secret instead of the environment
+# ({"username": ..., "password": ...}) — how the scheduled run does it:
+LMA_TEST_USER_SECRET_ID=lma/integ-tests/cognito-user \
+    make integ-tests STACK=lma-integtest1
 ```
+
+### On a schedule
+
+`make integ-tests-nightly` is what the `nightly_integ_tests` GitLab job runs. It
+differs from `make integ-tests` in two ways that matter when nobody is watching:
+a **skipped test fails the run** (`--no-skips`), so a lapsed secret or a dropped
+dependency cannot report green having streamed no audio; and it writes a JUnit
+report for the CI UI. It tests an existing stack and does not deploy one.
+
+See [Scheduled Integration Tests](../docs/scheduled-integration-tests.md) for the
+one-time GitLab schedule, OIDC role and test-user setup it needs.
+
+The machinery those two behaviours rest on — `cognito_test_user.py` and the
+`--no-skips` hook in `conftest.py` — is unit-tested in `test_ci_plumbing.py`,
+which needs no AWS and runs in the fast pipeline via `make test-integ-plumbing`.
 
 Or invoke pytest directly:
 ```bash
@@ -72,6 +92,25 @@ appeared in the UI. The probe is reusable standalone:
 `AWS_PROFILE=default python integ-tests/kds_pipeline_probe.py <stack-name>`.
 
 ## Notes
+
+### Isolated OAuth gateway validation
+
+After the OAuth interceptor revision is deployed, run:
+
+```bash
+AWS_PROFILE=default .venv/bin/python integ-tests/mcp_oauth_probe.py \
+  --stack LMA-CI-254333 --owner-run 38377254333 \
+  --meeting-link https://meet.google.com/your-test-link
+```
+
+This helper is restricted to dev account `135755363077` and the exact retained
+CI-owned stack. It creates a temporary non-admin Cognito user (invitation
+suppressed), obtains a real access token for the MCP client, and tests schedule,
+duplicate prevention, update and cancellation through the HTTP AgentCore gateway.
+It verifies owner/time/language/status in DynamoDB, cancels the future test VP,
+and deletes its temporary user. Secrets and tokens stay in memory. A supplied
+test link must be disposable; the helper never submits an immediate join.
+This proves the deployed OAuth gateway path, not Quick UI or Calendar retrieval.
 
 - `/health/check` is the **ALB target-group** health path and is deliberately
   NOT routed through the public CloudFront distribution (which only forwards
