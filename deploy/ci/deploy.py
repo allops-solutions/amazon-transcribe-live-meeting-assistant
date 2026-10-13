@@ -80,6 +80,25 @@ def validate_cleanup(stack, tags, run_id):
         raise ValueError("Refusing cleanup: stack identity or workflow ownership tags do not match")
 
 
+def deployment_owner_run(environment, run_id, owner_run):
+    """An explicit retained-dev update never changes production or cleanup scope."""
+    if not owner_run:
+        return run_id
+    if environment != "dev" or os.environ.get("LMA_KEEP_DEV") != "true":
+        raise ValueError("Retained-stack updates require dev and keep_dev=true")
+    dev_stack_name(owner_run)  # validates the full numeric ID, not just its suffix
+    return owner_run
+
+
+def validate_retained_dev_update(stack, existing, owner_run):
+    if not existing:
+        raise ValueError("Retained dev update requires an existing owned stack")
+    tags = {t["Key"]: t["Value"] for t in existing.get("Tags", [])}
+    validate_cleanup(stack, tags, owner_run)
+    if existing.get("StackStatus") not in {"CREATE_COMPLETE", "UPDATE_COMPLETE"}:
+        raise ValueError("Retained dev stack must be in a healthy complete state")
+
+
 def validate_application_boundary(parameters, account, environment):
     """Pin production's boundary independently of the editable configuration secret."""
     if environment != "production" and not os.environ.get("LMA_APPLICATION_BOUNDARY_ARN"):
@@ -117,13 +136,17 @@ def main():
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--template-url")
     args = parser.parse_args()
+    owner_override = os.environ.get("LMA_DEV_OWNER_RUN_ID", "")
+    owner_run = deployment_owner_run(args.environment, args.run_id, owner_override)
     session = boto3.Session(region_name="us-east-1")
-    stack = "LMA" if args.environment == "production" else dev_stack_name(args.run_id)
+    stack = "LMA" if args.environment == "production" else dev_stack_name(owner_run)
     account = session.client("sts").get_caller_identity()["Account"]
-    check_context(args.environment, account, stack, args.run_id)
+    check_context(args.environment, account, stack, owner_run)
     cfn = session.client("cloudformation")
     existing = describe_stack(cfn, stack)
     if args.action == "cleanup":
+        if owner_override:
+            raise ValueError("Retained dev updates never perform automatic cleanup")
         if args.environment != "dev":
             raise ValueError("Production cleanup is not supported")
         if not existing:
@@ -134,7 +157,9 @@ def main():
         cfn.get_waiter("stack_delete_complete").wait(StackName=stack, WaiterConfig={"Delay": 30, "MaxAttempts": 240})
         print("Temporary dev stack deleted; external configuration and artifact storage were not deleted")
         return
-    if args.environment == "dev" and existing:
+    if owner_override:
+        validate_retained_dev_update(stack, existing, owner_run)
+    elif args.environment == "dev" and existing:
         raise ValueError("Temporary dev deployment is create-only; existing stacks are not updated")
     bucket = os.environ["LMA_ARTIFACT_BUCKET"]
     prefix = f"releases/{os.environ['GITHUB_SHA']}/{args.run_id}/{os.environ['GITHUB_RUN_ATTEMPT']}"
@@ -158,7 +183,7 @@ def main():
         StackName=stack, ChangeSetName=name, ChangeSetType="UPDATE" if existing else "CREATE",
         TemplateURL=args.template_url, Parameters=parameters, RoleARN=role,
         Capabilities=["CAPABILITY_NAMED_IAM", "CAPABILITY_AUTO_EXPAND"],
-        Tags=[{"Key": "LmaCiManaged", "Value": "true"}, {"Key": "LmaCiRun", "Value": args.run_id},
+        Tags=[{"Key": "LmaCiManaged", "Value": "true"}, {"Key": "LmaCiRun", "Value": owner_run},
               {"Key": "LmaSourceSha", "Value": os.environ["GITHUB_SHA"]}],
     )
     change_id = response["Id"]

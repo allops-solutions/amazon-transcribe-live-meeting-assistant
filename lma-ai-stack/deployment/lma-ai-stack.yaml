@@ -7631,6 +7631,8 @@ Resources:
           # Used by start_meeting_now to resolve user email → Cognito sub so
           # the MCP-launched VP can use the user's stored Zoom credentials.
           USER_POOL_ID: !Ref UserPoolId
+          MCP_OAUTH_ISSUER: !Sub "https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${UserPoolId}"
+          MCP_OAUTH_CLIENT_ID: !Ref MCPServerExternalAppClient
           LMA_STACK_NAME: !Ref LMAStackName
           # Group whose members see every meeting in the account rather than
           # only their own. Matches UserManagementFunction.
@@ -7735,6 +7737,13 @@ Resources:
           AllowedClients:
             - !Ref MCPServerExternalAppClient
       RoleArn: !GetAtt MCPServerGatewayExecutionRole.Arn
+      InterceptorConfigurations:
+        - InterceptionPoints: [REQUEST]
+          Interceptor:
+            Lambda:
+              Arn: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${MCPServerAnalyticsFunction}"
+          InputConfiguration:
+            PassRequestHeaders: true
       Tags:
         Application: LMA
         Component: MCPServer

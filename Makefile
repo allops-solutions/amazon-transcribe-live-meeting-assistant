@@ -164,6 +164,7 @@ setup-python: ## Create .venv and install Python dev/lint dependencies
 		pylint \
 		virtualenv \
 		yamllint \
+		'PyJWT[crypto]>=2.10.1,<3' \
 		boto3-stubs[comprehend,codebuild,dynamodb,lambda,lexv2-runtime,s3,sqs,sns]
 	@echo ""
 	@echo -e "$(GREEN)✅ Python setup complete! Virtual environment at $(VENV_DIR)$(NC)"

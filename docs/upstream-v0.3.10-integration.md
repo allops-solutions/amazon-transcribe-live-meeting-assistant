@@ -38,6 +38,10 @@ optional engine or voice integration is enabled merely by this merge.
   access. Verify Quick's actual authentication path carries a user identity;
   the documented per-user API-key route supplies one. Do not restore the former
   identity-less administrator fallback to make an integration pass.
+  The allOps REQUEST interceptor forwards the actual OAuth bearer token and the
+  target verifies its signature, issuer, expiry, token type and MCP client ID.
+  It never trusts user identity supplied as tool arguments. This preserves the
+  existing Quick OAuth connector without restoring the insecure fallback.
 - Read responses no longer expose MCP stored authentication configuration.
   Custom consumers must use `HasAuthConfig`, not the removed `AuthConfig` field.
 
@@ -51,6 +55,11 @@ optional engine or voice integration is enabled merely by this merge.
    targets the existing `LMA-Dev` stack. Otherwise automatic cleanup remains on.
    The full run ID is recorded in ownership tags; a short-name collision fails
    closed rather than updating another run's stack.
+   For a follow-up validation update, explicitly supply `dev_owner_run_id` with
+   the original full run ID and keep `keep_dev=true`. CI verifies full ownership
+   tags and healthy state, preserves the original owner tag, and never performs
+   automatic cleanup for this operation. This cannot target original `LMA-Dev`
+   or override a production target. An ordinary dev dispatch remains create-only.
 3. Verify Google SSO and the real Quick connector user identity.
 4. Verify Google Meet schedule, duplicate prevention, reschedule and explicit
    Calendar cancellation against the same VP.

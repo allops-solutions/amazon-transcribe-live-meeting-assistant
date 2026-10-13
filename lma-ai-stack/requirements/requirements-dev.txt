@@ -15,4 +15,5 @@ boto3-stubs[comprehend,codebuild,dynamodb,lambda,lexv2-runtime,s3,sqs,sns]~=1.43
 gql[botocore,aiohttp,requests]~=3.5.3
 aws-lambda-powertools~=3.35.0
 phonenumbers~=9.0.39
+PyJWT[crypto]>=2.10.1,<3
 crhelper~=2.0.12

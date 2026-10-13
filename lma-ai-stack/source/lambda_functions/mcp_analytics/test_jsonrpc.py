@@ -8,7 +8,7 @@ import json
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 # Set env vars before importing
 os.environ["LOG_LEVEL"] = "WARNING"
@@ -240,17 +240,18 @@ class TestPathDetection(unittest.TestCase):
         resp = json.loads(result["body"])
         self.assertIn("jsonrpc", resp)
 
-    def test_bedrock_path_uses_claims(self):
-        """Events without httpMethod use claims for user context."""
+    def test_bedrock_path_uses_verified_token(self):
+        """Only verified OAuth claims determine gateway user context."""
         from tools import list_meetings
 
         list_meetings.execute = MagicMock(return_value={"meetings": []})
 
-        event = bedrock_event(
-            {"limit": 10},
-            claims={"sub": "user123", "cognito:username": "bob", "cognito:groups": "Users"},
-        )
-        index.lambda_handler(event, None)
+        event = {"limit": 10, "_lmaCallerToken": "test-token"}
+        with patch.object(index, "verified_claims", return_value={
+            "sub": "user123", "username": "bob", "cognito:groups": "Users"
+        }) as verify:
+            index.lambda_handler(event, None)
+        verify.assert_called_once_with("test-token")
         # Should call list_meetings (inferred from 'limit' param)
         list_meetings.execute.assert_called_once()
         call_kwargs = list_meetings.execute.call_args
@@ -260,6 +261,36 @@ class TestPathDetection(unittest.TestCase):
             else call_kwargs[1].get("user_id"),
             "user123",
         )
+
+    def test_forged_claims_do_not_grant_admin(self):
+        """Unverified requestContext arguments cannot impersonate an admin."""
+        from tools import list_meetings
+        list_meetings.execute = MagicMock()
+        event = bedrock_event({"limit": 5}, claims={
+            "sub": "victim", "cognito:groups": ["Admin"]
+        })
+        self.assertEqual(index.lambda_handler(event, None)["statusCode"], 403)
+        list_meetings.execute.assert_not_called()
+
+    def test_forwarded_token_is_removed_before_status_tool_inference(self):
+        from tools import get_virtual_participant_status
+        get_virtual_participant_status.execute = MagicMock(return_value={"status": "SCHEDULED"})
+        with patch.object(index, "verified_claims", return_value={"sub": "user123"}):
+            result = index.lambda_handler({
+                "virtualParticipantId": "vp123", "_lmaCallerToken": "test-token"
+            }, None)
+        self.assertEqual(result["statusCode"], 200)
+        get_virtual_participant_status.execute.assert_called_once_with(
+            virtual_participant_id="vp123", user_id="user123", is_admin=False
+        )
+
+    def test_gateway_cannot_spoof_api_key_authorizer_context(self):
+        from tools import list_meetings
+        list_meetings.execute = MagicMock()
+        event = api_gw_event({"jsonrpc": "2.0", "method": "tools/list"}, is_admin="true")
+        event["_lmaCallerToken"] = "invalid-token"
+        self.assertEqual(index.lambda_handler(event, None)["statusCode"], 403)
+        list_meetings.execute.assert_not_called()
 
     def test_bedrock_path_without_identity_is_rejected(self):
         """A request with no caller identity is answered with 403."""

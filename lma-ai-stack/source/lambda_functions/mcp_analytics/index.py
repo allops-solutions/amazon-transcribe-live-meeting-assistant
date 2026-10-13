@@ -14,6 +14,8 @@ import logging
 import os
 from typing import Any, Dict
 
+from oauth_context import CALLER_TOKEN, intercept_request, verified_claims
+
 # Import tool implementations
 from tools import (
     calendar_schedule,
@@ -34,7 +36,7 @@ ADMIN_GROUP = os.environ.get("ADMIN_GROUP", "Admin")
 # Invariant: every tool scopes its results to the calling user and widens that
 # scope only for members of the admin group, so a request that does not resolve
 # to a user cannot be answered. Both entry paths carry an identity: the REST
-# endpoint through its authorizer context, the gateway through forwarded claims.
+# endpoint through its authorizer context, the gateway through a verified token.
 NO_IDENTITY_MESSAGE = (
     "Unable to determine the calling user. Connect through the per-user API key "
     "endpoint so that each request carries a user identity "
@@ -68,8 +70,14 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     logger.info(f"Event keys: {sorted(event.keys())}")
 
     try:
+        if event.get("interceptorInputVersion") == "1.0" and "mcp" in event:
+            return intercept_request(event)
+
+        client_context = getattr(context, "client_context", None)
+        gateway_context = getattr(client_context, "custom", {}) or {}
+        gateway_call = CALLER_TOKEN in event or "bedrockAgentCoreToolName" in gateway_context
         # Detect API Gateway proxy integration (API key auth path)
-        if "httpMethod" in event and "body" in event:
+        if not gateway_call and "httpMethod" in event and "body" in event:
             body = event.get("body", "{}")
             tool_input = json.loads(body) if isinstance(body, str) else (body or {})
             authorizer = event.get("requestContext", {}).get("authorizer", {})
@@ -89,19 +97,17 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             if "jsonrpc" in tool_input and "method" in tool_input:
                 return handle_mcp_jsonrpc(tool_input, user_id, username, is_admin)
         else:
-            # BedrockAgentCore Gateway path: the function is invoked with the raw
-            # tool input, so the only identity available is whatever the event
-            # itself carries in requestContext.authorizer.claims.
-            request_context = event.get("requestContext", {})
-            authorizer = request_context.get("authorizer", {})
-            claims = authorizer.get("claims", {})
-
-            logger.info(f"requestContext keys: {list(request_context.keys())}")
-            logger.info(f"authorizer keys: {list(authorizer.keys())}")
-            logger.info(f"claim keys: {sorted(claims.keys())}")
+            # Lambda targets receive tool arguments, not an API Gateway claims
+            # envelope. Verify the actual bearer token forwarded by our REQUEST
+            # interceptor; never trust a caller-supplied requestContext.
+            try:
+                claims = verified_claims(event.get(CALLER_TOKEN))
+            except Exception:
+                logger.warning("OAuth caller verification failed - rejecting")
+                return error_response(403, NO_IDENTITY_MESSAGE)
 
             user_id = claims.get("sub")
-            username = claims.get("cognito:username", claims.get("email", user_id))
+            username = claims.get("username", claims.get("email", user_id))
             is_admin = is_admin_claim(claims)
 
             # Clients that reach this function without claims should use the
@@ -111,7 +117,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 logger.warning("Request carries no caller identity - rejecting")
                 return error_response(403, NO_IDENTITY_MESSAGE)
 
-            tool_input = event
+            tool_input = {k: v for k, v in event.items()
+                          if k not in {CALLER_TOKEN, "requestContext", "httpMethod", "body"}}
 
         logger.info(f"User: {username}, ID: {user_id}, Admin: {is_admin}")
 
