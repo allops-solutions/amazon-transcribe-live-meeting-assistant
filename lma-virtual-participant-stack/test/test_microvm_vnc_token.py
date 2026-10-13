@@ -137,7 +137,7 @@ def test_expires_at_is_never_the_string_none() -> None:
     assert "str(expires_at)" not in src
 
 
-def test_ecs_launch_type_mints_a_vp_scoped_hmac_token(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ecs_launch_type_requires_the_edge_token_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
     """No MicroVM registered + an ECS-shaped vncEndpoint -> HMAC token, not an error.
 
     Before this branch existed, this was the "may be starting, or running on
@@ -169,23 +169,14 @@ def test_ecs_launch_type_mints_a_vp_scoped_hmac_token(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(token_index, "dynamodb", _FakeDynamo())
 
-    result = token_index.lambda_handler(
-        {
-            "arguments": {"vpId": "vp-1"},
-            "identity": {"username": "bob@example.com", "claims": {}},
-        },
-        None,
-    )
-
-    assert ISO_Z.match(result["expiresAt"])
-    parts = result["authToken"].split(".")
-    assert len(parts) == 3, f"expected <vpId>.<expiry>.<hmac>, got {result['authToken']!r}"
-    token_vp_id, expiry_str, mac_hex = parts
-    assert token_vp_id == "vp-1"
-    expected_mac = hmac.new(
-        b"unit-test-secret", f"{token_vp_id}.{expiry_str}".encode(), hashlib.sha256
-    ).hexdigest()
-    assert mac_hex == expected_mac, "token must verify against the same scheme the edge function uses"
+    # ECS now uses the separate createVncEdgeToken resolver. The MicroVM
+    # mutation must not mint a different legacy token for the same endpoint.
+    with pytest.raises(Exception, match="No MicroVM is registered"):
+        token_index.lambda_handler(
+            {"arguments": {"vpId": "vp-1"},
+             "identity": {"username": "bob@example.com", "claims": {}}},
+            None,
+        )
 
 
 def test_ecs_token_denied_for_non_owner(monkeypatch: pytest.MonkeyPatch) -> None:

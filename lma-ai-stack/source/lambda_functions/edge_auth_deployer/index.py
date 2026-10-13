@@ -1,9 +1,13 @@
 """
 Custom Resource Lambda to deploy Lambda@Edge function in us-east-1.
-This function creates, updates, and deletes the Lambda@Edge function
-that authenticates VNC WebSocket connections for the ECS/Fargate launch
-type, using a VP-scoped HMAC token minted by MicrovmVncTokenFunction
-(see lma_ai_stack.yaml and source/lambda_functions/microvm_vnc_token).
+This function creates, updates, and deletes the Lambda@Edge viewer-request
+function that authorizes /vnc/* requests on the CloudFront distribution.
+
+The edge function's source is held here as a string literal and zipped in
+memory, because Lambda@Edge supports neither layers nor environment variables:
+its configuration (the signing secret's ARN and home region) is substituted into
+the code at stack create/update time, and it must run on the Python runtime's
+own modules alone.
 """
 
 import io
@@ -55,155 +59,175 @@ def send(
 
 # Lambda@Edge function code.
 #
-# Auth model: the token is a VP-scoped HMAC, not a raw Cognito credential.
-# MicrovmVncTokenFunction (a regular, non-edge Lambda behind AppSync) already
-# does the real authorization check - caller is the VP's Owner/SharedWith or
-# an Admin - before it mints one, binding it to this specific vpId with a
-# short TTL. This function's only job is to verify that binding: that the
-# token in the URL was produced by someone holding VNC_HMAC_SECRET for THIS
-# vpId and hasn't expired. It deliberately does not re-derive caller
-# identity from a Cognito token - there is no per-request Cognito check here
-# at all, because the token itself already proves the caller passed one
-# upstream, for this specific VP, not just some VP.
-#
-# Previously (until 2026-09-16) this function decoded a raw Cognito ID token
-# and checked exp/iss/aud/token_use, but never verified the JWT signature -
-# get_jwks() was defined and never called, and all three checked claim
-# values are public, so anyone reaching the CloudFront URL could hand-craft
-# a fake token with no Cognito account at all. Signature verification was
-# added the same day, but even a genuine, correctly-signed token from ANY
-# authenticated user still worked for ANY vpId - the check never looked at
-# which VP the token was for. This HMAC scheme fixes both: forging a token
-# requires the secret (never leaves AWS - see EdgeAuthDeployerFunction /
-# MicrovmVncTokenFunction), and a genuine token only works for the one VP it
-# was minted for.
+# Substituted and zipped by this deployer at stack create/update time. Uses only
+# the Python runtime's own modules: Lambda@Edge cannot attach layers.
 EDGE_FUNCTION_CODE = '''
+import base64
 import hashlib
 import hmac
+import json
 import re
 import time
+import urllib.parse
 
-# vpId is a $util.autoId() UUID (hex + hyphens); this is deliberately a
-# little more permissive than that (also allows underscores) rather than
-# hardcoding UUID shape, but still anchored and printable-ASCII-only.
-VP_PATH_RE = re.compile(r'^/vnc/([A-Za-z0-9_-]+)$')
+import boto3
 
-HMAC_SECRET = "HMAC_SECRET_PLACEHOLDER"
+# Injected by the deployer. Lambda@Edge has no environment variables, so the
+# configuration is baked into the code.
+SIGNING_SECRET_ARN = "SIGNING_SECRET_ARN_PLACEHOLDER"
+SIGNING_SECRET_REGION = "SIGNING_SECRET_REGION_PLACEHOLDER"
 
-def verify_vp_scoped_token(token, vp_id):
-    """Verify a `<vpId>.<expiry>.<hmac-hex>` token against HMAC_SECRET.
+# Upper bound on how far ahead a token's expiry may sit. The minter issues a few
+# minutes; this ceiling is checked here as well so the edge does not depend on the
+# minter having done so, and it is what rejects an expiry of Infinity.
+MAX_TOKEN_LIFETIME_SECONDS = 3600
 
-    Constant-time comparison (hmac.compare_digest) so response timing can't
-    be used to brute-force the MAC byte by byte.
-    """
+# One cached copy per warm container. The secret is generated once per
+# deployment, so there is nothing to refresh.
+_signing_secret = []
+
+
+def get_signing_secret():
+    """The deployment's signing secret, or None when it cannot be read."""
+    if _signing_secret:
+        return _signing_secret[0]
     try:
-        parts = token.split('.')
-        if len(parts) != 3:
-            print("Malformed token (expected 3 dot-separated parts)")
-            return False
-        token_vp_id, expiry_str, mac_hex = parts
+        # Lambda@Edge runs replicated in the edge location nearest the viewer, so
+        # the region holding the secret has to be named explicitly rather than
+        # inherited from the execution environment.
+        client = boto3.client("secretsmanager", region_name=SIGNING_SECRET_REGION)
+        secret = client.get_secret_value(SecretId=SIGNING_SECRET_ARN)["SecretString"]
+    except Exception as exc:
+        print("Could not read the signing secret: %s" % type(exc).__name__)
+        return None
+    _signing_secret.append(secret)
+    return secret
 
-        # Bind to the vpId in the request path, not just the URL's own token.
-        # Without this, a token minted for one VP would work for any other.
-        if token_vp_id != vp_id:
-            print(f"Token vpId {token_vp_id!r} does not match path vpId {vp_id!r}")
-            return False
 
-        try:
-            expiry = int(expiry_str)
-        except ValueError:
-            print(f"Non-numeric expiry: {expiry_str!r}")
-            return False
-        if expiry < int(time.time()):
-            print(f"Token expired: {expiry}")
-            return False
+def b64url_decode(value):
+    """Decode unpadded base64url."""
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
-        signing_input = f"{token_vp_id}.{expiry_str}".encode('ascii')
-        expected_mac = hmac.new(HMAC_SECRET.encode('utf-8'), signing_input, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(mac_hex, expected_mac):
-            print("HMAC mismatch")
-            return False
 
-        return True
-    except Exception as ex:
-        print(f"Token verification error: {ex}")
+def vp_id_from_uri(uri):
+    """The participant id in /vnc/<vpId>, or "" when the shape is unexpected."""
+    match = re.fullmatch(r"/vnc/([A-Za-z0-9_-]+)", uri)
+    return match.group(1) if match else ""
+
+
+def token_from_querystring(querystring):
+    """The value of the `token` query parameter, or None."""
+    for param in (querystring or "").split("&"):
+        if "=" not in param:
+            continue
+        key, value = param.split("=", 1)
+        if key == "token":
+            return urllib.parse.unquote(value)
+    return None
+
+
+def uri_is_plain(uri):
+    """True when the path is already in the form the token can be compared to.
+
+    CloudFront normalizes the path to pick a cache behavior but forwards the path
+    as the viewer sent it, so the string compared here is the one the origin will
+    receive. Paths carrying a relative segment, an encoded dot, or an empty
+    segment are refused outright rather than normalized: normalizing correctly is
+    the hard part, and this function's only job is to establish that the single
+    comparison below is the whole of the path check.
+    """
+    lowered = uri.lower()
+    return ".." not in lowered and "%2e" not in lowered and "//" not in lowered
+
+
+def verify_token(token, secret, vp_id, uri):
+    """True when the token is intact, unexpired, and issued for this exact path.
+
+    The MAC covers the encoded payload exactly as received, so the payload is
+    parsed only once the signature has been confirmed. The payload names one
+    participant and one path, and both are compared for equality, so a token is
+    usable on the single path it was issued for and no other.
+    """
+    parts = token.split(".")
+    if len(parts) != 2:
         return False
+    payload_b64, signature_b64 = parts
+    try:
+        provided = b64url_decode(signature_b64)
+    except Exception:
+        return False
+    expected = hmac.new(
+        secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256
+    ).digest()
+    if not hmac.compare_digest(expected, provided):
+        return False
+    try:
+        payload = json.loads(b64url_decode(payload_b64))
+    except Exception:
+        return False
+    # Every read below assumes a mapping. A signed scalar would otherwise raise
+    # out of this function rather than returning a decision.
+    if not isinstance(payload, dict):
+        return False
+    try:
+        expiry = float(payload.get("exp", 0))
+    except (TypeError, ValueError):
+        return False
+    # Bounded on both sides, as a positive test, so the only values that pass are
+    # the ones that genuinely sit in the window. json accepts the bare literals
+    # NaN and Infinity and float() converts both: NaN fails every comparison, and
+    # Infinity orders after any clock reading, so an upper bound is what rejects
+    # it. The ceiling is deliberately looser than the minter's own lifetime -- it
+    # is a sanity bound held independently of the minter, not a copy of its
+    # policy.
+    now = time.time()
+    if not now < expiry <= now + MAX_TOKEN_LIFETIME_SECONDS:
+        return False
+    if not payload.get("vpId") or payload.get("vpId") != vp_id:
+        return False
+    prefix = payload.get("prefix")
+    if not prefix or uri != prefix:
+        return False
+    return True
+
+
+def deny(status, description, message):
+    return {
+        "status": status,
+        "statusDescription": description,
+        "body": message,
+        "headers": {"content-type": [{"key": "Content-Type", "value": "text/plain"}]},
+    }
+
 
 def lambda_handler(event, context):
-    """Lambda@Edge handler for viewer request"""
-    request = event['Records'][0]['cf']['request']
-    uri = request.get('uri', '')
-    querystring = request.get('querystring', '')
+    """Viewer-request handler for the /vnc/* behavior.
 
-    print(f"Request URI: {uri}")
+    Nothing here logs the token or the request URI: both identify a specific
+    viewing session, and CloudFront already records the request itself.
+    """
+    request = event["Records"][0]["cf"]["request"]
+    uri = request.get("uri", "")
 
-    # Only validate /vnc/<vpId> paths
-    if not uri.startswith('/vnc/'):
-        print("Not a VNC path, allowing through")
+    # This behavior only matches /vnc/*, but the function passes anything else
+    # through untouched in case it is ever associated more widely.
+    if not uri.startswith("/vnc/"):
         return request
 
-    # /vnc/<vpId> - the ALB listener rule for this vpId is what actually
-    # routes to the right ECS task (see status-manager.ts), so the vpId
-    # segment here is load-bearing for auth, not just routing: it is what
-    # ties the token to this specific VP.
-    #
-    # Deliberately strict: the path must be EXACTLY /vnc/<vpId>, nothing
-    # else - no trailing slash, no extra segments, no dot-segments. A looser
-    # extraction (e.g. taking only the first '/'-separated segment) would let
-    # a URI like /vnc/vpA/../vpB verify against a real vpA token (it still
-    # reads as vpId=vpA) while not matching the ALB's exact-path listener
-    # rule for vpA - CloudFront would then forward it to the shared default
-    # target group, which round-robins across every running VP's task,
-    # landing the (verified, but now-irrelevant) vpA token holder on an
-    # arbitrary VP's container instead of vpA's.
-    match = VP_PATH_RE.match(uri)
-    if not match:
-        print(f"Path does not match the exact /vnc/<vpId> shape: {uri!r}")
-        return {
-            'status': '400',
-            'statusDescription': 'Bad Request',
-            'body': 'Invalid Virtual Participant path',
-            'headers': {
-                'content-type': [{'key': 'Content-Type', 'value': 'text/plain'}]
-            }
-        }
-    vp_id = match.group(1)
-
-    # Extract token from query string parameter
-    token = None
-    if querystring:
-        import urllib.parse
-        params = querystring.split('&')
-        for param in params:
-            if '=' in param:
-                key, value = param.split('=', 1)
-                if key == 'token':
-                    token = urllib.parse.unquote(value)
-                    break
-
+    token = token_from_querystring(request.get("querystring", ""))
     if not token:
-        print("No token found in query string")
-        return {
-            'status': '401',
-            'statusDescription': 'Unauthorized',
-            'body': 'Authentication required - token parameter missing',
-            'headers': {
-                'content-type': [{'key': 'Content-Type', 'value': 'text/plain'}]
-            }
-        }
+        return deny("401", "Unauthorized", "Authentication required")
 
-    if not verify_vp_scoped_token(token, vp_id):
-        print("Token verification failed")
-        return {
-            'status': '403',
-            'statusDescription': 'Forbidden',
-            'body': 'Invalid or expired token',
-            'headers': {
-                'content-type': [{'key': 'Content-Type', 'value': 'text/plain'}]
-            }
-        }
+    secret = get_signing_secret()
+    if not secret:
+        # Fail closed: with no secret, no token can be checked.
+        print("Denying /vnc request: signing secret unavailable")
+        return deny("403", "Forbidden", "Access denied")
 
-    print("Authentication successful, allowing request")
+    vp_id = vp_id_from_uri(uri)
+    if not vp_id or not uri_is_plain(uri) or not verify_token(token, secret, vp_id, uri):
+        return deny("403", "Forbidden", "Access denied")
+
     return request
 '''
 
@@ -253,12 +277,17 @@ def wait_for_version_active(lambda_client, function_name, version):
         raise
 
 
-def create_edge_function(lambda_client, function_name, role_arn, hmac_secret):
-    """Create Lambda@Edge function in us-east-1"""
-    code = EDGE_FUNCTION_CODE.replace("HMAC_SECRET_PLACEHOLDER", hmac_secret)
+def render_edge_code(signing_secret_arn, signing_secret_region):
+    """The edge source with its deploy-time configuration substituted in."""
+    code = EDGE_FUNCTION_CODE.replace("SIGNING_SECRET_ARN_PLACEHOLDER", signing_secret_arn)
+    return code.replace("SIGNING_SECRET_REGION_PLACEHOLDER", signing_secret_region)
 
-    # Create zip file
-    zip_content = create_zip_file(code)
+
+def create_edge_function(
+    lambda_client, function_name, role_arn, signing_secret_arn, signing_secret_region
+):
+    """Create Lambda@Edge function in us-east-1"""
+    zip_content = create_zip_file(render_edge_code(signing_secret_arn, signing_secret_region))
 
     try:
         response = lambda_client.create_function(
@@ -267,7 +296,7 @@ def create_edge_function(lambda_client, function_name, role_arn, hmac_secret):
             Role=role_arn,
             Handler="index.lambda_handler",
             Code={"ZipFile": zip_content},
-            Description="Lambda@Edge function for VNC WebSocket authentication",
+            Description="Lambda@Edge viewer-request authorizer for the /vnc/* behavior",
             Timeout=5,
             MemorySize=128,
             Publish=True,  # Must publish for Lambda@Edge
@@ -296,16 +325,15 @@ def create_edge_function(lambda_client, function_name, role_arn, hmac_secret):
     except ClientError as e:
         if e.response["Error"]["Code"] == "ResourceConflictException":
             # Function already exists, update it
-            return update_edge_function(lambda_client, function_name, hmac_secret)
+            return update_edge_function(
+                lambda_client, function_name, signing_secret_arn, signing_secret_region
+            )
         raise
 
 
-def update_edge_function(lambda_client, function_name, hmac_secret):
+def update_edge_function(lambda_client, function_name, signing_secret_arn, signing_secret_region):
     """Update existing Lambda@Edge function"""
-    code = EDGE_FUNCTION_CODE.replace("HMAC_SECRET_PLACEHOLDER", hmac_secret)
-
-    # Create zip file
-    zip_content = create_zip_file(code)
+    zip_content = create_zip_file(render_edge_code(signing_secret_arn, signing_secret_region))
 
     # Make sure any previous in-flight update on $LATEST has finished before we
     # try to publish a new version (otherwise we can hit ResourceConflictException).
@@ -395,10 +423,6 @@ def delete_edge_function(lambda_client, function_name):
 
 def handler(event, context):
     """Custom resource handler"""
-    # ResourceProperties only ever holds the secret's ARN, never its value -
-    # that value is fetched below via get_secret_value() and embedded
-    # straight into the zip, so it never appears in this event and never
-    # gets logged here.
     print(f"Event: {json.dumps(event)}")
 
     response_data = {}
@@ -409,21 +433,23 @@ def handler(event, context):
         props = event["ResourceProperties"]
         function_name = props["FunctionName"]
         role_arn = props["RoleArn"]
-        hmac_secret_arn = props["HmacSecretArn"]
+        # The secret lives in the stack's own region; the edge function runs
+        # replicated, so it has to be told where to look for it.
+        signing_secret_arn = props["SigningSecretArn"]
+        signing_secret_region = props["SigningSecretRegion"]
 
-        # Create clients for us-east-1 (this custom resource, the Lambda@Edge
-        # function it deploys, and VncHmacSecret all live in the same
-        # us-east-1 stack - see "Locked decisions" in LMA-HANDOFF.md).
+        # Lambda@Edge functions must live in us-east-1
         lambda_client = boto3.client("lambda", region_name="us-east-1")
-        secretsmanager_client = boto3.client("secretsmanager", region_name="us-east-1")
 
         if event["RequestType"] in ["Create", "Update"]:
-            hmac_secret = secretsmanager_client.get_secret_value(SecretId=hmac_secret_arn)[
-                "SecretString"
-            ]
-
             # Create or update function
-            function_arn = create_edge_function(lambda_client, function_name, role_arn, hmac_secret)
+            function_arn = create_edge_function(
+                lambda_client,
+                function_name,
+                role_arn,
+                signing_secret_arn,
+                signing_secret_region,
+            )
 
             # Return the versioned ARN (required for Lambda@Edge)
             response_data["FunctionArn"] = function_arn

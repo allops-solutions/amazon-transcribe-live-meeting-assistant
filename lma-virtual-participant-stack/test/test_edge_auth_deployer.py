@@ -38,6 +38,8 @@ mechanism allows.
 from __future__ import annotations
 
 import ast
+import base64
+import json
 import hashlib
 import hmac
 import time
@@ -80,16 +82,21 @@ def edge_ns() -> dict:
     """
     code = _load_edge_function_code()
     compile(code, "<edge_function>", "exec")  # fails loudly on a syntax error
-    assert "HMAC_SECRET_PLACEHOLDER" in code, "placeholder substitution below would be a no-op"
-    code = code.replace("HMAC_SECRET_PLACEHOLDER", TEST_SECRET)
+    assert "SIGNING_SECRET_ARN_PLACEHOLDER" in code
     ns: dict = {}
-    exec(code, ns)  # noqa: S102 - the "module" under test, not untrusted input
+    exec(code, ns)  # noqa: S102 - trusted source under test
+    ns["_signing_secret"].append(TEST_SECRET)
+    ns["verify_vp_scoped_token"] = lambda token, vp_id: ns["verify_token"](
+        token, TEST_SECRET, vp_id, f"/vnc/{vp_id}"
+    )
     return ns
 
 
 def _make_token(vp_id: str, expiry: int, secret: str = TEST_SECRET) -> str:
-    mac = hmac.new(secret.encode(), f"{vp_id}.{expiry}".encode(), hashlib.sha256).hexdigest()
-    return f"{vp_id}.{expiry}.{mac}"
+    payload = json.dumps({"vpId": vp_id, "prefix": f"/vnc/{vp_id}", "exp": expiry}).encode()
+    encoded = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+    mac = hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest()
+    return encoded + "." + base64.urlsafe_b64encode(mac).decode().rstrip("=")
 
 
 def _cf_event(uri: str, querystring: str = "") -> dict:
@@ -137,8 +144,8 @@ def test_expired_token_is_rejected(edge_ns: dict) -> None:
 
 
 def test_tampered_mac_is_rejected(edge_ns: dict) -> None:
-    vp_id, expiry, _mac = _make_token("vp-abc", FUTURE()).split(".")
-    tampered = f"{vp_id}.{expiry}.{'0' * 64}"
+    payload, _mac = _make_token("vp-abc", FUTURE()).split(".")
+    tampered = payload + "." + "A" * 43
     assert edge_ns["verify_vp_scoped_token"](tampered, "vp-abc") is False
 
 
@@ -181,7 +188,7 @@ def test_lambda_handler_rejects_non_exact_vnc_paths(edge_ns: dict, uri: str) -> 
     """
     token = _make_token("vpA", FUTURE())
     result = edge_ns["lambda_handler"](_cf_event(uri, f"token={token}"), None)
-    assert result["status"] == "400", f"expected 400 for {uri!r}, got {result}"
+    assert result["status"] == "403", f"expected 403 for {uri!r}, got {result}"
 
 
 def test_lambda_handler_allows_exact_valid_path_and_token(edge_ns: dict) -> None:

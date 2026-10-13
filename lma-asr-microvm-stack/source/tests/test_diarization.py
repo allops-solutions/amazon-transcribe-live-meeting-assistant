@@ -842,7 +842,7 @@ def test_new_session_honours_per_session_diarization_overrides() -> None:
     """All four knobs must be changeable per session.
 
     The operating point is empirical and model-specific, so it has to be tunable
-    from runtime config (the ASR Config page) rather than only by rebuilding the
+    from runtime config (the Transcription Engine page) rather than only by rebuilding the
     image — a five-minute rebuild per experiment made tuning impractical.
     """
     engine = DiarizingEngine(
@@ -941,6 +941,41 @@ def test_two_speakers_in_one_utterance_become_two_rows() -> None:
     # The cut snapped to a word boundary: no word appears in both rows.
     assert events[0].words is not None and events[1].words is not None
     assert [word.w for word in events[0].words] == ["hello", "there"]
+
+
+def test_a_short_leading_part_folds_into_the_row_after_it_not_the_speaker_before() -> None:
+    # Live shape: boundaries 0.84 s and 2.07 s into a 19 s utterance left a 1.5 s
+    # opening fragment that inherited the previous row's speaker.
+    opening = _words(("do", 0.0, 0.3), ("you", 0.35, 0.6), ("want", 0.65, 0.8))
+    second = _words(("to", 0.9, 1.1), ("dive", 1.2, 1.6), ("in", 1.7, 2.0))
+    rest = _words(*[(f"w{i}", 2.2 + i * 0.4, 2.5 + i * 0.4) for i in range(42)])
+    utterance = [WordTiming(w=w.w, s=5.5 + w.s, e=5.5 + w.e) for w in opening + second + rest]
+    inner = ScriptedRecognizer(
+        [
+            [_final_with_words(0, 0.0, 4.5, _words(("great", 0.0, 0.5), ("thanks", 0.6, 1.0)))],
+            [_final_with_words(1, 5.5, 24.5, utterance)],
+        ]
+    )
+    # First utterance embeds as BOB; the second, once whole, as ALICE.
+    embedder = ScriptedEmbedder([BOB, ALICE])
+    recognizer = _recognizer(
+        inner,
+        embedder,
+        threshold=0.5,
+        min_segment_ms=2500,
+        turn_detector=ScriptedTurnDetector([0.84, 2.07]),
+    )
+
+    first = recognizer.accept_pcm(_pcm(4.5))
+    second_events = recognizer.accept_pcm(_pcm(20.0))
+
+    assert len(first) == 1
+    assert len(second_events) == 1, "the opening fragment must fold into the row after it"
+    row = second_events[0]
+    assert row.start == 5.5 and row.end == 24.5
+    assert row.text.startswith("do you want to dive in w0")
+    assert row.speaker != first[0].speaker, "labelled by the embedded 17 s, not inherited"
+    assert embedder.calls == 2
 
 
 def test_a_split_shifts_later_segment_numbers_so_none_collide() -> None:
@@ -1134,6 +1169,26 @@ def test_the_final_after_a_cut_emits_only_the_remainder() -> None:
     # Distinct rows, and the words are partitioned rather than duplicated.
     assert cut[0].segment != cut[1].segment
     assert [word.w for word in cut[1].words or []] == ["three"]
+
+
+def test_a_one_token_word_at_the_cut_is_not_emitted_twice() -> None:
+    # Live shape: a one-token word (start == end) at the cut appeared in both rows.
+    words = _words(("one", 0.1, 0.5), ("today", 1.0, 1.0), ("three", 2.2, 2.6))
+    inner = ScriptedRecognizer(
+        [
+            [_partial(0, "one today", 0.1)],
+            [_final_with_words(0, 0.1, 2.6, words)],
+        ],
+        open_words=[words[:2], words],
+    )
+    rec = _live(inner, ScriptedEmbedder([VOICE_A, VOICE_B]), ScriptedTurnDetector([1.6]))
+
+    first = rec.accept_pcm(_pcm(1.5))
+    second = rec.accept_pcm(_pcm(1.5))
+
+    finals = [event for event in first + second if event.kind == "final"]
+    assert [event.text for event in finals] == ["one today", "three"]
+    assert [word.w for word in finals[1].words or []] == ["three"]
 
 
 def test_a_long_monologue_settles_instead_of_staying_open() -> None:
@@ -1420,3 +1475,77 @@ def test_the_remainder_is_partitioned_by_time_not_by_a_string_prefix() -> None:
     )
     duplicated = {word: n for word, n in counted.items() if n > 1}
     assert not duplicated, f"words emitted on more than one row: {duplicated}"
+
+
+def test_a_turn_boundary_is_placed_against_the_audio_the_detector_saw() -> None:
+    words = _words(*[(f"w{i}", i * 0.5, i * 0.5 + 0.4) for i in range(80)])
+    inner = ScriptedRecognizer([[_final_with_words(0, 0.0, 40.0, words)]])
+    embedder = ScriptedEmbedder([ALICE, BOB])
+    recognizer = _recognizer(
+        inner,
+        embedder,
+        threshold=0.5,
+        min_segment_ms=2500,
+        max_buffer_ms=20000,
+        turn_detector=ScriptedTurnDetector([5.0]),
+    )
+
+    rows = recognizer.accept_pcm(_pcm(40.0))
+
+    assert [row.text.split()[0] for row in rows] == ["w0", "w50"]
+    assert rows[0].end == pytest.approx(24.9)
+    assert rows[1].start == pytest.approx(25.0)
+    assert rows[0].speaker != rows[1].speaker
+
+
+def test_a_session_that_declines_speaker_labels_gets_none_and_costs_no_embedding() -> None:
+    words = _words(("one", 0.0, 0.4), ("two", 0.5, 0.9), ("three", 2.0, 2.4), ("four", 2.5, 2.9))
+    inner = ScriptedEngine(ScriptedRecognizer([[_final_with_words(0, 0.0, 3.0, words)]]))
+    embedder = ScriptedEmbedder([VOICE_A])
+    detector = ScriptedTurnDetector([1.5])
+    engine = DiarizingEngine(inner, embedder, _config(), turn_detector=detector)
+
+    session = engine.new_session(SessionConfig(sample_rate=SAMPLE_RATE, diarize=False))
+    events = session.accept_pcm(_pcm(3.0))
+
+    assert [event.kind for event in events] == ["final"]
+    assert events[0].speaker is None
+    assert events[0].text == "one two three four"
+    assert embedder.calls == 0
+    assert detector.calls == 0
+    labelled = engine.new_session(SessionConfig(sample_rate=SAMPLE_RATE, diarize=True))
+    assert isinstance(labelled, DiarizingRecognizer)
+    assert labelled._label_speakers and labelled._turn_detector is detector
+
+
+def test_labels_off_still_cuts_a_row_at_the_open_segment_bound() -> None:
+    words = _words(
+        ("one", 0.1, 0.5),
+        ("two", 0.6, 1.0),
+        ("three", 1.2, 1.6),
+        ("four", 2.0, 2.4),
+        ("five", 3.3, 3.7),
+    )
+    inner = ScriptedRecognizer(
+        [[_partial(0, "one two", 0.1)], [_partial(0, "one two three four five", 0.1)]],
+        open_words=[words[:2], words],
+    )
+    embedder = ScriptedEmbedder([VOICE_A])
+    rec = _recognizer(
+        inner,
+        embedder,
+        min_segment_ms=500,
+        live_turn_cut=True,
+        turn_cut_interval_ms=0,
+        max_open_segment_ms=3000,
+        label_speakers=False,
+    )
+
+    rec.accept_pcm(_pcm(2.0))
+    events = rec.accept_pcm(_pcm(2.0))
+
+    finals = [event for event in events if event.kind == "final"]
+    assert len(finals) == 1
+    assert finals[0].text == "one two three four"
+    assert finals[0].speaker is None
+    assert embedder.calls == 0
