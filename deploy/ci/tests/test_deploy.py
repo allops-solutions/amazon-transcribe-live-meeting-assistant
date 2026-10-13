@@ -28,6 +28,32 @@ class SafetyTests(unittest.TestCase):
     def test_dev_context(self):
         deploy.check_context('dev', '135755363077', 'LMA-CI-123', '123')
 
+    def test_feature_branch_is_dev_only(self):
+        with patch.dict(os.environ, {'GITHUB_REF': 'refs/heads/feature/upstream-v0.3.10'}):
+            deploy.check_context('dev', '135755363077', 'LMA-CI-123', '123')
+            with self.assertRaises(ValueError):
+                deploy.check_context('production', '009853297978', 'LMA', '123')
+            with self.assertRaises(ValueError):
+                deploy.check_context('dev', '135755363077', 'LMA-Dev', '123')
+
+    def test_keep_dev_preserves_data_without_widening_the_stack_target(self):
+        base = json.loads((ROOT / 'deploy/params/dev.json').read_text())
+        overrides = {p['ParameterKey']: '' for p in base
+                     if 'FILL_IN_FROM_SECRET_STORE' in p['ParameterValue']}
+        with patch.dict(os.environ, {'LMA_KEEP_DEV': 'true'}):
+            parameters = deploy.merge_parameters(base, overrides, 'dev')
+        self.assertEqual(next(p['ParameterValue'] for p in parameters
+                              if p['ParameterKey'] == 'EnableDataRetentionOnDelete'), 'true')
+
+    def test_workflow_keep_dev_default_is_false_and_cleanup_is_conditional(self):
+        import yaml
+        workflow = yaml.load((ROOT / '.github/workflows/lma-deploy.yml').read_text(),
+                             Loader=yaml.BaseLoader)
+        self.assertEqual(workflow['on']['workflow_dispatch']['inputs']['keep_dev']['default'], 'false')
+        cleanup = workflow['jobs']['deploy']['steps'][-1]
+        self.assertIn('!inputs.keep_dev', cleanup['if'])
+        self.assertIn("inputs.environment == 'dev'", cleanup['if'])
+
     def test_wrong_account(self):
         with self.assertRaises(ValueError):
             deploy.check_context('production', '135755363077', 'LMA', '123')

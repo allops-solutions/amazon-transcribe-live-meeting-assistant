@@ -3,7 +3,7 @@ Description: Administrator-owned conventional LMA deployment access; not strict 
 Parameters:
   ArtifactBucketName:
     Type: String
-    AllowedPattern: '^allops-lma-ci-[0-9]{12}-production-[a-z0-9-]+$'
+    AllowedPattern: '^allops-lma-ci-[0-9]{12}-(production|dev)-[a-z0-9-]+$'
   PermissionsBoundaryArn:
     Type: String
     Default: ''

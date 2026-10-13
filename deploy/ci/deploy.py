@@ -28,8 +28,11 @@ def check_context(environment, account, stack, run_id):
         raise ValueError("Stack name does not match the protected target")
     if os.environ.get("GITHUB_REPOSITORY") != REPOSITORY:
         raise ValueError("Deployment must run from the maintained allOps repository")
-    if os.environ.get("GITHUB_REF") != "refs/heads/allops-main":
-        raise ValueError("Deployment must run from allops-main")
+    ref = os.environ.get("GITHUB_REF", "")
+    if ref != "refs/heads/allops-main" and not (
+        environment == "dev" and re.fullmatch(r"refs/heads/feature/[A-Za-z0-9._/-]+", ref)
+    ):
+        raise ValueError("Production requires allops-main; dev permits maintained feature branches")
     if os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
         raise ValueError("Deployment requires a manual workflow dispatch")
 
@@ -49,7 +52,9 @@ def merge_parameters(base, overrides, environment):
     if values.get("ModelValidation") != "true":
         raise ValueError("Model validation must remain enabled")
     # Only brand-new, run-owned temporary dev stacks are disposable.
-    values["EnableDataRetentionOnDelete"] = "true" if environment == "production" else "false"
+    values["EnableDataRetentionOnDelete"] = "true" if (
+        environment == "production" or os.environ.get("LMA_KEEP_DEV") == "true"
+    ) else "false"
     if environment == 'production':
         found = production_config_issues(
             [{'ParameterKey': key, 'ParameterValue': value} for key, value in values.items()], {})
