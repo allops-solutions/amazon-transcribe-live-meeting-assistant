@@ -44,9 +44,11 @@ optional engine or voice integration is enabled merely by this merge.
 ## Required acceptance before production
 
 1. Run branch CI checks and builds.
-2. Deploy the integration revision through an authorized dev CI path. The
-   existing production deployment workflow accepts only `allops-main`; it is
-   not a feature-branch dev deployment lane.
+2. Deploy the integration revision through the dev CI lane. Production remains
+   restricted to `allops-main`; dev accepts maintained feature branches allowed
+   explicitly by the GitHub dev environment. `keep_dev=true` leaves the run-owned
+   `LMA-CI-<run-id>` stack up for acceptance, with data retention enabled. It never
+   targets the existing `LMA-Dev` stack. Otherwise automatic cleanup remains on.
 3. Verify Google SSO and the real Quick connector user identity.
 4. Verify Google Meet schedule, duplicate prevention, reschedule and explicit
    Calendar cancellation against the same VP.

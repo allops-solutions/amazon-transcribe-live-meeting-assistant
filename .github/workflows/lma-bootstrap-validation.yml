@@ -2,6 +2,11 @@ name: LMA bootstrap validation
 on:
   workflow_dispatch:
     inputs:
+      environment:
+        description: Account whose CI runner is being validated
+        type: choice
+        options: [production, dev]
+        default: production
       validate_aws:
         description: Also assume the read-only authentication role and check bootstrap metadata
         type: boolean
@@ -14,9 +19,9 @@ permissions:
   contents: read
 jobs:
   runner:
-    if: github.repository == 'allops-solutions/amazon-transcribe-live-meeting-assistant' && github.ref == 'refs/heads/allops-main'
-    environment: production
-    runs-on: codebuild-lma-ci-production-${{ github.run_id }}-${{ github.run_attempt }}
+    if: github.repository == 'allops-solutions/amazon-transcribe-live-meeting-assistant' && (github.ref == 'refs/heads/allops-main' || (inputs.environment == 'dev' && startsWith(github.ref, 'refs/heads/feature/')))
+    environment: ${{ inputs.environment }}
+    runs-on: codebuild-lma-ci-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -39,21 +44,22 @@ jobs:
           aws-region: us-east-1
           role-duration-seconds: 900
           unset-current-credentials: true
-          allowed-account-ids: '009853297978'
+          allowed-account-ids: ${{ inputs.environment == 'production' && '009853297978' || '135755363077' }}
       - name: Check account, bucket access and secret metadata without reading secret values
         if: inputs.validate_aws
         env:
           AWS_PAGER: ''
           LMA_ARTIFACT_BUCKET: ${{ vars.LMA_ARTIFACT_BUCKET }}
           LMA_CONFIG_SECRET_ARN: ${{ vars.LMA_CONFIG_SECRET_ARN }}
+          EXPECTED_ACCOUNT: ${{ inputs.environment == 'production' && '009853297978' || '135755363077' }}
         run: |
-          test "$(aws sts get-caller-identity --query Account --output text)" = '009853297978'
+          test "$(aws sts get-caller-identity --query Account --output text)" = "$EXPECTED_ACCOUNT"
           aws s3api head-bucket --bucket "$LMA_ARTIFACT_BUCKET"
           test "$(aws secretsmanager describe-secret --secret-id "$LMA_CONFIG_SECRET_ARN" --query ARN --output text)" = "$LMA_CONFIG_SECRET_ARN"
-          echo 'Production AWS authentication and bootstrap metadata access verified. No secret values read; no deployment attempted.'
+          echo 'AWS authentication and bootstrap metadata access verified. No secret values read; no deployment attempted.'
   publish:
     needs: runner
-    if: inputs.publish_build && github.repository == 'allops-solutions/amazon-transcribe-live-meeting-assistant' && github.ref == 'refs/heads/allops-main'
+    if: inputs.publish_build && inputs.environment == 'production' && github.repository == 'allops-solutions/amazon-transcribe-live-meeting-assistant' && github.ref == 'refs/heads/allops-main'
     environment: production
     runs-on: codebuild-lma-ci-production-${{ github.run_id }}-${{ github.run_attempt }}
     timeout-minutes: 240

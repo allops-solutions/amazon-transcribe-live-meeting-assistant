@@ -71,7 +71,7 @@ def validate_cleanup(stack, tags, run_id):
 
 def validate_application_boundary(parameters, account, environment):
     """Pin production's boundary independently of the editable configuration secret."""
-    if environment != "production":
+    if environment != "production" and not os.environ.get("LMA_APPLICATION_BOUNDARY_ARN"):
         return
     approved = os.environ.get("LMA_APPLICATION_BOUNDARY_ARN", "")
     if not re.fullmatch(
