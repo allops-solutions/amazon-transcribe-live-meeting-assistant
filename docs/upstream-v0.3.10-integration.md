@@ -71,3 +71,24 @@ optional engine or voice integration is enabled merely by this merge.
 
 Mocked unit tests and local builds do not establish these live outcomes. Do not
 delete the existing dev environment while these gates remain incomplete.
+
+## Verified isolated OAuth acceptance — 2026-10-13
+
+CI run `38385003766` deployed runtime revision `a85257ea` to `LMA-CI-254333`
+(dev account `135755363077`), preserving owning run `38377254333`.
+CloudFormation reached `UPDATE_COMPLETE`; CI and both branch validation runs passed.
+
+The live HTTP AgentCore gateway probe used a real Cognito MCP-client access token
+from a temporary user explicitly verified not to belong to the Admin group:
+
+- Schedule, repeat schedule without duplication, update, cancel and repeat cancel passed.
+- The same VP `7d0c0e80-b25f-4b9d-994f-d9bf09e87421` was tracked throughout.
+- Consistent DynamoDB reads verified the actual user owner, updated time, preserved
+  Bosnian language and final `CANCELLED` state. AppSync notifications succeeded.
+- Requests with missing or invalid tokens returned HTTP 401.
+- The temporary Cognito user was deleted; no invitation email was sent and no live
+  join was submitted. Cancelled test records/identity claims remain for idempotency.
+
+This establishes the deployed OAuth gateway compatibility fix, not a full Quick
+UI Flow run, Google SSO redirect test or real meeting/audio acceptance. Production,
+original dev and the working Quick connector were not modified. PR 21 remains draft.

@@ -152,6 +152,13 @@ def run(stack, owner_run, meeting_link):
         cognito.admin_set_user_password(
             UserPoolId=pool, Username=username, Password=password, Permanent=True
         )
+        groups = cognito.admin_list_groups_for_user(UserPoolId=pool, Username=username)[
+            "Groups"
+        ]
+        if any(group["GroupName"] == "Admin" for group in groups):
+            raise AssertionError(
+                "Temporary OAuth test user must not be an administrator"
+            )
         secret_hash = base64.b64encode(
             hmac.new(
                 secret.encode(), (username + client).encode(), hashlib.sha256
@@ -244,13 +251,16 @@ def run(stack, owner_run, meeting_link):
     finally:
         try:
             if schedule_attempted and not cancelled and token:
-                cleanup = call(
-                    "cancel_scheduled_meeting",
-                    {
-                        "scheduleAction": "CANCEL",
-                        "calendarEventUid": uid,
-                    },
-                )
+                try:
+                    cleanup = call(
+                        "cancel_scheduled_meeting",
+                        {
+                            "scheduleAction": "CANCEL",
+                            "calendarEventUid": uid,
+                        },
+                    )
+                except (RuntimeError, ValueError, requests.RequestException):
+                    raise RuntimeError("Could not verify test VP cleanup for " + uid) from None
                 if cleanup["status"] != "CANCELLED":
                     raise RuntimeError("Test VP cleanup requires attention for " + uid)
         finally:
