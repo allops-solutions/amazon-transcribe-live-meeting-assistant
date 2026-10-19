@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Show only named profiles in the Transcript Summary editor; retain the backend
+  Default/Custom fallback for older meetings without exposing it as a profile.
+
 - Pin all three AWS credentials workflow actions to v6.3.0's immutable commit
   using Node 24, preserving existing role, account and session restrictions.
 
