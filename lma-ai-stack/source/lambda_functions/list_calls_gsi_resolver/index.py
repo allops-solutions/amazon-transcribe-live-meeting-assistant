@@ -12,9 +12,9 @@ instead of scanning the table.
   full Call objects in a single round-trip.
 - getCallCount: Paginated COUNT query on the GSI.
 
-RBAC: we apply Owner / SharedWith filtering post-query, matching the
-behaviour of the deprecated listCalls* VTL resolvers (see the old
-`listCalls.response.vtl` which filtered by $identity).
+allOps RBAC: authenticated users can read all company meetings. OwnerEmail
+resolves display labels only; stable Owner values and VP control checks stay
+unchanged. It reuses this Lambda rather than creating another function.
 
 Performance: O(matched items) instead of O(total table items).
 Scaling: single `ItemType="call"` hot partition is acceptable at
@@ -27,10 +27,13 @@ import base64
 import json
 import logging
 import os
+import time
 from decimal import Decimal
 
 import boto3
 from boto3.dynamodb.conditions import Key
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -44,6 +47,43 @@ DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
 # DynamoDB BatchGetItem hard limit
 BATCH_GET_LIMIT = 100
+_OWNER_EMAIL_CACHE = {}
+
+
+def owner_email(event):
+    """Display-only lookup of a stored owner in this deployment's user pool.
+
+    Never changes Owner or grants access. Unknown/deleted users retain their
+    identifier in the UI. Cache repeated owners in batched meeting-list queries.
+    """
+    source = event.get("source") or {}
+    owner = source.get("Owner") or source.get("owner") or ""
+    if not isinstance(owner, str) or not owner or len(owner) > 128:
+        return None
+    if "@" in owner:
+        return owner
+    pool = os.environ.get("USER_POOL_ID")
+    if not pool:
+        return None
+    key = (pool, owner)
+    cached = _OWNER_EMAIL_CACHE.get(key)
+    if cached and cached[1] > time.monotonic():
+        return cached[0]
+    try:
+        client = boto3.client("cognito-idp", config=Config(
+            retries={"mode": "adaptive", "max_attempts": 3},
+            connect_timeout=3, read_timeout=3))
+        user = client.admin_get_user(UserPoolId=pool, Username=owner)
+        attrs = {item["Name"]: item["Value"] for item in user.get("UserAttributes", [])}
+        email = attrs.get("email") if attrs.get("email_verified") == "true" else None
+    except (ClientError, BotoCoreError) as exc:
+        code = exc.response["Error"]["Code"] if isinstance(exc, ClientError) else type(exc).__name__
+        logger.warning("Owner display lookup unavailable (%s)", code)
+        return None
+    if len(_OWNER_EMAIL_CACHE) >= 1000:
+        _OWNER_EMAIL_CACHE.clear()
+    _OWNER_EMAIL_CACHE[key] = (email, time.monotonic() + 300)
+    return email
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -198,12 +238,18 @@ def _build_key_condition(start_dt, end_dt):
 
 def handler(event, context):
     """Route to the appropriate field handler."""
+    if isinstance(event, list):
+        if len(event) > 25 or any((item.get("info") or {}).get("fieldName") != "OwnerEmail" for item in event):
+            raise ValueError("Invalid owner display batch")
+        return [owner_email(item) for item in event]
     field = (event.get("info") or {}).get("fieldName", "")
     logger.info("Resolver invoked for field: %s", field)
     if field == "listCallsDateRange":
         return list_calls_date_range(event)
     if field == "getCallCount":
         return get_call_count(event)
+    if field == "OwnerEmail":
+        return owner_email(event)
     raise ValueError(f"Unknown field: {field}")
 
 
@@ -270,7 +316,7 @@ def list_calls_date_range(event):
         call_ids = [it["CallId"] for it in list_items if it.get("CallId")]
         details = _batch_get_call_details(table, call_ids)
 
-        for list_item in list_items:
+        for position, list_item in enumerate(list_items):
             call_id = list_item.get("CallId")
             detail = details.get(call_id, {})
             merged = _merge_list_into_call(list_item, detail)
@@ -278,6 +324,30 @@ def list_calls_date_range(event):
                 continue
             collected.append(merged)
             if len(collected) >= limit:
+                # Rows after this one in the page have not been returned. If any
+                # remain, resume from THIS row rather than from the page's
+                # LastEvaluatedKey, which is past all of them and would drop them
+                # from every subsequent page.
+                #
+                # Unreachable on the first page, where the query's Limit equals
+                # the caller's limit, so a page cannot hold more than `limit`
+                # rows. It becomes reachable as soon as the entitlement filter
+                # removes anything: page one comes back short, page two is
+                # fetched, and page two fills the limit part-way through.
+                #
+                # When the cut falls on the page's last row there is nothing
+                # after it, so the page's own key stands -- and when that key is
+                # absent the listing has genuinely ended and must report no
+                # token, or the UI's loader spins forever.
+                #
+                # TypeDateIndex is keyed on (ItemType, SK) and the table on
+                # (PK, SK), so a GSI resume key needs all three.
+                if position < len(list_items) - 1:
+                    last_key = {
+                        key: list_item[key]
+                        for key in ("ItemType", "PK", "SK")
+                        if key in list_item
+                    }
                 break
 
         if not last_key:

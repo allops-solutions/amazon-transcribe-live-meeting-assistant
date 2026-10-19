@@ -13,6 +13,7 @@ export default /* GraphQL */ `
         CallId
         AgentId
         Owner
+        OwnerEmail
         SharedWith
         CallCategories
         IssuesDetected

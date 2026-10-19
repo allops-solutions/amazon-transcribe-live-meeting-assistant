@@ -16,6 +16,7 @@ This guide describes how to build the LMA project from source code, run local de
 - [Virtual Participant](#virtual-participant)
 - [WebSocket Test Client](#websocket-test-client)
 - [Linting](#linting)
+- [Continuous Integration](#continuous-integration)
 - [Customization Entry Points](#customization-entry-points)
 - [Contributing](#contributing)
 
@@ -26,7 +27,7 @@ You need the following installed on your machine:
 | Dependency | Version |
 |------------|---------|
 | bash | Linux, macOS, or Windows WSL |
-| Node.js | v18, v20, or v22 |
+| Node.js | >= 22.22.2 (the exact pin is in `.nvmrc`; `make setup-node` installs it via nvm) |
 | npm | Bundled with Node.js |
 | Docker | Running (required for SAM builds). On macOS, use Docker Desktop. |
 | zip | Any version |
@@ -238,6 +239,52 @@ From `lma-ai-stack/`, the Makefile provides linting targets (requires `CONFIG_EN
 Code style conventions:
 - **Python**: Black formatter, Flake8, Pylint. 100-character line limit. Config in `.pylintrc`, `.flake8`.
 - **JavaScript/TypeScript**: ESLint (airbnb-base) + Prettier. 120-character line limit, single quotes, trailing commas. Config in `.eslintrc.json`, `.prettierrc`.
+
+## Continuous Integration
+
+Two pipelines run the same set of no-AWS checks:
+
+| Pipeline | File | Triggers |
+|----------|------|----------|
+| GitHub Actions `Code Checks` | `.github/workflows/code-checks.yml` | Pull requests to `develop` or `main`, and pushes to those branches |
+| GitLab `code_checks` | `.gitlab-ci.yml` | Every branch push and merge request |
+| GitLab `nightly_integ_tests` | `.gitlab-ci.yml` | A pipeline schedule only — see [Scheduled Integration Tests](scheduled-integration-tests.md) |
+
+Both take the Node.js version from `.nvmrc` at the repository root (22.23.2;
+>= 22.22.2 is required by jsdom 30). That file is the single pin — GitHub
+Actions reads it via `node-version-file`, the GitLab job downloads the version
+it names, and `make setup-node` installs it with nvm. The pipelines run, in
+order:
+
+```bash
+make setup-python && make setup-cli-dev
+make lint-cfn                                # cfn-lint on all CloudFormation templates
+make test-sdk && make test-cli               # LMA SDK + CLI unit tests
+make test-lambdas                            # Lambda unit suites (each dir isolated)
+make lint-ui-force && make test-ui-force     # React UI eslint + vitest
+make lint-typescript                         # tsc + eslint (transcriber, Virtual Participant)
+make test-vp && make test-vp-template        # Virtual Participant unit + template tests
+make test-ai-stack                           # AppSync contract + AI stack CFN invariants
+make test-integ-plumbing                     # Scheduled integ-run machinery (no AWS)
+make test-asr                                # ASR MicroVM runtime tests + ruff
+cd lma-websocket-transcriber-stack/source/app && npm ci && npm test && npm run smoke
+cd lma-browser-extension-stack && npm install && CI=true npm test && CI=false npm run build
+```
+
+None of these need AWS credentials or Docker. The local image builds
+(`make docker-build-check`) do, so they are run manually. The integration tests
+do too, and run on a nightly GitLab schedule against a long-lived stack —
+`make integ-tests` remains the way to run them by hand, and
+[Scheduled Integration Tests](scheduled-integration-tests.md) covers the
+scheduled run and the one-time setup it needs.
+
+Line coverage is measured by `make test-coverage`, which is deliberately not part
+of this pipeline — it reports numbers rather than enforcing a threshold, and runs
+every suite. See [Test Coverage](test-coverage.md).
+
+The GitLab pipeline additionally
+runs the security review job on merge requests targeting `develop` — see
+[Security Scanning](security-scanning.md).
 
 ## Customization Entry Points
 

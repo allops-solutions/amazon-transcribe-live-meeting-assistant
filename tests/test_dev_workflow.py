@@ -153,7 +153,8 @@ class SummaryFailureTests(unittest.TestCase):
             ns["generate_summary"]("transcript", None, "chosen")
 
     def test_failure_or_empty_result_does_not_publish_summary(self):
-        for result in ({"summary": None, "error": "failure"}, {"summary": ""}):
+        for result in ({"summary": None, "error": "failure"}, {"summary": ""},
+                       {"summary": None, "error": "limit", "errorCode": "OUTPUT_LIMIT"}):
             write = Mock()
             ns = functions("lma-ai-stack/source/lambda_functions/async_transcript_summary_orchestrator/lambda_function.py",
                            {"handler"}, {"Any": Any, "Dict": Dict, "LambdaContext": object,
@@ -161,7 +162,7 @@ class SummaryFailureTests(unittest.TestCase):
                            "write_call_summary_to_kds": write, "mark_summary_failed": Mock()})
             ns["handler"]({"CallId": "meeting"}, None)
             write.assert_not_called()
-            ns["mark_summary_failed"].assert_called_once()
+            ns["mark_summary_failed"].assert_called_once_with({"CallId": "meeting"}, result.get("errorCode"))
 
     def test_failed_run_status_update_is_conditional_and_preserves_summary(self):
         ddb = Mock()
@@ -173,6 +174,13 @@ class SummaryFailureTests(unittest.TestCase):
         args = ddb.update_item.call_args.kwargs
         self.assertEqual(args["Key"]["PK"], {"S": "c#meeting"})
         self.assertEqual(args["ExpressionAttributeValues"][":requested_at"], {"S": "request-1"})
+        self.assertIn("SummaryRequestedAt = :requested_at", args["ConditionExpression"])
+        self.assertNotIn("CallSummaryText", args["UpdateExpression"])
+
+        ns["mark_summary_failed"](
+            {"CallId": "meeting", "SummaryRequestedAt": "request-2"}, "OUTPUT_LIMIT")
+        args = ddb.update_item.call_args.kwargs
+        self.assertEqual(args["ExpressionAttributeValues"][":failed"], {"S": "FAILED_OUTPUT_LIMIT"})
         self.assertIn("SummaryRequestedAt = :requested_at", args["ConditionExpression"])
         self.assertNotIn("CallSummaryText", args["UpdateExpression"])
 
@@ -212,7 +220,9 @@ class SummaryFailureTests(unittest.TestCase):
     def test_summary_lambda_failure_does_not_write_s3(self):
         write = Mock()
         ns = functions("lma-ai-stack/source/lambda_functions/bedrock_summary_lambda/index.py",
-                       {"handler"}, {"json": json, "get_transcripts": Mock(return_value={
+                       {"handler"}, {"json": json,
+                           "SummaryOutputLimitError": type("SummaryOutputLimitError", (ValueError,), {}),
+                           "get_transcripts": Mock(return_value={
                            "transcript": "text", "metadata": {}}),
                            "generate_summary": Mock(side_effect=RuntimeError("model unavailable")),
                            "write_to_s3": write})

@@ -117,6 +117,27 @@ Parameters:
     Type: String
     Description: ARN of the VNC ALB Listener for creating dynamic routing rules
 
+  # The ARN, not the value. A secret value placed in a task definition's
+  # environment is readable by anything that can call ecs:DescribeTaskDefinition,
+  # so the task reads the value from Secrets Manager itself, once, at the point it
+  # creates its listener rule.
+  #
+  # Scope of what that buys: this keeps the value out of the task definition, not
+  # out of the account. The resolved value is returned by
+  # elasticloadbalancing:DescribeRules and cloudfront:GetDistributionConfig, both of
+  # which ReadOnlyAccess grants, and the task role itself holds DescribeRules. The
+  # header is a control on requests arriving from outside, not an isolation boundary
+  # between principals inside the account.
+  VncOriginVerifyHeaderValueSecretArn:
+    Type: String
+    Default: ""
+    Description: ARN of the secret holding the VNC origin-verify header value from AI stack
+
+  VncOriginVerifyHeaderName:
+    Type: String
+    Default: ""
+    Description: Name of the header carrying the VNC origin-verify value from AI stack
+
   VPSecurityGroupId:
     Type: String
     Description: Security Group ID for Virtual Participant ECS tasks from AI stack
@@ -213,6 +234,44 @@ Parameters:
       audio. This is the per-deployment default; each Virtual Participant can
       override it with the "Record meeting video" toggle in the LMA UI.
 
+  # Teams meeting-end detection. Defaults match
+  # DEFAULT_ATTENDEE_WATCHDOG_CONFIG in backend/src/teams.ts (which applies
+  # when these are unset, e.g. a container run locally), and the bounds
+  # match the ceilings the container enforces.
+  VPAttendeePollMs:
+    Type: Number
+    Default: 20000
+    MinValue: 1000
+    MaxValue: 120000
+    Description: >-
+      How often a Teams Virtual Participant samples the meeting UI to
+      decide whether the meeting is still running, in milliseconds.
+      Leave at the default unless advised otherwise.
+
+  VPPollsBeforeEnd:
+    Type: Number
+    Default: 3
+    MinValue: 1
+    MaxValue: 90
+    Description: >-
+      Consecutive polls on which a Teams meeting must show one or fewer
+      attendees before the Virtual Participant leaves. 3 polls at the default
+      cadence is about 60 seconds.
+
+  VPPollsBeforeEndMissing:
+    Type: Number
+    Default: 15
+    MinValue: 1
+    MaxValue: 90
+    Description: >-
+      Consecutive polls on which a Teams meeting must show neither a readable
+      attendee count nor any in-meeting controls before the Virtual Participant
+      leaves. 15 polls at the default cadence is about 5 minutes. Raise
+      this if participants report the Virtual Participant leaving meetings
+      that are still in progress. A value producing a tolerance outside 4 to
+      30 minutes at the chosen cadence is adjusted into that range, so at the
+      default cadence anything below 12 is raised.
+
   ElevenLabsApiKey:
     Type: String
     NoEcho: true
@@ -264,6 +323,20 @@ Parameters:
       - "elevenlabs"
       - "amazon_nova_sonic"
     Description: Voice AI assistant provider (none, elevenlabs, amazon_nova_sonic)
+
+  AmazonNovaSonicRegion:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[a-z]{2,4}(-[a-z]+)+-[0-9]+$"
+    ConstraintDescription: >-
+      Must be empty, or an AWS Region name such as us-east-1.
+    Description: >-
+      Region to reach Amazon Nova Sonic in, when it differs from the region
+      this stack is deployed to. Leave empty to use the stack's own region.
+      Nova Sonic is available in fewer regions than LMA itself, so a
+      deployment constrained to a particular region for compliance reasons
+      can keep everything else local and reach the voice assistant
+      elsewhere.
 
   VoiceAssistantActivationMode:
     Type: String
@@ -438,6 +511,15 @@ Parameters:
       The name of the vocabulary to use when processing the transcription job. Leave blank if no
       custom vocabulary to be used. If yes, the custom vocabulary must pre-exist in your account.
 
+  AsrLauncherFunctionArn:
+    Type: String
+    Default: ""
+    Description: >-
+      (Optional) ARN of the on-demand MicroVM ASR session launcher. Empty means the
+      engine is not deployed and every Virtual Participant is transcribed by Amazon
+      Transcribe. When set, a VP still uses Amazon Transcribe unless the Transcription Engine
+      page's deployment default says otherwise; it reads that switch at meeting start.
+
   CloudWatchLogsExpirationInDays:
     Type: Number
     Default: 14
@@ -529,8 +611,15 @@ Parameters:
 
 
 Conditions:
+  # Nova Sonic reached outside the stack's own region: the task role needs the
+  # model ARN in that region too, or the client is pointed somewhere IAM denies.
+  HasCustomNovaSonicRegion: !Not [!Equals [!Ref AmazonNovaSonicRegion, ""]]
   HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
   HasStrandsLambdaArn: !Not [!Equals [!Ref StrandsLambdaArn, ""]]
+  HasAsrLauncher: !Not [!Equals [!Ref AsrLauncherFunctionArn, ""]]
+  # Empty under MICROVM, where the AI stack creates no VNC load balancer and so
+  # no origin-verify secret for one.
+  HasVncOriginVerifySecret: !Not [!Equals [!Ref VncOriginVerifyHeaderValueSecretArn, ""]]
   ShouldEnableContentRedaction: !And
     - !Equals [!Ref IsContentRedactionEnabled, "true"]
     - !Equals [!Ref TranscribeLanguageCode, "en-US"]
@@ -1133,6 +1222,18 @@ Resources:
                   - transcribe:StartTranscriptionJob
                   - transcribe:StartCallAnalyticsStreamTranscription
                 Resource: "*"
+        # Acquire, re-token and release ASR MicroVMs through the launcher, exactly
+        # as the WebSocket transcriber does; the VP never calls lambda-microvms itself.
+        - !If
+          - HasAsrLauncher
+          - PolicyName: AsrMicrovmLauncherPolicy
+            PolicyDocument:
+              Version: 2012-10-17
+              Statement:
+                - Effect: Allow
+                  Action: lambda:InvokeFunction
+                  Resource: !Ref AsrLauncherFunctionArn
+          - !Ref AWS::NoValue
         - PolicyName: DetectPIIPolicy
           PolicyDocument:
             Version: 2012-10-17
@@ -1218,9 +1319,34 @@ Resources:
                   - "elasticloadbalancing:CreateRule"
                   - "elasticloadbalancing:DeleteRule"
                   - "elasticloadbalancing:DescribeRules"
-                  - "elasticloadbalancing:ModifyRule"
+                  # No ModifyRule: the task states a rule's conditions once, when
+                  # it creates it, so leaving the action out makes "a rule's
+                  # conditions are whatever it was created with" a property IAM
+                  # holds rather than a convention the code happens to follow.
                   - "elasticloadbalancing:AddTags"
                 Resource: "*"
+        # Read the origin-verify header value, so the listener rule this task
+        # creates for itself carries the same condition the template's own rule
+        # does. One secret, read-only, and absent entirely under MICROVM.
+        - !If
+          - HasVncOriginVerifySecret
+          - PolicyName: VncOriginVerifyPolicy
+            PolicyDocument:
+              Version: 2012-10-17
+              Statement:
+                - Effect: Allow
+                  Action: "secretsmanager:GetSecretValue"
+                  Resource: !Ref VncOriginVerifyHeaderValueSecretArn
+                # The secret is encrypted with the customer-managed key, so
+                # GetSecretValue alone does not return a value.
+                - Effect: Allow
+                  Action:
+                    - "kms:Decrypt"
+                  Resource: !Ref CustomerManagedEncryptionKeyArn
+                  Condition:
+                    StringEquals:
+                      "kms:ViaService": !Sub "secretsmanager.${AWS::Region}.${AWS::URLSuffix}"
+          - !Ref "AWS::NoValue"
         - PolicyName: VPProfilesPolicy
           PolicyDocument:
             Version: 2012-10-17
@@ -1274,10 +1400,16 @@ Resources:
                   - "bedrock:InvokeModelWithResponseStream"
                   - "bedrock:InvokeModelWithBidirectionalStream"
                 Resource:
-                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.nova-*"
-                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-*"
-                  - !Sub "arn:aws:bedrock:*::foundation-model/anthropic.claude-*"
-                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*anthropic.claude-*"
+                  - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/amazon.nova-*"
+                  # The same model in the region AmazonNovaSonicRegion
+                  # names, when that parameter is set.
+                  - !If
+                    - HasCustomNovaSonicRegion
+                    - !Sub "arn:${AWS::Partition}:bedrock:${AmazonNovaSonicRegion}::foundation-model/amazon.nova-*"
+                    - !Ref AWS::NoValue
+                  - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/anthropic.claude-haiku-4-5*"
+                  - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/anthropic.claude-haiku-4-5*"
+                  - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*claude-haiku-4-5*"
         - PolicyName: NovaSonicConfigAccess
           PolicyDocument:
             Version: 2012-10-17
@@ -2237,6 +2369,8 @@ Resources:
               Value: ""
             - Name: SUMMARY_LANGUAGE
               Value: ""
+            - Name: ASR_LAUNCHER_FUNCTION_ARN
+              Value: !Ref AsrLauncherFunctionArn
             - Name: LMA_IDENTITY
               Value: !Ref LMAIdentity
             - Name: INTRO_MESSAGE
@@ -2263,6 +2397,26 @@ Resources:
               Value: !Ref VPProfilesBucketName
             - Name: VP_SHARED_GOOGLE_MEET_PROFILE
               Value: !Ref VPSharedGoogleMeetProfile
+            # Teams meeting-end detection, adjustable on a stack update rather
+            # than by rebuilding the VP container image. The MicroVM launch type
+            # reads these from this task definition too (see the launcher
+            # Lambda in lambda_functions/microvm_launcher), which skips any
+            # variable with an empty value — so these must always resolve
+            # to a number.
+            #
+            # VP_POLLS_BEFORE_END_MISSING is deliberately much larger than
+            # VP_POLLS_BEFORE_END: a badge that is present and reads <=1
+            # is a direct measurement of an empty meeting, while an
+            # unreadable badge is only counted at all once the in-meeting
+            # controls are gone as well.
+            # !Sub, not !Ref: these are Number parameters and the ECS
+            # Environment Value must be a String.
+            - Name: VP_ATTENDEE_POLL_MS
+              Value: !Sub "${VPAttendeePollMs}"
+            - Name: VP_POLLS_BEFORE_END
+              Value: !Sub "${VPPollsBeforeEnd}"
+            - Name: VP_POLLS_BEFORE_END_MISSING
+              Value: !Sub "${VPPollsBeforeEndMissing}"
             # Overridden at task launch by Step Functions when the user opts in.
             - Name: ZOOM_CREDENTIALS_SECRET_NAME
               Value: ""
@@ -2292,6 +2446,12 @@ Resources:
               Value: !Ref VPC
             - Name: ALB_LISTENER_ARN
               Value: !Ref VNCALBListenerArn
+            # The ARN and the header name only; the value is fetched at run time
+            # so it never appears in this task definition.
+            - Name: VNC_ORIGIN_VERIFY_SECRET_ARN
+              Value: !Ref VncOriginVerifyHeaderValueSecretArn
+            - Name: VNC_ORIGIN_VERIFY_HEADER_NAME
+              Value: !Ref VncOriginVerifyHeaderName
             - Name: ELEVENLABS_API_KEY
               Value: !Ref ElevenLabsApiKey
             - Name: ELEVENLABS_AGENT_ID
@@ -2304,6 +2464,11 @@ Resources:
               Value: !Ref SimliTransportMode
             - Name: VOICE_ASSISTANT_PROVIDER
               Value: !Ref VoiceAssistantProvider
+            # Empty means "use the stack's region", which is what the container
+            # falls back to. The MicroVM launcher skips empty values, so under
+            # that launch type the variable is simply absent -- same outcome.
+            - Name: AMAZON_NOVA_SONIC_REGION
+              Value: !Ref AmazonNovaSonicRegion
             - Name: VOICE_ASSISTANT_ACTIVATION_MODE
               Value: !Ref VoiceAssistantActivationMode
             - Name: VOICE_ASSISTANT_WAKE_PHRASES
@@ -2678,7 +2843,7 @@ Resources:
                   "zoomCredentialsSecretName.$": "States.Format('${LMAStackName}/zoom-credentials/{}', $.data.userZoomSub)",
                   "userSub": "",
                   "userZoomSub": "",
-                  "enableVideoRecording": "true",
+                  "enableVideoRecording": "${EnableVideoRecording}",
                   "transcribeLanguageMode": "identify-multiple-languages",
                   "summaryProfile": "",
                   "summaryLanguage": ""
@@ -2692,7 +2857,7 @@ Resources:
                   "zoomCredentialsSecretName": "",
                   "userSub": "",
                   "userZoomSub": "",
-                  "enableVideoRecording": "true",
+                  "enableVideoRecording": "${EnableVideoRecording}",
                   "transcribeLanguageMode": "identify-multiple-languages",
                   "summaryProfile": "",
                   "summaryLanguage": ""
@@ -3403,9 +3568,10 @@ Resources:
                               # Absent on older rows / guest-only flows.
                               user_sub = new_image.get('userSub', {}).get('S', '')
                               user_zoom_sub = new_image.get('userZoomSub', {}).get('S', '')
-                              # Per-VP video toggle. Default ON when absent (older rows).
-                              # ECS env values must be strings, so coerce the bool.
-                              enable_video_recording = new_image.get('enableVideoRecording', {}).get('BOOL', True)
+                              # Missing per-VP overrides inherit the deployment's setting,
+                              # not an unconditional opt-in to screen recording.
+                              video_default = os.environ.get('ENABLE_VIDEO_RECORDING', 'false').lower() == 'true'
+                              enable_video_recording = new_image.get('enableVideoRecording', {}).get('BOOL', video_default)
                               enable_video_recording_str = 'true' if enable_video_recording else 'false'
                               stack_name = os.environ.get('LMA_STACK_NAME', '')
                               zoom_secret_name = (
@@ -3517,6 +3683,7 @@ Resources:
           VP_TABLE_NAME: !Ref VirtualParticipantTableName
           SCHEDULER_ROLE_ARN: !GetAtt VPSchedulerExecutionRole.Arn
           VP_LAUNCH_TYPE: !Ref VPLaunchType
+          ENABLE_VIDEO_RECORDING: !Ref EnableVideoRecording
           # MICROVM only: the schedule target is the launcher Lambda rather than
           # ecs:runTask, so it needs the function ARN and the role EventBridge
           # Scheduler assumes to invoke it. Both resources are conditional on

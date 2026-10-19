@@ -35,6 +35,7 @@ def issues(base, overrides):
         if values.get(key) and not any(item['parameter'] == key for item in found):
             found.append({'parameter': key, 'reason': 'must be empty for the approved initial release'})
     expected = {
+        'EnableVideoRecording': 'false', 'EnableAudioRecording': 'true',
         'VPLaunchType': 'FARGATE', 'VoiceAssistantProvider': 'none',
         'SsoPoolMode': 'ACTIVE', 'EnableGoogleSso': 'true', 'PasswordSignInEnabled': 'false',
         'GoogleAdminEmail': 'ismail.icanovic@allops.co', 'EnableDataRetentionOnDelete': 'true',

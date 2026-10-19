@@ -47,6 +47,7 @@ const getVirtualParticipant = `
       updatedAt
       owner
       Owner
+      OwnerEmail
       SharedWith
       CallId
       vncEndpoint
@@ -393,7 +394,7 @@ export const ConnectionDetails = ({ vpDetails }) => {
         <Box color="text-label" fontWeight="bold">
           Owner
         </Box>
-        <div>{vpDetails.owner || 'N/A'}</div>
+        <div>{vpDetails.OwnerEmail || vpDetails.Owner || vpDetails.owner || 'N/A'}</div>
       </SpaceBetween>
 
       <SpaceBetween size="xs">
@@ -414,6 +415,8 @@ ConnectionDetails.propTypes = {
     meetingPlatform: PropTypes.string,
     meetingId: PropTypes.string,
     owner: PropTypes.string,
+    Owner: PropTypes.string,
+    OwnerEmail: PropTypes.string,
   }).isRequired,
 };
 

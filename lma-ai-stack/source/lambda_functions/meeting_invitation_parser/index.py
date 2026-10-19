@@ -318,6 +318,12 @@ def validate_parsed_data(data):
     return data
 
 
+# This fork implements Google Meet in backend/src/google-meet.ts. Upstream's
+# unsupported-platform guard remains applicable to other unknown platforms.
+VP_SUPPORTED_PLATFORMS = ["ZOOM", "TEAMS", "CHIME", "WEBEX", "GOOGLE_MEET"]
+UNSUPPORTED_PLATFORM_MESSAGES = {}
+
+
 def handler(event, context):
     """Lambda handler for parsing meeting invitations"""
     logger.info(f"Received event: {json.dumps(event)}")
@@ -335,6 +341,30 @@ def handler(event, context):
         if result["success"]:
             # Validate and clean the parsed data
             result["data"] = validate_parsed_data(result["data"])
+
+            # Reject a platform the Virtual Participant has no handler for, rather
+            # than auto-filling the create form with it: the launch would fail with
+            # "Unsupported meeting platform" after the user had filled everything
+            # else in. The message reaches the paste-invitation dialog directly.
+            platform = result["data"].get("meetingPlatform")
+            # A missing platform would skip the check, and the UI then falls back to
+            # its own default of ZOOM — handing the user a Zoom form holding a Meet
+            # link, which fails for a reason that has nothing to do with Meet. The
+            # link itself is enough to tell.
+            if not platform and "meet.google" in (result["data"].get("meetingId") or "").lower():
+                platform = "GOOGLE_MEET"
+                result["data"]["meetingPlatform"] = platform
+            if platform and platform not in VP_SUPPORTED_PLATFORMS:
+                logger.info("Rejecting unsupported meeting platform: %s", platform)
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": UNSUPPORTED_PLATFORM_MESSAGES.get(
+                            platform,
+                            f"The Virtual Participant cannot join {platform} meetings.",
+                        ),
+                    }
+                )
 
         logger.info(f"Returning result: {json.dumps(result)}")
         return json.dumps(result)

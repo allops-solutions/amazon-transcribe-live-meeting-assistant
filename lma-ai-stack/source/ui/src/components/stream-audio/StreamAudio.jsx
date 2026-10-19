@@ -19,11 +19,11 @@ import {
   Box,
   Link,
   Tiles,
+  RadioGroup,
   FileUpload,
   Checkbox,
   ProgressBar,
   Alert,
-  RadioGroup,
 } from '@cloudscape-design/components';
 import '@cloudscape-design/global-styles/index.css';
 import * as ReactUseWebSocket from 'react-use-websocket';
@@ -66,6 +66,15 @@ const UPLOAD_PHASE = {
 // AppSync client — reused only for the createUploadMeeting mutation.
 const appsyncClient = generateClient();
 
+// Only the field this form needs; the Transcription Engine page owns the full record.
+const getAsrEngineDefaultQuery = `
+  query GetAsrConfig($AsrConfigId: ID!) {
+    getAsrConfig(AsrConfigId: $AsrConfigId) {
+      streamingEngineMicrovm
+    }
+  }
+`;
+
 /**
  * StreamAudio — unified component for both live streaming and uploading
  * pre-recorded meetings.
@@ -84,7 +93,28 @@ const StreamAudio = ({ mode: modeProp = undefined }) => {
   // Distinct from AsrDiarizationAvailable, which is also false for a
   // transcription-only bundle.
   const asrEngineAvailable = `${settings?.AsrEngineAvailable}` === 'true';
-  const asrEngineDefault = `${settings?.AsrEngineDefault}` === 'microvm' ? 'microvm' : 'transcribe';
+  // Which engine transcribes streaming meetings is a deployment setting on the ASR
+  // Config page, not a per-meeting choice. It is read live from the config table so
+  // this form follows what an admin has set: the capture sample rate and the
+  // speaker-count field below depend on it.
+  const [asrEngineDefault, setAsrEngineDefault] = useState('transcribe');
+  useEffect(() => {
+    if (!asrEngineAvailable) return undefined;
+    let cancelled = false;
+    appsyncClient
+      .graphql({ query: getAsrEngineDefaultQuery, variables: { AsrConfigId: 'CustomAsrConfig' } })
+      .then((result) => {
+        if (!cancelled && result.data?.getAsrConfig?.streamingEngineMicrovm === true) {
+          setAsrEngineDefault('microvm');
+        }
+      })
+      .catch(() => {
+        // Stays 'transcribe', which is also what the server falls back to.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [asrEngineAvailable]);
   // Amplify v6 exposes tokens as currentSession.tokens.{accessToken,idToken}.toString().
   // The refresh token is not exposed via fetchAuthSession in v6; pass an empty string
   // since the websocket server's JWT verifier only strictly requires access/id tokens.
@@ -180,12 +210,6 @@ const StreamAudio = ({ mode: modeProp = undefined }) => {
   // it is asked for rather than guessed — the same question Upload Audio asks.
   // Blank means "discover as many speakers as appear".
   const [streamMaxSpeakers, setStreamMaxSpeakers] = useState('');
-
-  // Start the picker on whatever the deployment already defaults to, so choosing
-  // nothing behaves exactly as it did before this control existed.
-  useEffect(() => {
-    setStreamEngine((current) => current || asrEngineDefault);
-  }, [asrEngineDefault]);
 
   // --- Upload mode state --------------------------------------------------
   const [uploadFiles, setUploadFiles] = useState([]);
@@ -374,7 +398,7 @@ const StreamAudio = ({ mode: modeProp = undefined }) => {
       // resampling anywhere in the chain. Other rates still work (the
       // transcriber resamples), they just cost CPU and buy no accuracy.
       audioContext.current =
-        (recordingCallMetaData.asrEngine || asrEngineDefault) === 'microvm'
+        effectiveStreamEngine === 'microvm'
           ? new window.AudioContext({ sampleRate: 16000 })
           : new window.AudioContext();
       displayStream.current = await window.navigator.mediaDevices.getDisplayMedia({
@@ -393,7 +417,9 @@ const StreamAudio = ({ mode: modeProp = undefined }) => {
       recordingCallMetaData.callEvent = 'START';
 
       // eslint-disable-next-line prettier/prettier
-      console.log(`DEBUG - [${new Date().toISOString()}]: Send Call START msg: ${JSON.stringify(recordingCallMetaData)}`);
+      console.log(
+        `DEBUG - [${new Date().toISOString()}]: Send Call START msg: ${JSON.stringify(recordingCallMetaData)}`,
+      );
       sendMessage(JSON.stringify(recordingCallMetaData));
       setStreamingStarted(true);
 
@@ -839,7 +865,7 @@ const StreamAudio = ({ mode: modeProp = undefined }) => {
                     </SpaceBetween>
                   </FormField>
                   {(callMetaData.diarizeSystemChannel || callMetaData.diarizeMicChannel) &&
-                    streamEngine === 'microvm' && (
+                    effectiveStreamEngine === 'microvm' && (
                       <Box margin={{ top: 's' }}>
                         <FormField
                           label="Speakers per channel (optional)"

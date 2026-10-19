@@ -37,7 +37,11 @@ import useLocalStorage from '../common/local-storage';
 import mergeParticipantUpdate from './participantUpdates';
 import { paginationLabels } from '../common/labels';
 import { getFilterCounterText, TableEmptyState, TableNoMatchState } from '../common/table';
-import { DEFAULT_TRANSCRIBE_LANGUAGE_MODE, TranscribeLanguageModeField } from '../common/meeting-options';
+import {
+  DEFAULT_TRANSCRIBE_LANGUAGE_MODE,
+  TranscribeLanguageModeField,
+  videoRecordingDefault,
+} from '../common/meeting-options';
 
 import {
   VPCommonHeader,
@@ -71,6 +75,7 @@ const listVirtualParticipants = `
       status
       owner
       Owner
+      OwnerEmail
       SharedWith
       createdAt
       updatedAt
@@ -116,10 +121,12 @@ const VirtualParticipantList = () => {
   });
   const [meetingTimeError, setMeetingTimeError] = useState('');
   const [consentChecked, setConsentChecked] = useState(false);
-  // Per-VP screen-recording toggle. Default ON (matches the ENABLE_VIDEO_RECORDING
-  // task-definition default); users untick to launch a VP that records audio +
-  // transcript only.
-  const [enableVideoRecording, setEnableVideoRecording] = useState(true);
+  // Inherit the deployed default; absent settings must not opt users into video.
+  const defaultVideoRecording = videoRecordingDefault(settings);
+  const [enableVideoRecording, setEnableVideoRecording] = useState(defaultVideoRecording);
+  useEffect(() => {
+    if (!showCreateModal) setEnableVideoRecording(defaultVideoRecording);
+  }, [defaultVideoRecording, showCreateModal]);
   // Per-meeting Transcribe language mode. Defaults to today's stack-wide
   // behavior (auto-detect, re-checks throughout the call) so a meeting
   // nobody categorizes still transcribes the way it always has.
@@ -639,7 +646,7 @@ const VirtualParticipantList = () => {
       });
       setMeetingTimeError('');
       setConsentChecked(false);
-      setEnableVideoRecording(true);
+      setEnableVideoRecording(defaultVideoRecording);
       setTranscribeLanguageMode(DEFAULT_TRANSCRIBE_LANGUAGE_MODE);
 
       loadParticipants();

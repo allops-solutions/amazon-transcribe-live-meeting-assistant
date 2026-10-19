@@ -43,9 +43,10 @@ def policies(account, region='us-east-1', bucket=None):
     return common, provisioning, boundary
 
 
-def validate(session, account):
+def validate(session, account, bucket=None):
     """Validate size/syntax and positive/negative IAM decisions with real AWS APIs."""
-    common, provision, boundary = policies(account)
+    bucket = bucket or f'allops-lma-ci-{account}-production-us-east-1'
+    common, provision, boundary = policies(account, bucket=bucket)
     analyzer = session.client('accessanalyzer')
     for name, policy, limit in [('application-service-ceiling', common, 6144),
                                  ('provisioning-inline', provision, 10240)]:
@@ -107,8 +108,8 @@ def validate(session, account):
         ('assume-outside-role', 'sts:AssumeRole', f'arn:aws:iam::{account}:role/Admin', None, 'explicitDeny'),
         ('own-bucket', 's3:PutObject', 'arn:aws:s3:::lma-production-recordings/test', None, 'allowed'),
         ('outside-bucket', 's3:GetObject', 'arn:aws:s3:::other-production-data/test', None, 'implicitDeny'),
-        ('private-release-read', 's3:GetObject', f'arn:aws:s3:::allops-lma-ci-{account}-production-us-east-1/releases/test/code.zip', None, 'allowed'),
-        ('private-release-overwrite', 's3:PutObject', f'arn:aws:s3:::allops-lma-ci-{account}-production-us-east-1/releases/test/code.zip', None, 'implicitDeny'),
+        ('private-release-read', 's3:GetObject', f'arn:aws:s3:::{bucket}/releases/test/code.zip', None, 'allowed'),
+        ('private-release-overwrite', 's3:PutObject', f'arn:aws:s3:::{bucket}/releases/test/code.zip', None, 'implicitDeny'),
         ('configuration-secret', 'secretsmanager:GetSecretValue', f'arn:aws:secretsmanager:us-east-1:{account}:secret:lma/ci/production/parameters-test', None, 'explicitDeny'),
         ('vp-schedule', 'scheduler:CreateSchedule', f'arn:aws:scheduler:us-east-1:{account}:schedule/LMA-vp-schedules/vp-uuid', None, 'allowed'),
         ('generated-log-create', 'logs:CreateLogGroup', f'arn:aws:logs:us-east-1:{account}:log-group:LMA-ToJSONFunctionLogGroup-test', None, 'allowed'),
@@ -170,8 +171,9 @@ def validate(session, account):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--account', required=True)
+    parser.add_argument('--bucket')
     args = parser.parse_args()
     session = boto3.Session(profile_name='default', region_name='us-east-1')
     if session.client('sts').get_caller_identity()['Account'] != args.account:
         raise ValueError('Wrong AWS account')
-    validate(session, args.account)
+    validate(session, args.account, args.bucket)

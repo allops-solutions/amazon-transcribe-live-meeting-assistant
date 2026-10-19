@@ -84,31 +84,56 @@ help: ## Show this help message
 .DEFAULT_GOAL := all
 all: lint ## Run all linting (default)
 
-# Required Node.js version (major) - keep in sync with .gitlab-ci.yml
-NODE_VERSION := 22
+# Node.js version pinned for development and CI. `.nvmrc` is the single source
+# of truth: setup-node installs it via nvm, GitHub Actions reads it through
+# `node-version-file`, and .gitlab-ci.yml downloads the same version.
+NODE_PINNED_VERSION := $(strip $(shell cat .nvmrc 2>/dev/null))
+# Minimum acceptable version, matching the `engines` field of the UI's
+# package.json (jsdom 30 needs >= 22.22.2). Any Node at or above this works;
+# check-node reports a shortfall in one line, since NPM_CI below runs npm
+# quietly and its EBADENGINE warnings are therefore suppressed.
+NODE_MIN_VERSION := 22.22.2
+
+# npm install invocation shared by every JS target. `--loglevel=error --no-fund`
+# drops npm's notice-level output (funding summaries, transitive `deprecated`
+# notices, and peer-dependency/engine warnings for packages we do not control)
+# while still surfacing real install failures.
+NPM_CI := npm ci --prefer-offline --no-audit --no-fund --loglevel=error
 
 ##@ Setup
 setup: setup-node setup-python setup-cli-dev ## Set up dev environment (Node version, Python venv, CLI)
 	@echo ""
 	@echo -e "$(GREEN)✅ Full setup complete!$(NC)"
 
-setup-node: ## Ensure correct Node.js version via nvm (installs if needed)
-	@CURRENT=$$(node -v 2>/dev/null | sed 's/v\([0-9]*\).*/\1/'); \
-	if [ "$$CURRENT" = "$(NODE_VERSION)" ]; then \
-		echo -e "$(GREEN)✅ Node.js v$$(node -v) already active$(NC)"; \
-	else \
-		echo "Current Node.js: v$${CURRENT:-not found} (need v$(NODE_VERSION))"; \
-		if [ -s "$$HOME/.nvm/nvm.sh" ]; then \
-			echo "Using nvm to switch to Node $(NODE_VERSION)..."; \
-			source "$$HOME/.nvm/nvm.sh" && nvm install $(NODE_VERSION) && nvm use $(NODE_VERSION); \
-			echo -e "$(GREEN)✅ Switched to Node.js $$(node -v)$(NC)"; \
-			echo -e "$(YELLOW)   Run 'nvm use $(NODE_VERSION)' in your shell, or add to .zshrc/.bashrc$(NC)"; \
+setup-node: ## Install the Node.js version pinned in .nvmrc via nvm and make it the default
+	@CURRENT=$$(node -v 2>/dev/null | sed 's/^v//'); \
+	DEFAULT=$$(source "$$HOME/.nvm/nvm.sh" >/dev/null 2>&1 && nvm version default 2>/dev/null | sed 's/^v//'); \
+	OK=0; \
+	if [ -n "$$CURRENT" ] && \
+	   [ "$$(printf '%s\n%s\n' "$(NODE_MIN_VERSION)" "$$CURRENT" | sort -V | head -n1)" = "$(NODE_MIN_VERSION)" ]; then \
+		OK=1; \
+	fi; \
+	if [ $$OK -eq 1 ] && { [ -z "$$DEFAULT" ] || \
+	   [ "$$(printf '%s\n%s\n' "$(NODE_MIN_VERSION)" "$$DEFAULT" | sort -V | head -n1)" = "$(NODE_MIN_VERSION)" ]; }; then \
+		echo -e "$(GREEN)✅ Node.js v$$CURRENT already active$(NC)"; \
+	elif [ -s "$$HOME/.nvm/nvm.sh" ]; then \
+		if [ $$OK -eq 1 ]; then \
+			echo "Node.js v$$CURRENT is current, but the nvm default is v$$DEFAULT (new shells would use it)."; \
 		else \
-			echo -e "$(RED)ERROR: Node.js v$(NODE_VERSION).x is required but v$${CURRENT:-none} is active.$(NC)"; \
-			echo -e "$(YELLOW)   Install nvm: https://github.com/nvm-sh/nvm$(NC)"; \
-			echo -e "$(YELLOW)   Then run: nvm install $(NODE_VERSION) && nvm use $(NODE_VERSION)$(NC)"; \
-			exit 1; \
+			echo "Current Node.js: v$${CURRENT:-not found} (need v$(NODE_MIN_VERSION) or later)"; \
 		fi; \
+		echo "Using nvm to install Node $(NODE_PINNED_VERSION) (pinned in .nvmrc)..."; \
+		source "$$HOME/.nvm/nvm.sh" && \
+			nvm install $(NODE_PINNED_VERSION) && \
+			nvm use $(NODE_PINNED_VERSION) && \
+			nvm alias default $(NODE_PINNED_VERSION); \
+		echo -e "$(GREEN)✅ Node.js $(NODE_PINNED_VERSION) installed and set as the nvm default$(NC)"; \
+		echo -e "$(YELLOW)   This shell still has v$${CURRENT:-none} — run 'nvm use' here, or open a new shell$(NC)"; \
+	else \
+		echo -e "$(RED)ERROR: Node.js v$(NODE_MIN_VERSION) or later is required but v$${CURRENT:-none} is active.$(NC)"; \
+		echo -e "$(YELLOW)   Install nvm: https://github.com/nvm-sh/nvm$(NC)"; \
+		echo -e "$(YELLOW)   Then run: nvm install && nvm use   (both read .nvmrc)$(NC)"; \
+		exit 1; \
 	fi
 
 setup-python: ## Create .venv and install Python dev/lint dependencies
@@ -139,6 +164,7 @@ setup-python: ## Create .venv and install Python dev/lint dependencies
 		pylint \
 		virtualenv \
 		yamllint \
+		'PyJWT[crypto]>=2.10.1,<3' \
 		boto3-stubs[comprehend,codebuild,dynamodb,lambda,lexv2-runtime,s3,sqs,sns]
 	@echo ""
 	@echo -e "$(GREEN)✅ Python setup complete! Virtual environment at $(VENV_DIR)$(NC)"
@@ -159,15 +185,24 @@ setup-cli-dev: ## Install LMA SDK and CLI with dev/test dependencies
 	$(CURDIR)/$(VENV_DIR)/bin/pip install -e "lib/lma_cli_pkg[dev]"
 	@echo -e "$(GREEN)✅ LMA SDK and CLI (with test deps) installed!$(NC)"
 
-setup-npm: ## Install npm dependencies for UI, WebSocket, and Virtual Participant
+.PHONY: check-node
+check-node: ## Warn (one line) if the active Node.js is older than NODE_MIN_VERSION
+	@CURRENT=$$(node -v 2>/dev/null | sed 's/^v//'); \
+	if [ -z "$$CURRENT" ]; then \
+		echo -e "$(RED)Node.js not found on PATH (need >= $(NODE_MIN_VERSION))$(NC)"; \
+	elif [ "$$(printf '%s\n%s\n' "$(NODE_MIN_VERSION)" "$$CURRENT" | sort -V | head -n1)" != "$(NODE_MIN_VERSION)" ]; then \
+		echo -e "$(YELLOW)Node.js v$$CURRENT is older than the required v$(NODE_MIN_VERSION) — run 'nvm use' (or 'make setup-node')$(NC)"; \
+	fi
+
+setup-npm: check-node ## Install npm dependencies for UI, WebSocket, and Virtual Participant
 	@echo "Installing UI npm dependencies..."
-	cd $(UI_DIR) && npm ci --prefer-offline --no-audit
+	cd $(UI_DIR) && $(NPM_CI)
 	@echo ""
 	@echo "Installing WebSocket transcriber npm dependencies..."
-	cd $(WEBSOCKET_APP_DIR) && npm ci --prefer-offline --no-audit
+	cd $(WEBSOCKET_APP_DIR) && $(NPM_CI)
 	@echo ""
 	@echo "Installing Virtual Participant npm dependencies..."
-	cd $(VP_BACKEND_DIR) && npm ci --prefer-offline --no-audit
+	cd $(VP_BACKEND_DIR) && $(NPM_CI)
 	@echo ""
 	@echo -e "$(GREEN)✅ npm dependencies installed!$(NC)"
 
@@ -216,14 +251,14 @@ lint-mypy: ## Run mypy type checking on Python Lambda functions
 # Checksum file for UI lint change detection
 UI_LINT_CHECKSUM_FILE := .ui-lint-checksum
 
-lint-ui: ## Lint React UI (ESLint, skips if source unchanged; use FORCE=1 to bypass cache)
+lint-ui: check-node ## Lint React UI (ESLint, skips if source unchanged; use FORCE=1 to bypass cache)
 	@NEW_CHECKSUM=$$(find $(UI_DIR)/src -type f \( -name '*.js' -o -name '*.jsx' -o -name '*.ts' -o -name '*.tsx' \) 2>/dev/null | sort | xargs cat 2>/dev/null | sha256sum | awk '{print $$1}'); \
 	OLD_CHECKSUM=$$(cat $(UI_LINT_CHECKSUM_FILE) 2>/dev/null || echo ""); \
 	if [ -z "$(FORCE)" ] && [ "$$NEW_CHECKSUM" = "$$OLD_CHECKSUM" ]; then \
 		echo -e "$(GREEN)✅ UI lint skipped — source unchanged since last run (use FORCE=1 to override)$(NC)"; \
 	else \
 		if [ -n "$(FORCE)" ]; then echo "Running UI lint (forced)..."; else echo "Running UI lint..."; fi; \
-		cd $(UI_DIR) && npm ci --prefer-offline --no-audit 2>/dev/null && npm run lint && \
+		cd $(UI_DIR) && $(NPM_CI) && npm run lint && \
 		echo "$$NEW_CHECKSUM" > $(CURDIR)/$(UI_LINT_CHECKSUM_FILE) && \
 		echo -e "$(GREEN)✅ UI lint passed!$(NC)"; \
 	fi
@@ -233,9 +268,9 @@ lint-ui-force: ## Lint React UI (ignore checksum, always run)
 
 lint-typescript: ## TypeScript build check on WebSocket and Virtual Participant stacks
 	@echo "Running TypeScript build check on WebSocket transcriber..."
-	@cd $(WEBSOCKET_APP_DIR) && npm ci --prefer-offline --no-audit 2>/dev/null && npm run build
+	@cd $(WEBSOCKET_APP_DIR) && $(NPM_CI) && npm run build
 	@echo "Running TypeScript build check on Virtual Participant..."
-	@cd $(VP_BACKEND_DIR) && npm ci --prefer-offline --no-audit 2>/dev/null && npm run build
+	@cd $(VP_BACKEND_DIR) && $(NPM_CI) && npm run build
 	@echo -e "$(GREEN)✅ All TypeScript builds succeeded!$(NC)"
 
 format: ## Format Python code with ruff
@@ -268,23 +303,23 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 ##@ Building
 build: build-ui build-websocket build-vp ## Build all stacks
 
-build-ui: ## Build React UI for production
+build-ui: check-node ## Build React UI for production
 	@echo "Building React UI..."
-	cd $(UI_DIR) && npm ci --prefer-offline --no-audit && npm run build
+	cd $(UI_DIR) && $(NPM_CI) && npm run build
 	@echo -e "$(GREEN)✅ UI build complete!$(NC)"
 
 build-websocket: ## Build WebSocket transcriber (TypeScript)
 	@echo "Building WebSocket transcriber..."
-	cd $(WEBSOCKET_APP_DIR) && npm ci --prefer-offline --no-audit && npm run build
+	cd $(WEBSOCKET_APP_DIR) && $(NPM_CI) && npm run build
 	@echo -e "$(GREEN)✅ WebSocket transcriber build complete!$(NC)"
 
 build-vp: ## Build Virtual Participant (TypeScript)
 	@echo "Building Virtual Participant..."
-	cd $(VP_BACKEND_DIR) && npm ci --prefer-offline --no-audit && npm run build
+	cd $(VP_BACKEND_DIR) && $(NPM_CI) && npm run build
 	@echo -e "$(GREEN)✅ Virtual Participant build complete!$(NC)"
 
 ##@ Testing
-test: test-ui test-sdk test-cli test-lambdas test-asr ## Run all tests (no AWS required)
+test: test-ui test-sdk test-cli test-lambdas test-ai-stack test-integ-plumbing test-asr ## Run all tests (no AWS required)
 
 test-sdk: ## Run LMA SDK unit tests
 	@echo "Running LMA SDK tests..."
@@ -301,10 +336,15 @@ test-cli: ## Run LMA CLI unit tests
 # top-level `pytest lambda_functions/` collides on duplicate module names. This
 # target discovers every dir containing test_*.py and runs pytest from within
 # it. No AWS required (the suites mock boto3 / set dummy env).
-test-lambdas: ## Run all Lambda function unit tests (no AWS; each dir isolated)
+#
+# LAMBDA_LAYERS_DIR is searched too. The layer holds the code the Lambdas share
+# (transcript normalisation, the TTLs, the AppSync helpers), so a test there
+# covers every function at once; it was previously outside this glob, which meant
+# a test placed beside the layer would have been collected by nothing.
+test-lambdas: ## Run all Lambda function + layer unit tests (no AWS; each dir isolated)
 	@echo "Running Lambda function unit tests..."
 	@FAILED=0; RAN=0; \
-	for d in $$(find $(LAMBDA_FUNCTIONS_DIR) $(ASR_DIR)/lambda_functions -name 'test_*.py' -not -path '*/node_modules/*' -exec dirname {} \; | sort -u); do \
+	for d in $$(find $(LAMBDA_FUNCTIONS_DIR) $(LAMBDA_LAYERS_DIR) $(ASR_DIR)/lambda_functions -name 'test_*.py' -not -path '*/node_modules/*' -exec dirname {} \; | sort -u); do \
 		files=$$(cd "$$d" && ls test_*.py 2>/dev/null); \
 		[ -z "$$files" ] && continue; \
 		RAN=$$((RAN+1)); \
@@ -320,50 +360,97 @@ test-lambdas: ## Run all Lambda function unit tests (no AWS; each dir isolated)
 # Checksum file for UI test change detection
 UI_TEST_CHECKSUM_FILE := .ui-test-checksum
 
-test-ui: ## Run React UI tests (skips if source unchanged)
+test-ui: check-node ## Run React UI tests (skips if source unchanged)
 	@NEW_CHECKSUM=$$(find $(UI_DIR)/src $(UI_DIR)/public -type f \( -name '*.js' -o -name '*.jsx' -o -name '*.ts' -o -name '*.tsx' -o -name '*.css' -o -name '*.json' -o -name '*.html' \) 2>/dev/null | sort | xargs cat 2>/dev/null | sha256sum | awk '{print $$1}'); \
 	OLD_CHECKSUM=$$(cat $(UI_TEST_CHECKSUM_FILE) 2>/dev/null || echo ""); \
 	if [ "$$NEW_CHECKSUM" = "$$OLD_CHECKSUM" ]; then \
 		echo -e "$(GREEN)✅ UI tests skipped — source unchanged since last run$(NC)"; \
 	else \
 		echo "Running UI tests..."; \
-		cd $(UI_DIR) && npm ci --prefer-offline --no-audit && CI=true npm test -- --run && \
+		cd $(UI_DIR) && $(NPM_CI) && CI=true npm test -- --run && \
 		echo "$$NEW_CHECKSUM" > $(CURDIR)/$(UI_TEST_CHECKSUM_FILE) && \
 		echo -e "$(GREEN)✅ UI tests passed!$(NC)"; \
 	fi
 
 test-vp: ## Run Virtual Participant backend unit tests (no AWS)
 	@echo "Running Virtual Participant backend unit tests..."
-	cd $(VP_BACKEND_DIR) && npm ci --prefer-offline --no-audit && npm test
+	cd $(VP_BACKEND_DIR) && $(NPM_CI) && npm test
 	@echo -e "$(GREEN)✅ Virtual Participant unit tests passed!$(NC)"
 
+# Collects the whole directory rather than naming each file: the list used to be
+# spelled out here and a new test file only ran in CI if its author remembered to
+# append it, which twice they did not. Everything in that directory is a static
+# test needing no AWS, and the one module that is not a test suite
+# (validate_state_machine.py, a helper) is not named test_* so pytest skips it.
 test-vp-template: ## Static tests on the VP template + MicroVM client (no AWS)
 	@echo "Running Virtual Participant template + MicroVM client tests..."
-	$(PYTHON) -m pytest $(VP_DIR)/test/test_vp_template.py $(VP_DIR)/test/test_microvm_client.py \
-		$(VP_DIR)/test/test_ai_stack_vnc_alb.py $(VP_DIR)/test/test_microvm_manager.py \
-		$(VP_DIR)/test/test_microvm_vnc_token.py $(VP_DIR)/test/test_audio_sample_rates.py \
-		$(VP_DIR)/test/test_audio_single_writer.py -q
+	$(PYTHON) -m pytest $(VP_DIR)/test/ -q
 	@echo -e "$(GREEN)✅ Virtual Participant template tests passed!$(NC)"
+
+# One target for every static AI stack test, collecting the directory rather than
+# naming files: the AppSync schema/resolver/UI-operation contract and the
+# CloudFormation template's invariants both live in $(AI_STACK_DIR)/test/, and a
+# test added there should run in CI without anyone having to remember to name it
+# (the same reason test-vp-template collects its directory).
+test-ai-stack: ## Static AppSync contract + AI stack template tests (no AWS)
+	@echo "Running AI stack static tests..."
+	$(PYTHON) -m pytest $(AI_STACK_DIR)/test/ -q
+	@echo -e "$(GREEN)✅ AI stack static tests passed!$(NC)"
+
+# Everything else under integ-tests/ needs a deployed stack. This one file does
+# not, and it runs in the fast pipeline because it covers the machinery that
+# decides whether a scheduled integration run can report success without having
+# tested anything — credential resolution and the --no-skips hook.
+test-integ-plumbing: ## Unit tests for the scheduled integ-test machinery (no AWS)
+	@echo "Running integration-test plumbing unit tests..."
+	$(PYTHON) -m pytest integ-tests/test_ci_plumbing.py -q
+	@echo -e "$(GREEN)✅ Integration-test plumbing tests passed!$(NC)"
 
 test-asr: ## Run ASR MicroVM runtime unit tests (no AWS, no model weights)
 	@echo "Running ASR MicroVM runtime tests..."
 	@test -d $(ASR_SOURCE_DIR)/.venv || $(PYTHON) -m venv $(ASR_SOURCE_DIR)/.venv
 	@$(ASR_SOURCE_DIR)/.venv/bin/pip install -q -r $(ASR_SOURCE_DIR)/requirements-dev.txt
 	cd $(ASR_SOURCE_DIR) && .venv/bin/python -m pytest -q && .venv/bin/ruff check .
+	$(ASR_SOURCE_DIR)/.venv/bin/python $(ASR_DIR)/scripts/sync_bundles.py --check
 	@echo -e "$(GREEN)✅ ASR MicroVM runtime tests passed!$(NC)"
 
-test-ui-force: ## Run React UI tests (ignore checksum, always run)
+test-ui-force: check-node ## Run React UI tests (ignore checksum, always run)
 	@echo "Running UI tests (forced)..."
-	cd $(UI_DIR) && npm ci --prefer-offline --no-audit && CI=true npm test -- --run
+	cd $(UI_DIR) && $(NPM_CI) && CI=true npm test -- --run
 	@find $(UI_DIR)/src $(UI_DIR)/public -type f \( -name '*.js' -o -name '*.jsx' -o -name '*.ts' -o -name '*.tsx' -o -name '*.css' -o -name '*.json' -o -name '*.html' \) 2>/dev/null | sort | xargs cat 2>/dev/null | sha256sum | awk '{print $$1}' > $(UI_TEST_CHECKSUM_FILE)
 	@echo -e "$(GREEN)✅ UI tests passed!$(NC)"
+
+##@ Coverage
+# Measurement only. There is deliberately no threshold and this cannot fail a
+# build: the point of the first step is a baseline a threshold can be argued
+# from. scripts/coverage_report.py explains how the numbers are arrived at, and
+# in particular how source files that no test imports are accounted for rather
+# than dropped from the denominator.
+#
+# Slower than `make test` — it runs every suite, and the Node ones compile first.
+test-coverage: check-node ## Measure line coverage for every suite and print a table (no AWS)
+	@echo "Measuring coverage across all components..."
+	@test -d $(ASR_SOURCE_DIR)/.venv || $(PYTHON) -m venv $(ASR_SOURCE_DIR)/.venv
+	@$(ASR_SOURCE_DIR)/.venv/bin/pip install -q -r $(ASR_SOURCE_DIR)/requirements-dev.txt
+	@cd $(VP_BACKEND_DIR) && $(NPM_CI)
+	@cd $(WEBSOCKET_APP_DIR) && $(NPM_CI)
+	@cd $(UI_DIR) && $(NPM_CI)
+	$(PYTHON) scripts/coverage_report.py $(if $(JSON),--json $(JSON),)
+
+test-coverage-python: ## Coverage for the Python suites only (faster; no npm)
+	@test -d $(ASR_SOURCE_DIR)/.venv || $(PYTHON) -m venv $(ASR_SOURCE_DIR)/.venv
+	@$(ASR_SOURCE_DIR)/.venv/bin/pip install -q -r $(ASR_SOURCE_DIR)/requirements-dev.txt
+	$(PYTHON) scripts/coverage_report.py --only "LMA SDK" --only "LMA CLI" \
+		--only "Lambda" --only "ASR"
 
 ##@ Docker Build Checks
 # These target names collide with real paths (e.g. the integ-tests/ dir), so
 # declare them PHONY or make treats them as up-to-date files and skips them.
 .PHONY: docker-build-check docker-build-check-transcriber docker-build-check-vp \
-        docker-build-check-all integ-tests integ-tests-live integ-deploy-and-test test-lambdas \
-        test-vp test-vp-template test-vp-microvm-e2e test-asr
+        docker-build-check-all integ-tests integ-tests-live integ-tests-nightly \
+        integ-deploy-and-test test-lambdas \
+        test-vp test-vp-template test-vp-microvm-e2e test-ai-stack \
+        test-integ-plumbing test-coverage test-coverage-python test-asr
 # Build the container images the SAME way the in-stack CodeBuild projects do,
 # locally, to catch Dockerfile / build-context regressions (e.g. a COPY of a
 # renamed/deleted file) in ~1-2 min instead of via a ~40-min deploy that then
@@ -419,6 +506,37 @@ integ-tests: ## Run integration tests vs a live stack (Usage: make integ-tests S
 	fi
 	$(PYTHON) -m pytest integ-tests/ --stack-name "$(INTEG_STACK)" -m "not live"
 	@echo -e "$(GREEN)✅ Integration tests passed against '$(INTEG_STACK)'!$(NC)"
+
+# The scheduled-pipeline entry point (nightly_integ_tests in .gitlab-ci.yml).
+# Differs from integ-tests in exactly two ways, both about a run nobody is
+# watching:
+#   --no-skips  a skipped test fails the run. The opt-in audio test is the whole
+#               reason the schedule exists, and it skips itself when its
+#               credentials or optional dependencies are missing, so without this
+#               a lapsed secret reports green having tested none of the pipeline.
+#   --junit-xml a report the CI UI can show per test, since nobody reads the log
+#               of a run that passed.
+# The Cognito user comes from LMA_TEST_USER_SECRET_ID (Secrets Manager) rather
+# than LMA_TEST_PASSWORD, so the password is never a CI variable — see
+# integ-tests/cognito_test_user.py.
+INTEG_JUNIT ?= integ-tests-report.xml
+integ-tests-nightly: ## Integration tests for the scheduled pipeline: skips fail, JUnit report (Usage: make integ-tests-nightly STACK=<name>)
+	@echo -e "$(CYAN)Running scheduled LMA integration tests against '$(INTEG_STACK)'...$(NC)"
+	@if ! $(PYTHON) -c "import lma_sdk" 2>/dev/null; then \
+		echo -e "$(RED)ERROR: lma_sdk not importable. Run 'make setup-cli-dev' first.$(NC)"; exit 1; \
+	fi
+	@if ! $(PYTHON) -c "import pycognito, websockets" 2>/dev/null; then \
+		echo -e "$(RED)ERROR: pycognito / websockets missing — the audio test would skip.$(NC)"; \
+		echo -e "$(YELLOW)   Run: $(PIP) install -r integ-tests/requirements.txt$(NC)"; exit 1; \
+	fi
+	@if [ -z "$$LMA_TEST_USER_SECRET_ID" ] && [ -z "$$LMA_TEST_USERNAME" ]; then \
+		echo -e "$(RED)ERROR: no Cognito test user configured — the audio test would skip.$(NC)"; \
+		echo -e "$(YELLOW)   Set LMA_TEST_USER_SECRET_ID (preferred) or LMA_TEST_USERNAME/LMA_TEST_PASSWORD.$(NC)"; \
+		exit 1; \
+	fi
+	$(PYTHON) -m pytest integ-tests/ --stack-name "$(INTEG_STACK)" -m "not live" \
+		--no-skips --junit-xml="$(INTEG_JUNIT)"
+	@echo -e "$(GREEN)✅ Scheduled integration tests passed against '$(INTEG_STACK)'!$(NC)"
 
 integ-tests-live: ## Integration tests INCLUDING a real VP meeting join (Usage: make integ-tests-live STACK=<name> PLATFORM=ZOOM MEETING_ID=<id> [MEETING_PASSWORD=<pw>])
 ifndef MEETING_ID
@@ -485,7 +603,7 @@ endif
 		exit 1; \
 	fi
 	@echo "Installing UI dependencies..."
-	cd $(UI_DIR) && npm ci --prefer-offline --no-audit
+	cd $(UI_DIR) && $(NPM_CI)
 	@echo "Starting UI development server..."
 	cd $(UI_DIR) && npm run start
 
@@ -536,8 +654,15 @@ vp-shell: ## Open a shell inside the running local VP container
 
 ##@ Security
 # Sample Security Review Tool (https://github.com/aws-samples/sample-security-review-tool).
-# Suppressions are tracked in .srt/issues.json (committed via negative-gitignore).
+#
+# SRT reads and rewrites .srt/issues.json on every assessment, so that file is
+# generated output and is gitignored. The reviewed decisions are kept separately
+# in .srt/suppressions.json, which IS tracked: `srt-seed` restores issues.json
+# from it on a fresh checkout (CI, new clone) so a scan starts from the reviewed
+# state, and `srt-save-suppressions` refreshes it after triage.
 # See docs/security-scanning.md.
+SRT_ISSUES := .srt/issues.json
+SRT_SUPPRESSIONS := .srt/suppressions.json
 
 srt: ## Run full SRT workflow (setup, scan, then prompt to open dashboard)
 	@$(MAKE) srt-setup
@@ -548,8 +673,22 @@ srt: ## Run full SRT workflow (setup, scan, then prompt to open dashboard)
 srt-setup: ## Download and configure SRT (pin via SRT_VERSION env var)
 	$(PYTHON) scripts/srt/setup.py
 
-srt-scan: ## Run SRT assessment (non-zero exit in CI on open findings)
+srt-scan: srt-seed ## Run SRT assessment (non-zero exit in CI on open findings)
 	$(PYTHON) scripts/srt/run.py
+
+srt-seed: ## Restore .srt/issues.json from the tracked decisions (no-op if it exists)
+	@if [ -f $(SRT_ISSUES) ]; then \
+		echo "$(SRT_ISSUES) already present — leaving it as-is."; \
+	elif [ -f $(SRT_SUPPRESSIONS) ]; then \
+		mkdir -p .srt && cp $(SRT_SUPPRESSIONS) $(SRT_ISSUES); \
+		echo -e "$(GREEN)✅ Seeded $(SRT_ISSUES) from $(SRT_SUPPRESSIONS)$(NC)"; \
+	else \
+		echo -e "$(YELLOW)No $(SRT_SUPPRESSIONS) found — scanning without prior decisions.$(NC)"; \
+	fi
+
+srt-save-suppressions: ## Refresh .srt/suppressions.json from .srt/issues.json after triage (then commit it)
+	@test -f $(SRT_ISSUES) || { echo -e "$(RED)ERROR: $(SRT_ISSUES) not found. Run 'make srt-scan' first.$(NC)"; exit 1; }
+	@$(PYTHON) -c "import json; p='$(SRT_ISSUES)'; q='$(SRT_SUPPRESSIONS)'; d=json.load(open(p)); k=sorted([i for i in d if i.get('status')=='suppressed'], key=lambda i: (str(i.get('source')), str(i.get('check_id')), str(i.get('path')), str(i.get('line')))); f=open(q,'w'); json.dump(k,f,indent=2); f.write('\n'); f.close(); print('Wrote %d decisions to %s (from %d entries in %s)' % (len(k), q, len(d), p))"
 
 srt-fix: ## Open the SRT dashboard for interactive triage
 	$(PYTHON) scripts/srt/fix.py
@@ -612,21 +751,78 @@ endif
 	@echo -e "$(GREEN)✅ Version updated to $(V) in all locations$(NC)"
 
 ##@ Git Workflow
-commit: lint test ## Lint, test, auto-generate commit message, commit, and push
-	@echo "Generating commit message via Bedrock..."
-	@git add . && \
-	COMMIT_MESSAGE=$$(bash scripts/generate_commit_message.sh) && \
-	echo "Commit message: $$COMMIT_MESSAGE" && \
-	git commit -m "$$COMMIT_MESSAGE" && \
-	git push
+# Both helpers share _commit-push below. They stage modifications to tracked
+# files only (`git add -u`) and refuse to run while any untracked file is
+# present: this is a public repository and working trees here routinely contain
+# large local scratch directories, so `git add .` is the wrong default. A path
+# that only ever exists in your own working tree belongs in .git/info/exclude
+# (local, not shared) rather than in .gitignore, which would hide it from
+# `git add` and `git status` for every contributor and on every branch — some
+# branches legitimately track paths that others treat as scratch. The
+# staged diffstat and the generated message are shown and confirmed before
+# anything is committed or pushed, and the prompt names the resolved upstream
+# (remote + branch) rather than just the local branch, because upstreams differ
+# per branch in this repo. Committing straight to develop or main is refused by
+# default: changes normally go through a pull request. Pass ALLOW_SHARED_BRANCH=1
+# to commit onto a shared branch deliberately. _commit-preflight runs those
+# checks up front too, so `make commit` fails in a second rather than after the
+# full test run.
+.PHONY: commit fastcommit _commit-preflight _commit-push
 
-fastcommit: ## Auto-generate commit message, commit, and push (no linting)
-	@echo "Generating commit message via Bedrock..."
-	@git add . && \
-	COMMIT_MESSAGE=$$(bash scripts/generate_commit_message.sh) && \
-	echo "Commit message: $$COMMIT_MESSAGE" && \
-	git commit -m "$$COMMIT_MESSAGE" && \
-	git push
+commit: _commit-preflight lint test ## Lint, test, stage tracked changes, then review + confirm before push
+	@$(MAKE) --no-print-directory _commit-push
+
+fastcommit: ## Stage tracked changes, then review + confirm before push (no lint/test)
+	@$(MAKE) --no-print-directory _commit-push
+
+_commit-preflight:
+	@if [ ! -t 0 ]; then \
+		echo -e "$(RED)ERROR: this target needs an interactive terminal (it asks for confirmation).$(NC)"; \
+		exit 1; \
+	fi
+	@BRANCH=$$(git rev-parse --abbrev-ref HEAD); \
+	UPSTREAM=$$(git rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>/dev/null); \
+	SHARED=; \
+	case "$$BRANCH" in develop|main) SHARED=1;; esac; \
+	case "$$UPSTREAM" in */develop|*/main) SHARED=1;; esac; \
+	if [ -n "$$SHARED" ] && [ -n "$(ALLOW_SHARED_BRANCH)" ]; then \
+		echo -e "$(YELLOW)Committing directly onto $$BRANCH -> $${UPSTREAM:-no upstream} (ALLOW_SHARED_BRANCH set).$(NC)"; \
+	elif [ -n "$$SHARED" ]; then \
+		echo -e "$(RED)ERROR: refusing to commit onto a shared branch ($$BRANCH -> $${UPSTREAM:-no upstream}).$(NC)"; \
+		echo -e "$(YELLOW)Create a branch ('git switch -c feature/<name>') and open a pull request instead,$(NC)"; \
+		echo -e "$(YELLOW)or re-run with ALLOW_SHARED_BRANCH=1 to commit here deliberately.$(NC)"; \
+		exit 1; \
+	fi
+	@UNTRACKED=$$(git ls-files --others --exclude-standard); \
+	if [ -n "$$UNTRACKED" ]; then \
+		echo -e "$(RED)ERROR: untracked files present — refusing to commit.$(NC)"; \
+		echo "$$UNTRACKED"; \
+		echo -e "$(YELLOW)Stage them explicitly ('git add <path>'), remove them, or — if they are local-only$(NC)"; \
+		echo -e "$(YELLOW)paths — add them to .git/info/exclude, then re-run.$(NC)"; \
+		exit 1; \
+	fi
+
+_commit-push: _commit-preflight
+	@git add -u
+	@if git diff --cached --quiet; then \
+		echo -e "$(YELLOW)Nothing staged — no tracked files changed.$(NC)"; \
+		exit 0; \
+	fi; \
+	TARGET=$$(git rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>/dev/null); \
+	if [ -z "$$TARGET" ]; then \
+		TARGET="$$(git rev-parse --abbrev-ref HEAD) (no upstream set — 'git push' will ask for one)"; \
+	fi; \
+	echo -e "$(CYAN)Staged changes:$(NC)"; \
+	git diff --cached --stat; \
+	echo "Generating commit message via Bedrock..."; \
+	COMMIT_MESSAGE=$$(bash scripts/generate_commit_message.sh) || exit 1; \
+	echo -e "$(CYAN)Commit message:$(NC) $$COMMIT_MESSAGE"; \
+	read -r -p "Commit the above and push to $$TARGET? [y/N] " REPLY; \
+	case "$$REPLY" in \
+		[yY]|[yY][eE][sS]) ;; \
+		*) echo -e "$(YELLOW)Aborted — changes left staged.$(NC)"; exit 0;; \
+	esac; \
+	git commit -m "$$COMMIT_MESSAGE" && git push
 
 ##@ Documentation
 docs: docs-build ## Build and serve the documentation site locally

@@ -22,6 +22,8 @@ class SummaryModelWiringTests(unittest.TestCase):
         env = ai["Resources"]["BedrockSummaryLambda"]["Properties"]["Environment"]["Variables"]
         self.assertEqual(env["BEDROCK_MODEL_ID"], expected)
         self.assertEqual(env["BEDROCK_FALLBACK_MODEL_ID"], {"Ref": "BedrockFallbackModelId"})
+        self.assertEqual(env["KIMI_SUMMARY_MAX_TOKENS"], "16384")
+        self.assertEqual(env["SUMMARY_MAX_TOKENS"], "4096")
         for resource, key in (("QueryKnowledgeBaseResolverFunction", "MODEL_ID"),
                               ("MCPServerAnalyticsFunction", "BEDROCK_MODEL_ID")):
             # Existing search generation must not switch to unsupported Kimi KB generation.
@@ -80,7 +82,7 @@ class KimiConverseTests(unittest.TestCase):
         self.assertEqual(self.module["call_bedrock"]("Transcript text"), "Meeting summary")
         self.client.converse.assert_called_once_with(
             modelId=KIMI, messages=[{"role": "user", "content": [{"text": "Transcript text"}]}],
-            inferenceConfig={"maxTokens": 4096})
+            inferenceConfig={"maxTokens": 16384})
 
     def test_haiku_fallback_omits_unsupported_adaptive_thinking(self):
         args = self.module["build_inference_args"](

@@ -2,10 +2,25 @@
 // SPDX-License-Identifier: MIT-0
 
 import { describe, it, expect, vi } from 'vitest';
-import { buildVncConnection, isMicrovmEndpoint, fetchVncAuthToken, MICROVM_VNC_PORT } from './vncConnection';
+import {
+  buildVncConnection,
+  isMicrovmEndpoint,
+  fetchMicrovmAuthToken,
+  fetchVncEdgeToken,
+  MICROVM_VNC_PORT,
+  vncErrorMessage,
+} from './vncConnection';
 
 const CF_ENDPOINT = 'wss://d123abc.cloudfront.net/vnc/vp-123';
 const MVM_ENDPOINT = 'wss://a1b2c3d4.lambda-microvm.us-west-2.on.aws';
+
+it('distinguishes live-browser permission errors from a failed VP', () => {
+  const error = { errors: [{ message: 'Not authorized for this Virtual Participant' }] };
+  expect(vncErrorMessage(error)).toContain('Only its owner');
+  expect(vncErrorMessage(error)).toContain('does not mean the VP has disconnected');
+  expect(vncErrorMessage(new Error('Network error'))).toBe('Failed to connect: Network error');
+  expect(vncErrorMessage({})).not.toContain('undefined');
+});
 
 describe('isMicrovmEndpoint', () => {
   it('recognises Lambda MicroVM endpoints', () => {
@@ -27,23 +42,31 @@ describe('isMicrovmEndpoint', () => {
 });
 
 describe('buildVncConnection — ECS (CloudFront/ALB) transport', () => {
-  it('appends the VP-scoped auth token as a query parameter', () => {
+  it('appends the minted edge token as a query parameter', () => {
     const { url, wsProtocols } = buildVncConnection({
       endpoint: CF_ENDPOINT,
-      authToken: 'vp-123.9999999999.deadbeef',
+      edgeToken: 'payload.signature',
     });
-    expect(url).toContain('token=vp-123.9999999999.deadbeef');
+    expect(url).toContain('token=payload.signature');
     expect(url.startsWith('wss://d123abc.cloudfront.net/vnc/vp-123')).toBe(true);
     // No subprotocols on this transport: websockify would reject unknown ones.
     expect(wsProtocols).toEqual([]);
   });
 
-  it('throws when the auth token is missing', () => {
-    expect(() => buildVncConnection({ endpoint: CF_ENDPOINT })).toThrow(/VNC auth token/);
+  it('throws when no edge token was minted', () => {
+    expect(() => buildVncConnection({ endpoint: CF_ENDPOINT })).toThrow(/VNC access token/);
+  });
+
+  it('does not accept a Cognito ID token in place of an edge token', () => {
+    // The edge authorizer only recognises tokens signed by the deployment's own
+    // key, so a session token would be rejected at CloudFront.
+    expect(() => buildVncConnection({ endpoint: CF_ENDPOINT, idToken: 'cognito-id-token' })).toThrow(
+      /VNC access token/,
+    );
   });
 
   it('preserves the vpId path used for multi-user routing', () => {
-    const { url } = buildVncConnection({ endpoint: CF_ENDPOINT, authToken: 'vp-123.9999999999.deadbeef' });
+    const { url } = buildVncConnection({ endpoint: CF_ENDPOINT, edgeToken: 't' });
     expect(url).toContain('/vnc/vp-123');
   });
 });
@@ -83,6 +106,10 @@ describe('buildVncConnection — Lambda MicroVMs transport', () => {
     // Without this the MicroVM endpoint returns an opaque 403.
     expect(() => buildVncConnection({ endpoint: MVM_ENDPOINT })).toThrow(/MicroVM auth token/);
   });
+
+  it('does not require an edge token on this transport', () => {
+    expect(() => buildVncConnection({ endpoint: MVM_ENDPOINT, authToken: 'jwe' })).not.toThrow();
+  });
 });
 
 describe('buildVncConnection — input validation', () => {
@@ -92,37 +119,66 @@ describe('buildVncConnection — input validation', () => {
   });
 });
 
-describe('fetchVncAuthToken', () => {
+describe('fetchMicrovmAuthToken', () => {
   it('returns the token from the mutation response', async () => {
     const client = {
       graphql: vi.fn().mockResolvedValue({
         data: { createMicrovmVncToken: { authToken: 'jwe-abc', expiresAt: '2026-08-07T20:00:00Z' } },
       }),
     };
-    await expect(fetchVncAuthToken(client, 'vp-1')).resolves.toBe('jwe-abc');
+    await expect(fetchMicrovmAuthToken(client, 'vp-1')).resolves.toBe('jwe-abc');
     expect(client.graphql).toHaveBeenCalledWith(expect.objectContaining({ variables: { vpId: 'vp-1' } }));
-  });
-
-  it('returns a VP-scoped HMAC token from the mutation response just the same', async () => {
-    // buildVncConnection/fetchVncAuthToken don't care what shape the token
-    // is (JWE vs HMAC) - that's entirely a server-side decision (see
-    // microvm_vnc_token/index.py) - so this asserts we pass it through opaque.
-    const client = {
-      graphql: vi.fn().mockResolvedValue({
-        data: { createMicrovmVncToken: { authToken: 'vp-1.9999999999.deadbeef', expiresAt: '2026-08-07T20:00:00Z' } },
-      }),
-    };
-    await expect(fetchVncAuthToken(client, 'vp-1')).resolves.toBe('vp-1.9999999999.deadbeef');
   });
 
   it('throws when the resolver returns no token', async () => {
     // Better than handing `undefined` to the WebSocket and getting an opaque 403.
     const client = { graphql: vi.fn().mockResolvedValue({ data: { createMicrovmVncToken: null } }) };
-    await expect(fetchVncAuthToken(client, 'vp-1')).rejects.toThrow(/could not mint/i);
+    await expect(fetchMicrovmAuthToken(client, 'vp-1')).rejects.toThrow(/could not mint/i);
   });
 
   it('propagates transport errors', async () => {
     const client = { graphql: vi.fn().mockRejectedValue(new Error('network down')) };
-    await expect(fetchVncAuthToken(client, 'vp-1')).rejects.toThrow(/network down/);
+    await expect(fetchMicrovmAuthToken(client, 'vp-1')).rejects.toThrow(/network down/);
+  });
+});
+
+describe('fetchVncEdgeToken', () => {
+  it('returns the token and the VNC server credential', async () => {
+    const client = {
+      graphql: vi.fn().mockResolvedValue({
+        data: {
+          createVncEdgeToken: {
+            token: 'cGF5bG9hZA.c2ln',
+            expiresAt: '2026-08-07T20:00:00Z',
+            vncPassword: 'sEcReT12',
+          },
+        },
+      }),
+    };
+    await expect(fetchVncEdgeToken(client, 'vp-1')).resolves.toEqual({
+      token: 'cGF5bG9hZA.c2ln',
+      vncPassword: 'sEcReT12',
+    });
+    expect(client.graphql).toHaveBeenCalledWith(expect.objectContaining({ variables: { vpId: 'vp-1' } }));
+  });
+
+  it('reports a null credential for tasks that never published one', async () => {
+    const client = {
+      graphql: vi.fn().mockResolvedValue({
+        data: { createVncEdgeToken: { token: 'a.b', expiresAt: '2026-08-07T20:00:00Z', vncPassword: null } },
+      }),
+    };
+    await expect(fetchVncEdgeToken(client, 'vp-1')).resolves.toEqual({ token: 'a.b', vncPassword: null });
+  });
+
+  it('throws when the resolver returns no token', async () => {
+    const client = { graphql: vi.fn().mockResolvedValue({ data: { createVncEdgeToken: null } }) };
+    await expect(fetchVncEdgeToken(client, 'vp-1')).rejects.toThrow(/could not mint/i);
+  });
+
+  it('propagates resolver errors', async () => {
+    // e.g. the caller does not have access to this Virtual Participant.
+    const client = { graphql: vi.fn().mockRejectedValue(new Error('Not authorized')) };
+    await expect(fetchVncEdgeToken(client, 'vp-1')).rejects.toThrow(/Not authorized/);
   });
 });

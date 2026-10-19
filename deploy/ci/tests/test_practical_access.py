@@ -18,6 +18,18 @@ ACTIVATION_SPEC.loader.exec_module(activation)
 
 
 class PracticalAccessTests(unittest.TestCase):
+    def test_discard_queue_permissions_are_namespace_scoped(self):
+        boundary, _, _ = access.policies('009853297978')
+        grant = next(s for s in boundary['Statement'] if s['Sid'] == 'ApplicationDiscardQueues')
+        self.assertEqual(grant['Resource'],
+                         'arn:aws:sqs:us-east-1:009853297978:LMA-*-DiscardedRecords')
+        self.assertIn('sqs:SendMessage', grant['Action'])
+        self.assertNotIn('sqs:*', grant['Action'])
+        # The provisioning role uses the same policy as an identity grant.
+        template = access.yaml_parse((ROOT / 'deploy/ci/practical-access.yaml').read_text())
+        self.assertEqual(template['Resources']['CloudFormationRole']['Properties']['ManagedPolicyArns'],
+                         [{'Ref': 'ApplicationBoundary'}])
+
     def test_policy_sizes_and_no_admin_grant(self):
         boundary, provisioning, _ = access.policies('009853297978')
         self.assertLess(len(json.dumps(boundary, separators=(',', ':'))), 6144)

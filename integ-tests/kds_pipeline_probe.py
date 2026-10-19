@@ -25,6 +25,7 @@ run standalone for debugging:
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -139,26 +140,60 @@ def run_probe(stack_name: str, region: str | None = None, timeout_s: float = 90.
 
 
 def cleanup(stack_name: str, call_id: str, region: str | None = None) -> None:
-    """Best-effort delete of the synthetic call's DDB items (PK = c#<callId>)."""
+    """Delete only this synthetic owner's call partition and separate list rows.
+
+    List rows use cls# date/shard partitions, not c#<callId>. Leaving them behind
+    produces an Unknown meeting after the detail row is removed. Paginate both
+    reads and propagate failures rather than claiming cleanup succeeded.
+    """
+    if not re.fullmatch(r"integ-test-kds-[0-9]{8}T[0-9]{6}", call_id):
+        raise ValueError("Cleanup requires an exact synthetic KDS call ID")
     session = boto3.Session(region_name=region)
     cfn = session.client("cloudformation")
     ddb = session.client("dynamodb")
     table = _event_sourcing_table(cfn, ddb, stack_name)
     pk = f"c#{call_id}"
-    # Query all items in the partition and delete them.
-    resp = ddb.query(
-        TableName=table,
-        KeyConditionExpression="PK = :pk",
-        ExpressionAttributeValues={":pk": {"S": pk}},
-    )
-    for it in resp.get("Items", []):
-        try:
+    owner = {"S": "integ-test@lma.aws"}
+    detail = ddb.get_item(TableName=table, Key={"PK": {"S": pk}, "SK": {"S": pk}},
+                          ConsistentRead=True).get("Item")
+    if detail and detail.get("Owner") != owner:
+        raise ValueError("Synthetic call owner does not match; refusing cleanup")
+    listings = []
+    scan = dict(TableName=table, ConsistentRead=True,
+                FilterExpression="#call = :call AND #owner = :owner AND begins_with(PK, :prefix)",
+                ExpressionAttributeNames={"#call": "CallId", "#owner": "Owner"},
+                ExpressionAttributeValues={":call": {"S": call_id}, ":owner": owner,
+                                           ":prefix": {"S": "cls#"}},
+                ProjectionExpression="PK, SK")
+    while True:
+        page = ddb.scan(**scan)
+        listings.extend(page.get("Items", []))
+        if not page.get("LastEvaluatedKey"):
+            break
+        scan["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+    if detail or listings:
+        query = dict(TableName=table, ConsistentRead=True, KeyConditionExpression="PK = :pk",
+                     ExpressionAttributeValues={":pk": {"S": pk}})
+        while True:
+            page = ddb.query(**query)
+            for item in page.get("Items", []):
+                request = dict(TableName=table, Key={"PK": item["PK"], "SK": item["SK"]})
+                if item["SK"] == {"S": pk}:
+                    request.update(ConditionExpression="#owner = :owner",
+                                   ExpressionAttributeNames={"#owner": "Owner"},
+                                   ExpressionAttributeValues={":owner": owner})
+                ddb.delete_item(**request)
+            if not page.get("LastEvaluatedKey"):
+                break
+            query["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+        for item in listings:
             ddb.delete_item(
                 TableName=table,
-                Key={"PK": it["PK"], "SK": it["SK"]},
+                Key={"PK": item["PK"], "SK": item["SK"]},
+                ConditionExpression="#call = :call AND #owner = :owner",
+                ExpressionAttributeNames={"#call": "CallId", "#owner": "Owner"},
+                ExpressionAttributeValues={":call": {"S": call_id}, ":owner": owner},
             )
-        except Exception:  # noqa: BLE001
-            pass
 
 
 if __name__ == "__main__":

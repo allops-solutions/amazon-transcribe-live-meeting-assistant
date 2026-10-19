@@ -43,9 +43,15 @@ import {
   Toggle,
   Badge,
 } from '@cloudscape-design/components';
-import { buildVncConnection, isMicrovmEndpoint, fetchVncAuthToken } from './vncConnection';
+import {
+  buildVncConnection,
+  isMicrovmEndpoint,
+  fetchMicrovmAuthToken,
+  fetchVncEdgeToken,
+  vncErrorMessage,
+} from './vncConnection';
 
-// Mints a short-lived, server-authorized VNC auth token (see vncConnection.js).
+// Used to mint the short-lived VNC token for whichever transport is in play.
 const gqlClient = generateClient();
 
 const VNCViewer = ({
@@ -126,19 +132,32 @@ const VNCViewer = ({
     setConnecting(true);
     setError(null);
 
-    // Mint a VNC auth token and connect
+    // Mint a token for this session, then connect
     const connectWithAuth = async () => {
       try {
-        // Two transports, depending on VPLaunchType (see vncConnection.js):
-        //  - ECS: wss://<cloudfront>/vnc/<vpId>?token=<VP-scoped HMAC token>
-        //  - MicroVM: the VM's own endpoint, with a short-lived port-scoped
-        //    JWE token passed as a WebSocket subprotocol (browsers can't set
-        //    the X-aws-proxy-auth header that Lambda would otherwise expect).
-        // Both are minted by the same resolver, which decides which kind of
-        // token to hand back based on how this VP is actually running.
-        const authToken = await fetchVncAuthToken(gqlClient, vpId);
+        // Two transports, depending on VPLaunchType (see vncConnection.js). Both
+        // tokens are minted by an authenticated resolver that checks the
+        // caller's access to this VP, are scoped to that VP's noVNC port, and
+        // are short-lived, so each is minted per connection attempt:
+        //  - ECS: wss://<cloudfront>/vnc/<vpId>?token=<signed edge token>
+        //  - MicroVM: the VM's own endpoint, with a port-scoped token passed as
+        //    a WebSocket subprotocol (browsers can't set the X-aws-proxy-auth
+        //    header that Lambda would otherwise expect).
+        let authToken;
+        let edgeToken;
+        // The VNC server asks for its own credential; the ECS mint returns it
+        // with the token so this stays one round trip.
+        let vncPassword = '';
+        if (isMicrovmEndpoint(vncEndpoint)) {
+          authToken = await fetchMicrovmAuthToken(gqlClient, vpId);
+        } else {
+          const minted = await fetchVncEdgeToken(gqlClient, vpId);
+          edgeToken = minted.token;
+          vncPassword = minted.vncPassword || '';
+        }
         const { url: wsUrl, wsProtocols } = buildVncConnection({
           endpoint: vncEndpoint,
+          edgeToken,
           authToken,
         });
 
@@ -150,7 +169,7 @@ const VNCViewer = ({
         console.log('Virtual Participant ID:', vpId);
 
         const rfb = new RFB(canvasRef.current, wsUrl, {
-          credentials: { password: '' },
+          credentials: { password: vncPassword },
           // noVNC 1.7 forwards this to `new WebSocket(url, protocols)`.
           ...(wsProtocols.length > 0 ? { wsProtocols } : {}),
         });
@@ -221,7 +240,7 @@ const VNCViewer = ({
         rfbRef.current = rfb;
       } catch (err) {
         console.error('Failed to connect:', err);
-        setError(`Failed to connect: ${err.message}`);
+        setError(vncErrorMessage(err));
         setConnecting(false);
       }
     };

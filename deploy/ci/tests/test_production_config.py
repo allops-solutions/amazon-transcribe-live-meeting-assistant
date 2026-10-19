@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import unittest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 spec = importlib.util.spec_from_file_location('production_config', ROOT / 'deploy/ci/production_config.py')
@@ -11,6 +12,29 @@ spec.loader.exec_module(config)
 
 
 class ProductionConfigTests(unittest.TestCase):
+    def test_owner_email_reuses_list_lambda_with_exact_pool_read_only_access(self):
+        resources = yaml.load((ROOT / 'lma-ai-stack/deployment/lma-ai-stack.yaml').read_text(),
+                              Loader=yaml.BaseLoader)['Resources']
+        function = resources['ListCallsGsiResolverFunction']['Properties']
+        self.assertEqual(function['Environment']['Variables']['USER_POOL_ID'], 'UserPoolId')
+        statements = function['Policies'][1]['Statement']
+        cognito = [item for item in statements if item.get('Action') == 'cognito-idp:AdminGetUser']
+        self.assertEqual(len(cognito), 1)
+        self.assertTrue(cognito[0]['Resource'].endswith(':userpool/${UserPoolId}'))
+        for logical in ('CallOwnerEmailResolver', 'VpOwnerEmailResolver'):
+            resolver = resources[logical]['Properties']
+            self.assertEqual(resolver['FieldName'], 'OwnerEmail')
+            self.assertEqual(resolver['MaxBatchSize'], '25')
+            self.assertEqual(resolver['DataSourceName'], 'ListCallsGsiDataSource.Name')
+
+    def test_saved_ci_parameter_names_remain_supported_by_root_template(self):
+        template = yaml.load((ROOT / 'lma-main.yaml').read_text(), Loader=yaml.BaseLoader)
+        for environment in ('dev', 'prod'):
+            parameters = json.loads((ROOT / f'deploy/params/{environment}.json').read_text())
+            unknown = {item['ParameterKey'] for item in parameters} - set(template['Parameters'])
+            self.assertEqual(unknown, set(), environment)
+        self.assertEqual(template['Parameters']['EnableMicrovmAsr']['Default'], 'false')
+
     def setUp(self):
         self.base = json.loads((ROOT / 'deploy/params/prod.json').read_text())
 
@@ -29,7 +53,8 @@ class ProductionConfigTests(unittest.TestCase):
     def test_sso_and_release_overrides_cannot_remove_required_settings(self):
         for key, value in [('GoogleOAuthClientSecret', ''), ('GoogleOAuthClientId', ''),
                            ('EnableGoogleSso', 'false'), ('VPLaunchType', 'EC2'),
-                           ('GoogleAdminEmail', 'someone-else@allops.co')]:
+                           ('GoogleAdminEmail', 'someone-else@allops.co'),
+                           ('EnableVideoRecording', 'true'), ('EnableAudioRecording', 'false')]:
             with self.subTest(key=key):
                 overrides = {'GoogleOAuthClientSecret': 'test-secret-not-real', key: value}
                 self.assertIn(key, [item['parameter'] for item in config.issues(self.base, overrides)])

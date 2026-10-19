@@ -68,7 +68,7 @@ class ApplicationBoundaryTests(unittest.TestCase):
                         self.assertEqual(name[0], 'HasPermissionsBoundary')
                         self.assertTrue(name[1].startswith('${AWS::StackName}-'))
                         self.assertEqual(name[2], 'AWS::NoValue')
-        self.assertEqual(count, 3)
+        self.assertEqual(count, 5)
 
     def test_sam_layers_and_legacy_schedule_groups_are_scoped(self):
         layer = self.templates['lma-ai-stack/deployment/lma-ai-stack.yaml']['Resources']['TranscriptEnrichmentPythonLayer']

@@ -6,6 +6,24 @@ import yaml
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_aws_credentials_actions_use_reviewed_node24_release(self):
+        root = Path(__file__).resolve().parents[3]
+        actions = []
+        for filename in ('lma-bootstrap-validation.yml', 'lma-deploy.yml'):
+            workflow = yaml.load((root / '.github/workflows' / filename).read_text(),
+                                 Loader=yaml.BaseLoader)
+            for job in workflow['jobs'].values():
+                for step in job.get('steps', []):
+                    if step.get('uses', '').startswith('aws-actions/configure-aws-credentials@'):
+                        actions.append(step)
+        self.assertEqual(len(actions), 3)
+        for step in actions:
+            self.assertEqual(step['uses'],
+                             'aws-actions/configure-aws-credentials@'
+                             'e1253824e5c10ff9df46874f81ed3ec929e19cfd')
+            self.assertEqual(step['with']['unset-current-credentials'], 'true')
+            self.assertTrue(step['with']['allowed-account-ids'])
+
     def setUp(self):
         root = Path(__file__).resolve().parents[3]
         self.template = yaml.load((root / 'deploy/ci/bootstrap.yaml').read_text(), Loader=yaml.BaseLoader)

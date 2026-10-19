@@ -17,6 +17,14 @@ on:
         options: [preflight, deploy]
         default: preflight
         required: true
+      keep_dev:
+        description: Keep this run-owned dev validation stack for live acceptance; never affects production
+        type: boolean
+        default: false
+      dev_owner_run_id:
+        description: Optional full owning CI run ID to update a retained isolated dev stack; requires keep_dev
+        type: string
+        default: ''
 permissions:
   contents: read
 concurrency:
@@ -24,7 +32,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   checks:
-    if: github.repository == 'allops-solutions/amazon-transcribe-live-meeting-assistant' && github.ref == 'refs/heads/allops-main' && inputs.confirmation == 'DEPLOY LMA'
+    if: github.repository == 'allops-solutions/amazon-transcribe-live-meeting-assistant' && inputs.confirmation == 'DEPLOY LMA' && (github.ref == 'refs/heads/allops-main' || (inputs.environment == 'dev' && startsWith(github.ref, 'refs/heads/feature/')))
     uses: ./.github/workflows/lma-checks.yml
   deploy:
     needs: checks
@@ -43,6 +51,8 @@ jobs:
       LMA_CFN_ROLE_ARN: ${{ vars.LMA_CFN_ROLE_ARN }}
       LMA_APPLICATION_BOUNDARY_ARN: ${{ vars.LMA_APPLICATION_BOUNDARY_ARN }}
       TARGET_ENVIRONMENT: ${{ inputs.environment }}
+      LMA_KEEP_DEV: ${{ inputs.keep_dev && 'true' || 'false' }}
+      LMA_DEV_OWNER_RUN_ID: ${{ inputs.dev_owner_run_id }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -61,7 +71,7 @@ jobs:
           docker info > /dev/null
       - name: Authenticate with short-lived deployment credentials
         id: aws
-        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.LMA_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -83,5 +93,5 @@ jobs:
         run: |
           python deploy/ci/deploy.py deploy --environment "$TARGET_ENVIRONMENT" --run-id "$GITHUB_RUN_ID" --template-url "https://s3.us-east-1.amazonaws.com/$LMA_ARTIFACT_BUCKET/releases/$GITHUB_SHA/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/lma-main.yaml"
       - name: Clean up only this run's temporary dev stack
-        if: always() && inputs.operation == 'deploy' && inputs.environment == 'dev' && steps.aws.outcome == 'success'
+        if: always() && inputs.operation == 'deploy' && inputs.environment == 'dev' && !inputs.keep_dev && !inputs.dev_owner_run_id && steps.aws.outcome == 'success'
         run: python deploy/ci/deploy.py cleanup --environment dev --run-id "$GITHUB_RUN_ID"

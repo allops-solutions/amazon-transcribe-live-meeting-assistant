@@ -83,6 +83,7 @@ const mapCallsAttributes = (calls, settings) => {
       agentSentimentLabel,
       agentSentimentTrendLabel,
       owner,
+      ownerEmail: item.OwnerEmail,
       sharedWith,
       listPK,
       listSK,

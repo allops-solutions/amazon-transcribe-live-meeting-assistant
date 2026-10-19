@@ -22,6 +22,10 @@ const getLLMPromptTemplate = `
 
 export const DEFAULT_TRANSCRIBE_LANGUAGE_MODE = 'identify-multiple-languages';
 
+// A missing setting must never silently opt a meeting into screen recording.
+export const videoRecordingDefault = (settings) =>
+  String(settings?.EnableVideoRecording ?? 'false').toLowerCase() === 'true';
+
 export const TRANSCRIBE_LANGUAGE_MODE_ITEMS = [
   {
     value: 'en-US',
