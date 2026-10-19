@@ -45,7 +45,79 @@ optional engine or voice integration is enabled merely by this merge.
 - Read responses no longer expose MCP stored authentication configuration.
   Custom consumers must use `HasAuthConfig`, not the removed `AuthConfig` field.
 
-## Required acceptance before production
+## Release order and acceptance gates (updated 2026-10-19)
+
+The isolated OAuth/Quick lifecycle checks below have passed. The owner explicitly
+chose not to repeat isolated-dev live-meeting tests: remaining Google Meet,
+recording, transcript and summary acceptance will use a disposable production
+meeting after deployment. This is an accepted rollout risk, not a claim that those
+paths have already passed on this release. The original dev environment stays up.
+
+1. Complete release/configuration/rollback review and merge PR #21 into
+   `allops-main` after its required checks pass. This branch is the approved
+   production target for this fork (not upstream `develop`).
+2. Before application deployment, apply and verify the scoped discard-queue
+   permission from `deploy/ci/practical-access.yaml`. It is not installed merely
+   by merging the PR; on 2026-10-19 the live provisioning role still lacked it.
+3. Build privately through production CI/CD. Inspect the actual root/nested
+   change set before execution; stop on unexpected replacements/deletions of
+   stateful resources or changes to the active SSO pool. The current deployment
+   script executes its change set immediately after printing it, so an explicit
+   pre-execution inspection step must be arranged before launching deploy mode;
+   do not mistake its printed summary for an approval gate.
+4. Deploy the coordinated UI/API/edge/runtime revision. Verify Google SSO,
+   video off/audio on, Kimi and on-demand summaries. Move Quick's connector and
+   Flow action bindings from original dev to production, then authenticate each
+   designated scheduler and verify their no-confirmation triggers.
+5. Run one disposable production acceptance meeting: joining, transcript, audio
+   recording, video default off, summary, owner email labels, company-wide
+   transcript reads and owner/shared/Admin-only VP-browser control. Verify Quick
+   schedule/repeat/update/explicit cancellation against actual backend state and
+   an unattended trigger without review clicks. Also regenerate the existing long
+   meeting only with permission to verify complete summary output, or an explicit
+   output-limit failure with the previous summary preserved.
+6. Finish on-demand dev create/update/feature-branch/confirmed-destroy support
+   before retiring original dev. Historical AWS resource cleanup remains open;
+   GLM evaluation and a signed-in Google Meet bot/logo are out of scope.
+
+### Rollback baseline and constraints
+
+- Current production root: `LMA`, account `009853297978`, region `us-east-1`;
+  baseline revision `291d9c0c1ad0daac69f3f9df0c0cea8d835fa386`, CI run
+  `38225965181`, attempt `1`. Healthy `CREATE_COMPLETE` and termination protection
+  were verified on 2026-10-19.
+- The previous private root template was verified present at
+  `s3://allops-lma-ci-009853297978-production-us-east-1/releases/291d9c0c1ad0daac69f3f9df0c0cea8d835fa386/38225965181/1/lma-main.yaml`.
+  Keep that complete release prefix and its referenced nested/code artifacts.
+- Before execution, record the active stack/template references and configuration
+  secret version ID without exporting secret values. Retain the current active
+  SSO pool `us-east-1_eTo8Eu7eB`, legacy HMAC secret and all meeting/profile data.
+  Source comparison shows existing stateful resource properties unchanged;
+  deletion/retention-policy changes are not proof that the eventual change set
+  contains no replacements. Inspect the packaged change set as described above.
+- If CloudFormation update fails, let automatic rollback finish; do not start a
+  competing update. Investigate `UPDATE_ROLLBACK_FAILED` before proceeding and
+  never delete production to recover an update.
+- If deployment succeeds but acceptance fails, restore the baseline packaged
+  release through an explicitly reviewed CloudFormation UPDATE change set using
+  the existing `LMA-CloudFormation` service role, baseline-supported parameters
+  with `UsePreviousValue`, and the saved configuration version if needed. Verify
+  referenced artifacts and the change set before executing. This is a coordinated
+  UI/schema/edge/runtime rollback, not a live command performed by this document.
+- Expect CloudFront propagation; require a browser refresh after rollback so
+  cached new UI code does not query fields absent from the restored schema.
+  Do not rotate/delete signing keys, overwrite named profiles or erase meeting
+  data as part of rollback. A rollback plan is documented, not destructively
+  rehearsed in production. New additive resources may remain retained.
+- Production deployment is manually dispatched; merging does not deploy. The
+  workflow only accepts production from `allops-main`, so do not dispatch it on
+  an old feature branch expecting rollback. Use the reviewed baseline-template
+  change set above, or a separately reviewed revert on `allops-main`.
+
+## Historical isolated-dev validation procedure
+
+The following describes the validation lane used during integration, not a
+requirement to recreate the deleted isolated stack or repeat live tests.
 
 1. Run branch CI checks and builds.
 2. Deploy the integration revision through the dev CI lane. Production remains
@@ -66,11 +138,12 @@ optional engine or voice integration is enabled merely by this merge.
 5. Verify a real meeting produces transcript segments, a playable recording,
    and an on-demand summary; verify authorized live-desktop viewing and that
    another ordinary user cannot control an unshared VP.
-6. Inspect the production change set for unexpected stateful replacements, then
-   deploy the accepted revision through production CI.
+6. Follow the release order above for production change-set review, deployment
+   and the owner-approved production acceptance tests.
 
 Mocked unit tests and local builds do not establish these live outcomes. Do not
-delete the existing dev environment while these gates remain incomplete.
+delete the existing dev environment until production migration/acceptance and
+the on-demand dev lifecycle gates above pass.
 
 ## Verified isolated OAuth acceptance — 2026-10-13
 
@@ -91,4 +164,34 @@ from a temporary user explicitly verified not to belong to the Admin group:
 
 This establishes the deployed OAuth gateway compatibility fix, not a full Quick
 UI Flow run, Google SSO redirect test or real meeting/audio acceptance. Production,
-original dev and the working Quick connector were not modified. PR 21 remains draft.
+original dev and the working Quick connector were not modified by that test.
+
+## Verified real Quick Flow acceptance — 2026-10-13
+
+The private `LMA OAuth Acceptance Test` Flow
+`66b995dc-284b-480d-bac6-1a0c71ae8a52` subsequently completed schedule, duplicate
+schedule, update, cancellation and repeat cancellation using the isolated OAuth
+connector and a non-admin test login. The same VP
+`594e34fd-b180-4b7f-9e4f-6b2f59dfbf69` was verified in DynamoDB with the caller's
+identity, preserved Bosnian language, updated time and final `CANCELLED` state.
+No live meeting join was requested. The isolated stack was then deleted at the
+owner's request. This is Quick OAuth lifecycle evidence, not evidence that the
+production Calendar connector has been migrated; it still pointed at original
+dev on 2026-10-19.
+
+## Latest release fixes — 2026-10-19
+
+- All three AWS credentials action pins use immutable Node-24-based v6.3.0.
+- UI and VP launches inherit the deployment recording default; video remains an
+  explicit per-VP opt-in, not a hard prohibition. Existing VP rows are not rewritten.
+- Named summary profiles persist usable prompts before being listed. The editor
+  shows only named profiles; older meetings keep their backend Default/Custom fallback.
+- Display-only owner emails do not replace stored authorization identities.
+  VNC checks recognize the same signed caller's username/email/sub aliases but
+  still reject another ordinary user's unshared VP.
+- Kimi has a 16,384-token per-section output budget; other providers keep 4,096.
+  A short synthetic production-account request accepted the larger Kimi budget
+  and ended normally. Actual long-meeting completion remains an acceptance test.
+  `max_tokens` / `model_context_window_exceeded` results are rejected before
+  export/publication, without another fallback-model call. Failed runs retain the
+  previous summary and expose `FAILED_OUTPUT_LIMIT` with actionable UI guidance.
