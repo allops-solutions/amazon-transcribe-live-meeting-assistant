@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Pin all three AWS credentials workflow actions to v6.3.0's immutable commit
+  using Node 24, preserving existing role, account and session restrictions.
+
 - Dev CI can validate maintained feature branches in a separate run-owned stack,
   optionally kept running for acceptance; production remains main-branch-only.
 - Synthetic pipeline test cleanup removes paginated detail and listing rows,

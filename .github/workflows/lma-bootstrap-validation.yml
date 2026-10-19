@@ -38,7 +38,7 @@ jobs:
           echo 'Repository checkout and Docker daemon verified. No LMA deployment attempted.'
       - name: Authenticate with the metadata-only AWS role
         if: inputs.validate_aws
-        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.LMA_AUTH_ROLE_ARN }}
           aws-region: us-east-1
@@ -88,7 +88,7 @@ jobs:
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
           docker info > /dev/null
       - name: Authenticate for private artifact publishing only
-        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.LMA_PUBLISH_ROLE_ARN }}
           aws-region: us-east-1
