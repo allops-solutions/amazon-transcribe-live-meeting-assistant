@@ -210,9 +210,11 @@ def main():
             f"LMA prepared release sha={os.environ['GITHUB_SHA']} "
             f"configVersion={secret['VersionId']} stackId={stack_id} stackVersion={stack_version}"
         )
+        # DescribeChangeSet omits ChangeSetType; match the actual existing root
+        # stack ID as well as the source/configuration/version recorded at prepare.
         if (change.get("Status") != "CREATE_COMPLETE"
                 or change.get("ExecutionStatus") != "AVAILABLE"
-                or change.get("ChangeSetType") != "UPDATE"
+                or change.get("StackId") != stack_id
                 or change.get("Description") != expected_description
                 or not change.get("IncludeNestedStacks")):
             raise ValueError("Change set is stale, unreviewable, or does not match the current release/configuration")
