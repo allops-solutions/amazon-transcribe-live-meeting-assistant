@@ -8,10 +8,19 @@ import {
   fetchMicrovmAuthToken,
   fetchVncEdgeToken,
   MICROVM_VNC_PORT,
+  vncErrorMessage,
 } from './vncConnection';
 
 const CF_ENDPOINT = 'wss://d123abc.cloudfront.net/vnc/vp-123';
 const MVM_ENDPOINT = 'wss://a1b2c3d4.lambda-microvm.us-west-2.on.aws';
+
+it('distinguishes live-browser permission errors from a failed VP', () => {
+  const error = { errors: [{ message: 'Not authorized for this Virtual Participant' }] };
+  expect(vncErrorMessage(error)).toContain('Only its owner');
+  expect(vncErrorMessage(error)).toContain('does not mean the VP has disconnected');
+  expect(vncErrorMessage(new Error('Network error'))).toBe('Failed to connect: Network error');
+  expect(vncErrorMessage({})).not.toContain('undefined');
+});
 
 describe('isMicrovmEndpoint', () => {
   it('recognises Lambda MicroVM endpoints', () => {

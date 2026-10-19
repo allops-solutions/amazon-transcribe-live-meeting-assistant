@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Save usable default sections before publishing a new summary profile to users;
+  failed or empty profile writes no longer create selectable catalog entries.
+- VP creation and immediate/scheduled launches inherit the deployment video-recording
+  default instead of silently enabling recording. Production CI rejects a video-on
+  override of the approved configuration.
+- Explain live VP browser permission denials separately from connection failures;
+  meeting transcript access remains unchanged.
+
 ### Changed
 
 - Pin all three AWS credentials workflow actions to v6.3.0's immutable commit

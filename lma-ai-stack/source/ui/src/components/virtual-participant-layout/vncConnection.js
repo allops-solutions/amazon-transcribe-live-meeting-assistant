@@ -27,6 +27,19 @@
 /** Hostname marker for a Lambda MicroVMs endpoint. */
 const MICROVM_HOST_MARKER = '.lambda-microvm.';
 
+/** Explain resolver access denials without presenting them as a crashed VP. */
+export const vncErrorMessage = (error) => {
+  const messages = [error?.message, ...(error?.errors || []).map((item) => item?.message)].filter(Boolean);
+  if (messages.some((message) => message.includes('Not authorized for this Virtual Participant'))) {
+    return (
+      'You do not have access to this VP live browser. ' +
+      'Only its owner, explicitly shared users, or an admin can open it. ' +
+      'This does not mean the VP has disconnected, and it does not restrict access to the meeting transcript.'
+    );
+  }
+  return `Failed to connect: ${messages[0] || 'Unable to open the live browser. Try again.'}`;
+};
+
 /** noVNC serves the VP's websockify on this port inside the container. */
 export const MICROVM_VNC_PORT = 5901;
 

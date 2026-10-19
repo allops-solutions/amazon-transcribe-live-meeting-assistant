@@ -38,7 +38,8 @@ class ProductionConfigTests(unittest.TestCase):
     def test_sso_and_release_overrides_cannot_remove_required_settings(self):
         for key, value in [('GoogleOAuthClientSecret', ''), ('GoogleOAuthClientId', ''),
                            ('EnableGoogleSso', 'false'), ('VPLaunchType', 'EC2'),
-                           ('GoogleAdminEmail', 'someone-else@allops.co')]:
+                           ('GoogleAdminEmail', 'someone-else@allops.co'),
+                           ('EnableVideoRecording', 'true'), ('EnableAudioRecording', 'false')]:
             with self.subTest(key=key):
                 overrides = {'GoogleOAuthClientSecret': 'test-secret-not-real', key: value}
                 self.assertIn(key, [item['parameter'] for item in config.issues(self.base, overrides)])

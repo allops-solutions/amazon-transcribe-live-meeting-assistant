@@ -43,7 +43,13 @@ import {
   Toggle,
   Badge,
 } from '@cloudscape-design/components';
-import { buildVncConnection, isMicrovmEndpoint, fetchMicrovmAuthToken, fetchVncEdgeToken } from './vncConnection';
+import {
+  buildVncConnection,
+  isMicrovmEndpoint,
+  fetchMicrovmAuthToken,
+  fetchVncEdgeToken,
+  vncErrorMessage,
+} from './vncConnection';
 
 // Used to mint the short-lived VNC token for whichever transport is in play.
 const gqlClient = generateClient();
@@ -234,7 +240,7 @@ const VNCViewer = ({
         rfbRef.current = rfb;
       } catch (err) {
         console.error('Failed to connect:', err);
-        setError(`Failed to connect: ${err.message}`);
+        setError(vncErrorMessage(err));
         setConnecting(false);
       }
     };

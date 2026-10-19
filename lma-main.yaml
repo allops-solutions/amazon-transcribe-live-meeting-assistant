@@ -2153,6 +2153,7 @@ Resources:
         # (e.g. WAITING_FOR_CAPACITY) matches the actual hosting mode instead
         # of always describing EC2 host-slot / auto-scaler behavior.
         VPLaunchType: !Ref VPLaunchType
+        EnableVideoRecording: !Ref EnableVideoRecording
         ZoomSdkEnabled: !If
         - ZoomSdkEnabled
         - True

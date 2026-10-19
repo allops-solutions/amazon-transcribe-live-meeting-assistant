@@ -1416,17 +1416,19 @@ SCHEDULED_ROW = {
 }
 
 
-def _run_scheduler(raw: str, launch_type: str) -> dict:
+def _run_scheduler(raw: str, launch_type: str, row=None, video_default="false") -> dict:
     """Execute the inline scheduler on one INSERT event; return the schedule."""
     import types
     from unittest import mock
 
     fake = _FakeScheduler()
     dynamodb = mock.Mock()
-    dynamodb.get_item.return_value = {"Item": SCHEDULED_ROW}
+    row = SCHEDULED_ROW if row is None else row
+    dynamodb.get_item.return_value = {"Item": row}
     module = types.ModuleType("vpscheduler")
     module.__dict__["__name__"] = "vpscheduler"
-    env = {**SCHEDULER_ENV, "VP_LAUNCH_TYPE": launch_type}
+    env = {**SCHEDULER_ENV, "VP_LAUNCH_TYPE": launch_type,
+           "ENABLE_VIDEO_RECORDING": video_default}
     with mock.patch.dict("os.environ", env, clear=False), mock.patch(
         "boto3.client",
         side_effect=lambda service, *a, **k: fake if service == "scheduler" else dynamodb,
@@ -1436,7 +1438,7 @@ def _run_scheduler(raw: str, launch_type: str) -> dict:
             "Records": [
                 {
                     "eventName": "INSERT",
-                    "dynamodb": {"Keys": {"id": {"S": "vp-1"}}, "NewImage": SCHEDULED_ROW},
+                    "dynamodb": {"Keys": {"id": {"S": "vp-1"}}, "NewImage": row},
                 }
             ]
         }
@@ -1445,6 +1447,23 @@ def _run_scheduler(raw: str, launch_type: str) -> dict:
     assert result["statusCode"] == 200, result
     assert len(fake.created) == 1, f"expected one schedule, got {fake.created}"
     return fake.created[0]
+
+
+@pytest.mark.parametrize("default", ["true", "false"])
+def test_scheduled_video_without_override_inherits_stack(raw: str, default: str) -> None:
+    row = {k: v for k, v in SCHEDULED_ROW.items() if k != "enableVideoRecording"}
+    schedule = _run_scheduler(raw, "FARGATE", row=row, video_default=default)
+    payload = json.loads(schedule["Target"]["Input"])
+    env = payload["Overrides"]["ContainerOverrides"][0]["Environment"]
+    assert next(x["Value"] for x in env if x["Name"] == "ENABLE_VIDEO_RECORDING") == default
+
+
+def test_immediate_video_defaults_reference_deployment_setting(template: dict) -> None:
+    body, _ = _state_machine_definition(template)
+    assert body.count('"enableVideoRecording": "${EnableVideoRecording}"') == 2
+    states = _rendered_states(template, is_microvm=False)
+    for name in ("Format Zoom Secret Name", "Empty Zoom Secret Name"):
+        assert states[name]["Parameters"]["enableVideoRecording"] == "PLACEHOLDER"
 
 
 @pytest.mark.parametrize("launch_type", ["FARGATE", "EC2"])

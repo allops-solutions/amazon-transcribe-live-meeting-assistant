@@ -2843,7 +2843,7 @@ Resources:
                   "zoomCredentialsSecretName.$": "States.Format('${LMAStackName}/zoom-credentials/{}', $.data.userZoomSub)",
                   "userSub": "",
                   "userZoomSub": "",
-                  "enableVideoRecording": "true",
+                  "enableVideoRecording": "${EnableVideoRecording}",
                   "transcribeLanguageMode": "identify-multiple-languages",
                   "summaryProfile": "",
                   "summaryLanguage": ""
@@ -2857,7 +2857,7 @@ Resources:
                   "zoomCredentialsSecretName": "",
                   "userSub": "",
                   "userZoomSub": "",
-                  "enableVideoRecording": "true",
+                  "enableVideoRecording": "${EnableVideoRecording}",
                   "transcribeLanguageMode": "identify-multiple-languages",
                   "summaryProfile": "",
                   "summaryLanguage": ""
@@ -3568,9 +3568,10 @@ Resources:
                               # Absent on older rows / guest-only flows.
                               user_sub = new_image.get('userSub', {}).get('S', '')
                               user_zoom_sub = new_image.get('userZoomSub', {}).get('S', '')
-                              # Per-VP video toggle. Default ON when absent (older rows).
-                              # ECS env values must be strings, so coerce the bool.
-                              enable_video_recording = new_image.get('enableVideoRecording', {}).get('BOOL', True)
+                              # Missing per-VP overrides inherit the deployment's setting,
+                              # not an unconditional opt-in to screen recording.
+                              video_default = os.environ.get('ENABLE_VIDEO_RECORDING', 'false').lower() == 'true'
+                              enable_video_recording = new_image.get('enableVideoRecording', {}).get('BOOL', video_default)
                               enable_video_recording_str = 'true' if enable_video_recording else 'false'
                               stack_name = os.environ.get('LMA_STACK_NAME', '')
                               zoom_secret_name = (
@@ -3682,6 +3683,7 @@ Resources:
           VP_TABLE_NAME: !Ref VirtualParticipantTableName
           SCHEDULER_ROLE_ARN: !GetAtt VPSchedulerExecutionRole.Arn
           VP_LAUNCH_TYPE: !Ref VPLaunchType
+          ENABLE_VIDEO_RECORDING: !Ref EnableVideoRecording
           # MICROVM only: the schedule target is the launcher Lambda rather than
           # ecs:runTask, so it needs the function ARN and the role EventBridge
           # Scheduler assumes to invoke it. Both resources are conditional on

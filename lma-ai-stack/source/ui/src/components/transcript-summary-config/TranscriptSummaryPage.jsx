@@ -21,6 +21,7 @@ import {
   Icon,
   Modal,
 } from '@cloudscape-design/components';
+import createSummaryProfile from './create-summary-profile';
 
 const client = generateClient();
 const getLLMPromptTemplateQuery = `
@@ -185,15 +186,27 @@ const TranscriptSummaryPage = () => {
     }
     setSaving(true);
     try {
-      const updatedCatalog = [...catalog, { id, name }];
-      await saveCatalog(updatedCatalog);
+      await createSummaryProfile({
+        id,
+        name,
+        catalog,
+        defaults: await fetchTemplateItem('DefaultSummaryPromptTemplates'),
+        saveProfile: (profileId, sections) =>
+          client.graphql({
+            query: updateLLMPromptTemplateMutation,
+            variables: {
+              input: { LLMPromptTemplateId: `Profile#${profileId}`, TemplateConfig: JSON.stringify(sections) },
+            },
+          }),
+        saveCatalog,
+      });
       setShowNewProfileModal(false);
       setSelectedProfileId(id);
       await loadConfig(id);
-      setSuccess(`Profile "${name}" created. Edit its sections below, then Save Changes.`);
+      setSuccess(`Profile "${name}" created with default sections. You can edit and save them below.`);
     } catch (err) {
       console.error('Error creating summary profile:', err);
-      setNewProfileError('Failed to create profile. Please try again.');
+      setNewProfileError(err.message || 'Failed to create profile. Please try again.');
     } finally {
       setSaving(false);
     }
@@ -207,8 +220,8 @@ const TranscriptSummaryPage = () => {
     if (
       !window.confirm(
         `Permanently delete profile "${profile?.name || profileId}"? ` +
-          'This cannot be undone. A meeting already using it falls back to the Default templates ' +
-          'the next time its summary is generated.',
+          'This cannot be undone. A meeting already using it must choose another profile ' +
+          'before its summary can be generated again.',
       )
     ) {
       return;
