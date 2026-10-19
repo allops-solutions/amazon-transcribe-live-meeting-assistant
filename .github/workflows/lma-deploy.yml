@@ -8,15 +8,20 @@ on:
         options: [production, dev]
         required: true
       confirmation:
-        description: Type DEPLOY LMA to authorize the selected environment
+        description: Type DEPLOY LMA, or EXECUTE REVIEWED LMA CHANGE SET for production execution
         type: string
         required: true
       operation:
-        description: Preflight validates authenticated access without building or deploying the application
+        description: Production uses prepare then execute after review; dev deploy remains a separate operation
         type: choice
-        options: [preflight, deploy]
+        options: [preflight, prepare, execute, deploy]
         default: preflight
         required: true
+      change_set_name:
+        description: Exact lma-ci run-attempt name from a prepared production change set; required for execute
+        type: string
+        required: false
+        default: ''
       keep_dev:
         description: Keep this run-owned dev validation stack for live acceptance; never affects production
         type: boolean
@@ -32,7 +37,13 @@ concurrency:
   cancel-in-progress: false
 jobs:
   checks:
-    if: github.repository == 'allops-solutions/amazon-transcribe-live-meeting-assistant' && inputs.confirmation == 'DEPLOY LMA' && (github.ref == 'refs/heads/allops-main' || (inputs.environment == 'dev' && startsWith(github.ref, 'refs/heads/feature/')))
+    if: >-
+      github.repository == 'allops-solutions/amazon-transcribe-live-meeting-assistant' &&
+      ((inputs.operation == 'execute' && inputs.confirmation == 'EXECUTE REVIEWED LMA CHANGE SET') ||
+       (inputs.operation != 'execute' && inputs.confirmation == 'DEPLOY LMA')) &&
+      ((inputs.operation == 'prepare' || inputs.operation == 'execute') && inputs.environment == 'production' ||
+       inputs.operation == 'preflight' || (inputs.operation == 'deploy' && inputs.environment == 'dev')) &&
+      (github.ref == 'refs/heads/allops-main' || (inputs.environment == 'dev' && startsWith(github.ref, 'refs/heads/feature/')))
     uses: ./.github/workflows/lma-checks.yml
   deploy:
     needs: checks
@@ -53,6 +64,8 @@ jobs:
       TARGET_ENVIRONMENT: ${{ inputs.environment }}
       LMA_KEEP_DEV: ${{ inputs.keep_dev && 'true' || 'false' }}
       LMA_DEV_OWNER_RUN_ID: ${{ inputs.dev_owner_run_id }}
+      LMA_CHANGE_SET_NAME: ${{ inputs.change_set_name }}
+      LMA_CONFIRMATION: ${{ inputs.confirmation }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -82,16 +95,25 @@ jobs:
         run: |
           python deploy/ci/deploy.py preflight --environment "$TARGET_ENVIRONMENT" --run-id "$GITHUB_RUN_ID" --template-url "https://s3.us-east-1.amazonaws.com/$LMA_ARTIFACT_BUCKET/releases/$GITHUB_SHA/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/lma-main.yaml"
       - name: Build and publish this exact commit privately
-        if: inputs.operation == 'deploy'
+        if: inputs.operation == 'prepare' || (inputs.operation == 'deploy' && inputs.environment == 'dev')
         run: |
           test -n "$LMA_ARTIFACT_BUCKET"
           test -n "$LMA_CONFIG_SECRET_ARN"
           test -n "$LMA_CFN_ROLE_ARN"
           lma publish --source-dir . --region us-east-1 --bucket-basename "${LMA_ARTIFACT_BUCKET%-us-east-1}" --prefix "releases/$GITHUB_SHA/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT" --force
-      - name: Deploy and wait for CloudFormation
-        if: inputs.operation == 'deploy'
+      - name: Prepare production change set without executing it
+        if: inputs.operation == 'prepare' && inputs.environment == 'production'
         run: |
-          python deploy/ci/deploy.py deploy --environment "$TARGET_ENVIRONMENT" --run-id "$GITHUB_RUN_ID" --template-url "https://s3.us-east-1.amazonaws.com/$LMA_ARTIFACT_BUCKET/releases/$GITHUB_SHA/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/lma-main.yaml"
+          python deploy/ci/deploy.py prepare --environment production --run-id "$GITHUB_RUN_ID" --template-url "https://s3.us-east-1.amazonaws.com/$LMA_ARTIFACT_BUCKET/releases/$GITHUB_SHA/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/lma-main.yaml"
+      - name: Execute the reviewed production change set
+        if: inputs.operation == 'execute' && inputs.environment == 'production'
+        run: |
+          test -n "$LMA_CHANGE_SET_NAME"
+          python deploy/ci/deploy.py execute --environment production --run-id "$GITHUB_RUN_ID" --change-set-name "$LMA_CHANGE_SET_NAME"
+      - name: Deploy and wait for CloudFormation in dev
+        if: inputs.operation == 'deploy' && inputs.environment == 'dev'
+        run: |
+          python deploy/ci/deploy.py deploy --environment dev --run-id "$GITHUB_RUN_ID" --template-url "https://s3.us-east-1.amazonaws.com/$LMA_ARTIFACT_BUCKET/releases/$GITHUB_SHA/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/lma-main.yaml"
       - name: Clean up only this run's temporary dev stack
         if: always() && inputs.operation == 'deploy' && inputs.environment == 'dev' && !inputs.keep_dev && !inputs.dev_owner_run_id && steps.aws.outcome == 'success'
         run: python deploy/ci/deploy.py cleanup --environment dev --run-id "$GITHUB_RUN_ID"

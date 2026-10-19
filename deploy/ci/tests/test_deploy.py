@@ -2,8 +2,8 @@
 import importlib.util
 import json
 import os
-from pathlib import Path
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -60,6 +60,17 @@ class SafetyTests(unittest.TestCase):
         workflow = yaml.load((ROOT / '.github/workflows/lma-deploy.yml').read_text(),
                              Loader=yaml.BaseLoader)
         self.assertEqual(workflow['on']['workflow_dispatch']['inputs']['keep_dev']['default'], 'false')
+        self.assertEqual(workflow['on']['workflow_dispatch']['inputs']['operation']['options'],
+                         ['preflight', 'prepare', 'execute', 'deploy'])
+        checks = str(workflow['jobs']['checks']['if'])
+        self.assertIn('EXECUTE REVIEWED LMA CHANGE SET', checks)
+        self.assertIn("inputs.environment == 'production'", checks)
+        steps = workflow['jobs']['deploy']['steps']
+        prepare = next(step for step in steps if 'Prepare production change set' in step.get('name', ''))
+        execute = next(step for step in steps if 'Execute the reviewed production change set' in step.get('name', ''))
+        self.assertIn("inputs.operation == 'prepare'", prepare['if'])
+        self.assertIn("inputs.operation == 'execute'", execute['if'])
+        self.assertIn('LMA_CHANGE_SET_NAME', workflow['jobs']['deploy']['env'])
         cleanup = workflow['jobs']['deploy']['steps'][-1]
         self.assertIn('!inputs.keep_dev', cleanup['if'])
         self.assertIn("inputs.environment == 'dev'", cleanup['if'])
@@ -133,10 +144,13 @@ class SafetyTests(unittest.TestCase):
             with self.subTest(role=invalid), self.assertRaises(ValueError):
                 deploy.validate_cloudformation_role(invalid, '009853297978')
 
-    def run_main(self, action, environment, existing=None, run_id='123'):
+    def run_main(self, action, environment, existing=None, run_id='123', change_set_override=None,
+                 capture_error=False):
         account = deploy.ACCOUNTS[environment]
         cfn = MagicMock()
         cfn.describe_stacks.return_value = {'Stacks': [existing]} if existing else {'Stacks': []}
+        cfn.describe_change_set.return_value = {'Changes': []}
+        cfn.create_change_set.return_value = {'Id': 'created-change-set'}
         # Use a patched read helper for the not-found case; all service clients are mocks.
         session = MagicMock()
         session.client.return_value.get_caller_identity.return_value = {'Account': account}
@@ -146,7 +160,18 @@ class SafetyTests(unittest.TestCase):
             overrides['GoogleOAuthClientSecret'] = 'test-secret-not-real'
         boundary = f'arn:aws:iam::{account}:policy/lma/isolation/application-boundary'
         overrides['PermissionsBoundaryArn'] = boundary
-        session.client.return_value.get_secret_value.return_value = {'SecretString': json.dumps(overrides)}
+        session.client.return_value.get_secret_value.return_value = {
+            'SecretString': json.dumps(overrides), 'VersionId': 'config-version'}
+        if action == 'execute':
+            prepared = {
+                'ChangeSetId': 'prepared-change-set', 'Status': 'CREATE_COMPLETE',
+                'ExecutionStatus': 'AVAILABLE', 'ChangeSetType': 'UPDATE',
+                'Description': ('LMA prepared release sha=abc configVersion=config-version '
+                                'stackId=stack-123 stackVersion=2026-10-19T00:00:00+00:00'),
+                'IncludeNestedStacks': True,
+            }
+            prepared.update(change_set_override or {})
+            cfn.describe_change_set.return_value = prepared
         clients = {'cloudformation': cfn, 'sts': session.client.return_value, 'secretsmanager': session.client.return_value}
         session.client.side_effect = clients.get
         url = f'https://s3.us-east-1.amazonaws.com/test-us-east-1/releases/abc/{run_id}/1/lma-main.yaml'
@@ -155,9 +180,15 @@ class SafetyTests(unittest.TestCase):
             'LMA_CONFIG_SECRET_ARN': f'arn:aws:secretsmanager:us-east-1:{account}:secret:test',
             'LMA_CFN_ROLE_ARN': f'arn:aws:iam::{account}:role/lma/isolation/LMA-CloudFormation',
             'LMA_APPLICATION_BOUNDARY_ARN': boundary,
-        }), patch.object(deploy.boto3, 'Session', return_value=session), patch.object(deploy, 'describe_stack', return_value=existing), patch.object(deploy.sys, 'argv', ['deploy.py', action, '--environment', environment, '--run-id', run_id, '--template-url', url]):
-            deploy.main()
-        return cfn
+            'LMA_CONFIRMATION': 'EXECUTE REVIEWED LMA CHANGE SET' if action == 'execute' else 'DEPLOY LMA',
+        }), patch.object(deploy.boto3, 'Session', return_value=session), patch.object(deploy, 'describe_stack', return_value=existing), patch.object(deploy.sys, 'argv', ['deploy.py', action, '--environment', environment, '--run-id', run_id, '--template-url', url] + (['--change-set-name', 'lma-ci-100-1'] if action == 'execute' else [])):
+            try:
+                deploy.main()
+            except Exception as exc:
+                if not capture_error:
+                    raise
+                return cfn, exc
+        return (cfn, None) if capture_error else cfn
 
     def test_preflight_never_writes(self):
         cfn = self.run_main('preflight', 'production')
@@ -211,21 +242,49 @@ class SafetyTests(unittest.TestCase):
         args = cfn.create_change_set.call_args.kwargs
         self.assertEqual(args['StackName'], 'LMA-CI-123')
         self.assertEqual(args['ChangeSetType'], 'UPDATE')
+        self.assertFalse(args['IncludeNestedStacks'])
         self.assertIn({'Key': 'LmaCiRun', 'Value': '123'}, args['Tags'])
         cfn.delete_stack.assert_not_called()
         with patch.dict(os.environ, {'LMA_KEEP_DEV': 'true', 'LMA_DEV_OWNER_RUN_ID': '123'}):
             with self.assertRaisesRegex(ValueError, 'never perform automatic cleanup'):
                 self.run_main('cleanup', 'dev', existing)
 
-    def test_production_deploy_protects_and_never_deletes(self):
-        cfn = self.run_main('deploy', 'production')
+    def test_production_prepare_creates_reviewable_nested_change_set_without_execution(self):
+        cfn = self.run_main('prepare', 'production')
         cfn.create_change_set.assert_called_once()
         args = cfn.create_change_set.call_args.kwargs
         self.assertEqual(args['StackName'], 'LMA')
         self.assertEqual(args['ChangeSetType'], 'CREATE')
-        cfn.execute_change_set.assert_called_once()
-        cfn.update_termination_protection.assert_called_once_with(StackName='LMA', EnableTerminationProtection=True)
+        self.assertTrue(args['IncludeNestedStacks'])
+        self.assertEqual(args['Description'], ('LMA prepared release sha=abc configVersion=config-version '
+                                               'stackId=none stackVersion=none'))
+        cfn.execute_change_set.assert_not_called()
+        cfn.update_termination_protection.assert_not_called()
         cfn.delete_stack.assert_not_called()
+
+    def test_production_direct_deploy_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'prepare, review, then execute'):
+            self.run_main('deploy', 'production')
+
+    def test_execute_requires_reviewed_production_change_set(self):
+        cfn = self.run_main('execute', 'production', {
+            'StackStatus': 'UPDATE_COMPLETE', 'StackId': 'stack-123',
+            'LastUpdatedTime': '2026-10-19T00:00:00+00:00'})
+        cfn.execute_change_set.assert_called_once_with(ChangeSetName='prepared-change-set')
+        cfn.update_termination_protection.assert_called_once_with(
+            StackName='LMA', EnableTerminationProtection=True)
+
+    def test_execute_rejects_stale_or_unreviewable_change_set(self):
+        for field, value in [('Status', 'FAILED'), ('ExecutionStatus', 'EXECUTE_IN_PROGRESS'),
+                             ('Description', 'another source'), ('IncludeNestedStacks', False)]:
+            with self.subTest(field=field):
+                cfn, error = self.run_main('execute', 'production', {
+                    'StackStatus': 'UPDATE_COMPLETE', 'StackId': 'stack-123',
+                    'LastUpdatedTime': '2026-10-19T00:00:00+00:00'},
+                                           change_set_override={field: value}, capture_error=True)
+                self.assertIsInstance(error, ValueError)
+                self.assertIn('stale, unreviewable', str(error))
+                cfn.execute_change_set.assert_not_called()
 
 
 if __name__ == '__main__':
