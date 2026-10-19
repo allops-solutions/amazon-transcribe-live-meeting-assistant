@@ -6,6 +6,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from botocore.session import get_session
+from botocore.validate import validate_parameters
+
 ROOT = Path(__file__).resolve().parents[3]
 spec = importlib.util.spec_from_file_location('ci_deploy', ROOT / 'deploy/ci/deploy.py')
 deploy = importlib.util.module_from_spec(spec)
@@ -165,11 +168,16 @@ class SafetyTests(unittest.TestCase):
         if action == 'execute':
             prepared = {
                 'ChangeSetId': 'prepared-change-set', 'Status': 'CREATE_COMPLETE',
-                'ExecutionStatus': 'AVAILABLE', 'ChangeSetType': 'UPDATE',
+                'ExecutionStatus': 'AVAILABLE', 'StackId': 'stack-123',
                 'Description': ('LMA prepared release sha=abc configVersion=config-version '
                                 'stackId=stack-123 stackVersion=2026-10-19T00:00:00+00:00'),
                 'IncludeNestedStacks': True,
             }
+            # Validate the happy-path fixture against the real AWS response
+            # contract; invented fields must not hide a broken execution guard.
+            response_shape = get_session().get_service_model('cloudformation').operation_model(
+                'DescribeChangeSet').output_shape
+            validate_parameters(prepared, response_shape)
             prepared.update(change_set_override or {})
             cfn.describe_change_set.return_value = prepared
         clients = {'cloudformation': cfn, 'sts': session.client.return_value, 'secretsmanager': session.client.return_value}
@@ -276,7 +284,8 @@ class SafetyTests(unittest.TestCase):
 
     def test_execute_rejects_stale_or_unreviewable_change_set(self):
         for field, value in [('Status', 'FAILED'), ('ExecutionStatus', 'EXECUTE_IN_PROGRESS'),
-                             ('Description', 'another source'), ('IncludeNestedStacks', False)]:
+                             ('Description', 'another source'), ('IncludeNestedStacks', False),
+                             ('StackId', 'another-stack'), ('StackId', None)]:
             with self.subTest(field=field):
                 cfn, error = self.run_main('execute', 'production', {
                     'StackStatus': 'UPDATE_COMPLETE', 'StackId': 'stack-123',

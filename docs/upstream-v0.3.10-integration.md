@@ -58,13 +58,17 @@ paths have already passed on this release. The original dev environment stays up
    production target for this fork (not upstream `develop`).
 2. Before application deployment, apply and verify the scoped discard-queue
    permission from `deploy/ci/practical-access.yaml`. It is not installed merely
-   by merging the PR; on 2026-10-19 the live provisioning role still lacked it.
+   by merging the PR. On 2026-10-19 it was activated and verified in production
+   managed-policy version v5 before application deployment.
 3. Build privately through production CI/CD. Inspect the actual root/nested
    change set before execution; stop on unexpected replacements/deletions of
-   stateful resources or changes to the active SSO pool. The current deployment
-   script executes its change set immediately after printing it, so an explicit
-   pre-execution inspection step must be arranged before launching deploy mode;
-   do not mistake its printed summary for an approval gate.
+   stateful resources or changes to the active SSO pool. The production workflow
+   now separates `prepare` from `execute`. Execution verifies the returned stack
+   ID and the source, configuration version and stack version recorded when
+   preparing the plan. `DescribeChangeSet` does not return `ChangeSetType`, so
+   execution must not depend on that field. Nested previews can mark unchanged
+   resource references as `KNOWN_AFTER_APPLY`; compare processed templates and
+   parent input wiring before interpreting those replacement flags.
 4. Deploy the coordinated UI/API/edge/runtime revision. Verify Google SSO,
    video off/audio on, Kimi and on-demand summaries. Move Quick's connector and
    Flow action bindings from original dev to production, then authenticate each
