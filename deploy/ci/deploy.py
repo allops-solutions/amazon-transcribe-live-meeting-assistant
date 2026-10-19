@@ -123,6 +123,16 @@ def describe_stack(cfn, name):
         raise
 
 
+def stack_baseline(stack):
+    """Return a stable, nonsecret marker for the stack version used to prepare a plan."""
+    if not stack:
+        return "none", "none"
+    updated = stack.get("LastUpdatedTime") or stack.get("CreationTime")
+    if hasattr(updated, "isoformat"):
+        updated = updated.isoformat()
+    return stack.get("StackId", "none"), str(updated or "none")
+
+
 def validate_cloudformation_role(role, account):
     """Refuse legacy, cross-account or arbitrary administrator service roles."""
     if not re.fullmatch(rf"arn:aws:iam::{account}:role/lma/isolation/LMA-[A-Za-z0-9+=,.@_-]+", role):
@@ -131,13 +141,16 @@ def validate_cloudformation_role(role, account):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["preflight", "deploy", "cleanup"])
+    parser.add_argument("action", choices=["preflight", "prepare", "execute", "deploy", "cleanup"])
     parser.add_argument("--environment", choices=list(ACCOUNTS), required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--template-url")
+    parser.add_argument("--change-set-name")
     args = parser.parse_args()
     owner_override = os.environ.get("LMA_DEV_OWNER_RUN_ID", "")
     owner_run = deployment_owner_run(args.environment, args.run_id, owner_override)
+    if args.action == "prepare" and args.environment != "production":
+        raise ValueError("Change-set preparation is only enabled for production")
     session = boto3.Session(region_name="us-east-1")
     stack = "LMA" if args.environment == "production" else dev_stack_name(owner_run)
     account = session.client("sts").get_caller_identity()["Account"]
@@ -161,28 +174,66 @@ def main():
         validate_retained_dev_update(stack, existing, owner_run)
     elif args.environment == "dev" and existing:
         raise ValueError("Temporary dev deployment is create-only; existing stacks are not updated")
+    if existing and existing.get("StackStatus") not in {"CREATE_COMPLETE", "UPDATE_COMPLETE"}:
+        raise ValueError("Target stack must be in a healthy complete state")
     bucket = os.environ["LMA_ARTIFACT_BUCKET"]
-    prefix = f"releases/{os.environ['GITHUB_SHA']}/{args.run_id}/{os.environ['GITHUB_RUN_ATTEMPT']}"
-    expected_url = f"https://s3.us-east-1.amazonaws.com/{bucket}/{prefix}/lma-main.yaml"
-    if args.template_url != expected_url:
-        raise ValueError("Template URL must reference this workflow run's private release prefix")
+    if args.action != "execute":
+        prefix = f"releases/{os.environ['GITHUB_SHA']}/{args.run_id}/{os.environ['GITHUB_RUN_ATTEMPT']}"
+        expected_url = f"https://s3.us-east-1.amazonaws.com/{bucket}/{prefix}/lma-main.yaml"
+        if args.template_url != expected_url:
+            raise ValueError("Template URL must reference this workflow run's private release prefix")
     secret_arn = os.environ["LMA_CONFIG_SECRET_ARN"]
     if not secret_arn.startswith(f"arn:aws:secretsmanager:us-east-1:{account}:secret:"):
         raise ValueError("Configuration secret must belong to the target account and region")
-    overrides = json.loads(session.client("secretsmanager").get_secret_value(SecretId=secret_arn)["SecretString"])
+    secret = session.client("secretsmanager").get_secret_value(SecretId=secret_arn)
+    overrides = json.loads(secret["SecretString"])
     base = json.loads(Path(f"deploy/params/{'prod' if args.environment == 'production' else 'dev'}.json").read_text())
     parameters = merge_parameters(base, overrides, args.environment)
     validate_application_boundary(parameters, account, args.environment)
     role = os.environ["LMA_CFN_ROLE_ARN"]
     validate_cloudformation_role(role, account)
     if args.action == "preflight":
-        print("Target account, stack, release URL and configuration validated; no AWS writes performed")
+        print("Target account, stack, configuration and release path validated; no AWS writes performed")
         return
+    if args.action == "execute":
+        if args.environment != "production":
+            raise ValueError("Reviewed change-set execution is only enabled for production")
+        if os.environ.get("LMA_CONFIRMATION") != "EXECUTE REVIEWED LMA CHANGE SET":
+            raise ValueError("Explicit reviewed-change-set confirmation is required")
+        if not args.change_set_name or not re.fullmatch(r"lma-ci-[0-9]+-[0-9]+", args.change_set_name):
+            raise ValueError("Provide the exact prepared production change-set name")
+        if not existing:
+            raise ValueError("Production stack no longer exists; refusing to execute a stale change set")
+        stack_id, stack_version = stack_baseline(existing)
+        change = cfn.describe_change_set(ChangeSetName=args.change_set_name, StackName=stack)
+        expected_description = (
+            f"LMA prepared release sha={os.environ['GITHUB_SHA']} "
+            f"configVersion={secret['VersionId']} stackId={stack_id} stackVersion={stack_version}"
+        )
+        if (change.get("Status") != "CREATE_COMPLETE"
+                or change.get("ExecutionStatus") != "AVAILABLE"
+                or change.get("ChangeSetType") != "UPDATE"
+                or change.get("Description") != expected_description
+                or not change.get("IncludeNestedStacks")):
+            raise ValueError("Change set is stale, unreviewable, or does not match the current release/configuration")
+        cfn.execute_change_set(ChangeSetName=change["ChangeSetId"])
+        cfn.get_waiter("stack_update_complete").wait(
+            StackName=stack, WaiterConfig={"Delay": 30, "MaxAttempts": 240}
+        )
+        cfn.update_termination_protection(StackName=stack, EnableTerminationProtection=True)
+        print("Reviewed CloudFormation deployment completed:", stack)
+        return
+    if args.action == "deploy" and args.environment == "production":
+        raise ValueError("Production requires prepare, review, then execute of a change set")
     name = f"lma-ci-{args.run_id}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+    stack_id, stack_version = stack_baseline(existing)
     response = cfn.create_change_set(
         StackName=stack, ChangeSetName=name, ChangeSetType="UPDATE" if existing else "CREATE",
         TemplateURL=args.template_url, Parameters=parameters, RoleARN=role,
         Capabilities=["CAPABILITY_NAMED_IAM", "CAPABILITY_AUTO_EXPAND"],
+        IncludeNestedStacks=args.action == "prepare",
+        Description=(f"LMA prepared release sha={os.environ['GITHUB_SHA']} "
+                     f"configVersion={secret['VersionId']} stackId={stack_id} stackVersion={stack_version}"),
         Tags=[{"Key": "LmaCiManaged", "Value": "true"}, {"Key": "LmaCiRun", "Value": owner_run},
               {"Key": "LmaSourceSha", "Value": os.environ["GITHUB_SHA"]}],
     )
@@ -199,9 +250,21 @@ def main():
             return
         raise
     detail = cfn.describe_change_set(ChangeSetName=change_id)
-    for change in detail.get("Changes", []):
+    changes = list(detail.get("Changes", []))
+    while detail.get("NextToken"):
+        detail = cfn.describe_change_set(ChangeSetName=change_id, NextToken=detail["NextToken"])
+        changes.extend(detail.get("Changes", []))
+    for change in changes:
         resource = change.get("ResourceChange", {})
-        print("Change:", resource.get("Action"), resource.get("LogicalResourceId"), "replacement:", resource.get("Replacement"))
+        print("Change:", resource.get("Action"), resource.get("LogicalResourceId"),
+              "type:", resource.get("ResourceType"), "replacement:", resource.get("Replacement"),
+              "scope:", resource.get("Scope"))
+    if args.action == "prepare":
+        print("Prepared production change set (not executed):", name)
+        print("CloudFormation ChangeSetId:", change_id)
+        print("Review root and nested changes in CloudFormation, then dispatch operation=execute "
+              "with this exact name and confirmation EXECUTE REVIEWED LMA CHANGE SET.")
+        return
     cfn.execute_change_set(ChangeSetName=change_id)
     cfn.get_waiter("stack_update_complete" if existing else "stack_create_complete").wait(
         StackName=stack, WaiterConfig={"Delay": 30, "MaxAttempts": 240}

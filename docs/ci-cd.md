@@ -262,8 +262,9 @@ Set the three printed non-secret ARNs as production GitHub environment variables
 The manual **LMA deployment** workflow now defaults to `operation=preflight`.
 That exercises the real CodeBuild/OIDC deployment identity and secret-safe config
 check, without publishing or deploying the application. Actual deployment requires
-`operation=deploy`, environment `production`, confirmation `DEPLOY LMA`, and the
-protected `allops-main` branch. Dev stays intact until production acceptance passes.
+the protected `allops-main` branch. The production discard-queue grant is active
+in the attached application boundary policy (scoped to `LMA-*-DiscardedRecords`).
+Dev stays intact until production acceptance passes.
 
 ### Historical stronger isolation rollout (not activated)
 
@@ -406,21 +407,36 @@ repository checkout and Docker daemon without deployment credentials by default.
 Neither option deploys the application. A passing build test does not prove
 CloudFormation permissions or production runtime behavior.
 
-Open Actions → **LMA deployment** → Run workflow. Select `allops-main`, choose
-the environment and `operation=deploy`, and type `DEPLOY LMA`. The default
-`operation=preflight` validates access/configuration without building or deploying.
-Checks must pass before deployment can
-start. No separate environment reviewer is currently required, but the manual
-`DEPLOY LMA` confirmation and main-branch restriction remain.
+Open Actions → **LMA deployment** → Run workflow and select `allops-main`.
+For production, first choose `environment=production`, `operation=prepare`, and
+type `DEPLOY LMA`. CI runs checks, builds/publishes privately, and creates a
+CloudFormation change set including nested stacks; it does not execute the set.
+Review the root and nested resource actions/replacement details in the AWS
+CloudFormation console. If the plan is expected, run the workflow again with
+`operation=execute`, paste the exact `lma-ci-<run>-<attempt>` change-set name,
+and type `EXECUTE REVIEWED LMA CHANGE SET`. The execution step rejects a change
+set if the source commit, configuration-secret version, root-stack revision,
+status, or nested-stack coverage has changed since preparation. A no-change
+result needs no execute run. Production no longer has a one-step deploy option.
+
+For a disposable dev run, choose `environment=dev`, `operation=deploy`, and type
+`DEPLOY LMA`; feature branches remain dev-only. The default `operation=preflight`
+validates access/configuration without building or deploying. Checks must pass
+before any build or change-set operation. No separate environment reviewer is
+currently required; the explicit execution confirmation and main-branch
+restriction are the production approval gate.
 
 The pipeline validates account/configuration before building, installs the local
-SDK/CLI, builds from the selected commit, publishes privately under
-`releases/<SHA>/<run ID>/<attempt>`, and executes a CloudFormation change set.
+SDK/CLI, builds from the selected commit, and publishes privately under
+`releases/<SHA>/<run ID>/<attempt>`. Production execution occurs only in the
+second dispatch, against the named change set prepared by the first dispatch.
+Dev continues to create and execute a change set in its single dispatch.
 Deployment parameters are loaded from Secrets Manager in memory and not printed.
-Logs show changed resource names and replacement flags. Production termination
-protection is enabled after successful creation/update. CloudFormation parameters
-still exist in AWS: ensure sensitive application parameters use `NoEcho` and limit
-access to the service role/configuration secret.
+Preparation logs show changed resource names, types, scopes and replacement
+flags, without parameter values. Production termination protection is enabled
+after successful creation/update. CloudFormation parameters still exist in AWS:
+ensure sensitive application parameters use `NoEcho` and limit access to the
+service role/configuration secret.
 
 Dev runs create a new temporary stack and remove it after infrastructure validation,
 including failed deployments where ownership can be verified. They do not keep a
