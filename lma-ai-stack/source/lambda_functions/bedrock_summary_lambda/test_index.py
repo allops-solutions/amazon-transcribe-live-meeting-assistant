@@ -25,6 +25,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from botocore.exceptions import ClientError
@@ -172,6 +173,56 @@ def install(monkeypatch, bedrock=None, templates=None, custom=None, lambda_clien
 def prompts_sent(bedrock):
     """The prompt text of each request, in the order Bedrock received them."""
     return [request["messages"][0]["content"][0]["text"] for request in bedrock.requests]
+
+
+@pytest.mark.parametrize("stop_reason", ["max_tokens", "model_context_window_exceeded"])
+def test_truncated_output_is_not_exported_or_retried_with_another_model(monkeypatch, stop_reason):
+    response = {
+        "output": {"message": {"content": [{"text": "# Summary\nUnfinished heading"}]}},
+        "stopReason": stop_reason,
+    }
+    fake, s3 = install(
+        monkeypatch, bedrock=FakeBedrock(response=response),
+        templates=ddb_item(**{"1#Summary": "p {transcript}"}), custom=ddb_item(),
+    )
+    monkeypatch.setattr(index, "BEDROCK_FALLBACK_MODEL_ID", "another-model")
+    result = index.handler({"CallId": CALL_ID}, None)
+    assert result["summary"] is None
+    assert result["errorCode"] == "OUTPUT_LIMIT"
+    assert "more concise profile" in result["error"]
+    assert "previous summary was kept" in result["error"]
+    assert len(fake.requests) == 1
+    assert s3.objects == {}
+
+
+def test_a_later_truncated_section_does_not_export_earlier_sections(monkeypatch):
+    fake, s3 = two_section_setup(monkeypatch)
+    fake.converse = Mock(side_effect=[
+        {"output": {"message": {"content": [{"text": "Complete section"}]}}, "stopReason": "end_turn"},
+        {"output": {"message": {"content": [{"text": "Partial section"}]}}, "stopReason": "max_tokens"},
+    ])
+    result = index.handler({"CallId": CALL_ID}, None)
+    assert result["summary"] is None
+    assert result["errorCode"] == "OUTPUT_LIMIT"
+    assert s3.objects == {}
+
+
+@pytest.mark.parametrize("stop_reason", ["end_turn", "stop_sequence"])
+def test_normally_completed_output_is_preserved(monkeypatch, stop_reason):
+    fake, _ = install(monkeypatch, bedrock=FakeBedrock(response={
+        "output": {"message": {"content": [{"text": "Full summary"}]}}, "stopReason": stop_reason,
+    }))
+    assert index.call_bedrock("prompt") == "Full summary"
+    assert len(fake.requests) == 1
+
+
+def test_kimi_budget_does_not_change_other_models_and_can_be_configured(monkeypatch):
+    monkeypatch.setattr(index, "KIMI_SUMMARY_MAX_TOKENS", 16384)
+    for model in ("global.moonshotai.kimi-k3", "us.moonshotai.kimi-k3"):
+        assert index.build_inference_args(model)["inferenceConfig"] == {"maxTokens": 16384}
+    assert index.build_inference_args(MODEL_ID)["inferenceConfig"]["maxTokens"] == 4096
+    monkeypatch.setattr(index, "KIMI_SUMMARY_MAX_TOKENS", 8192)
+    assert index.build_inference_args("global.moonshotai.kimi-k3")["inferenceConfig"]["maxTokens"] == 8192
 
 
 # --------------------------------------------------------------------------

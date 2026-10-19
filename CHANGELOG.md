@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Reject token/context-limited summary responses instead of saving truncated
+  text; keep the prior summary and show actionable output-limit guidance.
+  Increase Kimi's per-section output budget to 16,384 without changing other
+  providers' limits or automatically retrying capacity failures with another model.
+
 - Recognize the same signed-in owner's email, federated username and subject ID
   consistently for VP browser access; other users still need explicit sharing or Admin.
 - Resolve federated meeting/VP owners to verified email labels using the existing

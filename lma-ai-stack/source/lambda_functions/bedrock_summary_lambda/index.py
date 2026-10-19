@@ -28,6 +28,9 @@ PROCESS_TRANSCRIPT = os.getenv("PROCESS_TRANSCRIPT", "False") == "True"
 TOKEN_COUNT = int(os.getenv("TOKEN_COUNT", "0"))  # default 0 - do not truncate.
 # Max output tokens per summary section (thinking tokens count against this when enabled).
 SUMMARY_MAX_TOKENS = int(os.getenv("SUMMARY_MAX_TOKENS", "4096"))
+# Kimi uses part of the output budget for reasoning. Keep this separate so
+# fallback/other providers are not sent a larger, potentially unsupported limit.
+KIMI_SUMMARY_MAX_TOKENS = int(os.getenv("KIMI_SUMMARY_MAX_TOKENS", "16384"))
 # Adaptive-thinking effort for Anthropic models: off | low | medium | high | max.
 SUMMARY_EFFORT = os.getenv("SUMMARY_EFFORT", "medium").strip().lower()
 S3_BUCKET_NAME = os.environ["S3_BUCKET_NAME"]
@@ -228,6 +231,10 @@ def get_generated_text(response):
     raise ValueError("No text block in Bedrock response")
 
 
+class SummaryOutputLimitError(ValueError):
+    """A model stopped before completing the requested summary."""
+
+
 def build_inference_args(modelId):
     """inferenceConfig plus provider-specific reasoning/effort fields.
 
@@ -237,7 +244,9 @@ def build_inference_args(modelId):
       OpenAI:    reasoning_effort (low|medium|high)
       Nova 2:    reasoningConfig.type=enabled + maxReasoningEffort (low|medium|high), temperature must be 0
     """
-    inference_config = {"maxTokens": SUMMARY_MAX_TOKENS}
+    inference_config = {
+        "maxTokens": KIMI_SUMMARY_MAX_TOKENS if "moonshotai.kimi" in modelId else SUMMARY_MAX_TOKENS
+    }
     # Kimi K3 rejects the temperature field even when it is set to zero.
     # Keep provider-specific optional fields out of the shared request.
     if "moonshotai.kimi" not in modelId:
@@ -285,6 +294,10 @@ def _converse(modelId, prompt_data):
         f"Bedrock usage - input: {usage.get('inputTokens')} output: {usage.get('outputTokens')} "
         f"stopReason: {response.get('stopReason')}"
     )
+    if response.get("stopReason") in ("max_tokens", "model_context_window_exceeded"):
+        # Check before extracting text: even a plausible, nonempty result is
+        # incomplete, and must never replace a saved summary or KB export.
+        raise SummaryOutputLimitError("Summary reached the model output/context limit.")
     generated_text = get_generated_text(response)
     print("Bedrock response: ", json.dumps(generated_text))
     return generated_text
@@ -300,6 +313,10 @@ def call_bedrock(prompt_data):
     # fallback too, and correctly still surface as an error).
     try:
         return _converse(BEDROCK_MODEL_ID, prompt_data)
+    except SummaryOutputLimitError:
+        # Capacity exhaustion is not an outage. Do not bill another model call
+        # or silently substitute a different provider for the same long prompt.
+        raise
     except Exception as primary_error:
         if not BEDROCK_FALLBACK_MODEL_ID or BEDROCK_FALLBACK_MODEL_ID == BEDROCK_MODEL_ID:
             raise
@@ -443,6 +460,15 @@ def handler(event, context):
         if not prompt_override:
             # Archive normal profile/default runs, not ad-hoc debug prompts.
             write_to_s3(callId, metadata, transcript, summary)
+    except SummaryOutputLimitError:
+        return {
+            "summary": None,
+            "errorCode": "OUTPUT_LIMIT",
+            "error": (
+                "Summary exceeded the model output/context limit. The previous summary was kept. "
+                "Use a more concise profile or ask an administrator to review the output budget."
+            ),
+        }
     except Exception as e:
         print(e)
         # Never overwrite a previous summary with an error placeholder.

@@ -46,7 +46,7 @@ import { InfoLink } from '../common/info-link';
 import { getWeightedSentimentLabel } from '../common/sentiment';
 import { SummaryOptionsFields, useSummaryProfileCatalog } from '../common/meeting-options';
 import SummaryGenerateButton from './SummaryGenerateButton';
-import summaryGenerationCompleted from './summary-generation';
+import summaryGenerationCompleted, { summaryGenerationFailed, summaryFailureMessage } from './summary-generation';
 
 import { VoiceToneFluctuationChart, SentimentFluctuationChart, SentimentPerQuarterChart } from './sentiment-charts';
 
@@ -295,12 +295,12 @@ const CallSummary = ({ item }) => {
           variables: { callId: item.callId },
         });
         const run = response?.data?.getCall;
-        if (cancelled || !run || run.SummaryStatus !== 'FAILED') return;
+        if (cancelled || !run || !summaryGenerationFailed(run.SummaryStatus)) return;
         if (run.SummaryRequestedAt === regenerateBaselineRef.current?.requestedAt) return;
         if (regenerateTimeoutRef.current) clearTimeout(regenerateTimeoutRef.current);
         regenerateTimeoutRef.current = null;
         regenerateBaselineRef.current = null;
-        setRegenerateError('Summary generation failed. The previous summary was kept.');
+        setRegenerateError(summaryFailureMessage(run.SummaryStatus));
         setRegenerateStatus('error');
       } catch (error) {
         logger.warn('Could not check summary run status:', error);
@@ -534,16 +534,16 @@ const CallSummary = ({ item }) => {
         {regenerateStatus === 'error' && (
           <Alert
             type="error"
-            header="Couldn't start generation"
+            header="Summary generation failed"
             dismissible
             onDismiss={() => setRegenerateStatus(null)}
           >
             {regenerateError}
           </Alert>
         )}
-        {item.summaryStatus === 'FAILED' && regenerateStatus !== 'error' && !generationInProgress && (
+        {summaryGenerationFailed(item.summaryStatus) && regenerateStatus !== 'error' && !generationInProgress && (
           <Alert type="error" header="Summary generation failed">
-            The previous summary was kept. Choose a profile and try again after the issue is resolved.
+            {summaryFailureMessage(item.summaryStatus)}
           </Alert>
         )}
         {!item.callSummaryText && !generationInProgress && (

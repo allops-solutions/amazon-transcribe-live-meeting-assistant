@@ -8,12 +8,12 @@ from os import getenv
 from typing import TYPE_CHECKING, Any, Dict
 
 import boto3
-from botocore.exceptions import ClientError
 
 # third-party imports from Lambda layer
 from aws_lambda_powertools import Logger
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from botocore.config import Config as BotoCoreConfig
+from botocore.exceptions import ClientError
 from eventprocessor_utils import get_meeting_ttl
 
 # pylint: enable=import-error
@@ -48,7 +48,7 @@ CALL_DATA_STREAM_NAME = getenv("CALL_DATA_STREAM_NAME", "")
 EVENT_SOURCING_TABLE_NAME = getenv("EVENT_SOURCING_TABLE_NAME", "")
 
 
-def mark_summary_failed(message: Dict[str, Any]):
+def mark_summary_failed(message: Dict[str, Any], error_code=None):
     """Release only the failed on-demand run; preserve the previous summary."""
     call_id = message.get("CallId")
     requested_at = message.get("SummaryRequestedAt")
@@ -61,7 +61,8 @@ def mark_summary_failed(message: Dict[str, Any]):
             UpdateExpression="SET SummaryStatus = :failed",
             ConditionExpression="SummaryStatus = :running AND SummaryRequestedAt = :requested_at",
             ExpressionAttributeValues={
-                ":failed": {"S": "FAILED"}, ":running": {"S": "IN_PROGRESS"},
+                ":failed": {"S": "FAILED_OUTPUT_LIMIT" if error_code == "OUTPUT_LIMIT" else "FAILED"},
+                ":running": {"S": "IN_PROGRESS"},
                 ":requested_at": {"S": requested_at},
             },
         )
@@ -145,7 +146,7 @@ def handler(event, context: LambdaContext):
         return
     if call_summary.get("error") or not call_summary.get("summary"):
         LOGGER.error("Summary generation failed; no ADD_SUMMARY event will be written.")
-        mark_summary_failed(data)
+        mark_summary_failed(data, call_summary.get("errorCode"))
         return
     data["CallSummaryText"] = call_summary["summary"]
 

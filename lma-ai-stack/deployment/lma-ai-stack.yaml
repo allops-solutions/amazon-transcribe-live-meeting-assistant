@@ -1862,6 +1862,7 @@ Resources:
           BEDROCK_MODEL_ID: !If [HasSummaryBedrockModelId, !Ref SummaryBedrockModelId, !Ref BedrockModelId]
           BEDROCK_FALLBACK_MODEL_ID: !Ref BedrockFallbackModelId
           SUMMARY_MAX_TOKENS: "4096"
+          KIMI_SUMMARY_MAX_TOKENS: "16384"
           SUMMARY_EFFORT: "medium"
           FETCH_TRANSCRIPT_LAMBDA_ARN: !GetAtt FetchTranscript.Arn
           TOKEN_COUNT: "0"
