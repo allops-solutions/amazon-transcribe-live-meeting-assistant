@@ -5,6 +5,14 @@ import { COLUMN_DEFINITIONS_MAIN, DEFAULT_PREFERENCES, DEFAULT_SORT_COLUMN } fro
 
 afterEach(cleanup);
 
+it('displays the resolved owner email without changing the stored owner identity', () => {
+  const item = { agentId: 'googleworkspace_123', owner: 'googleworkspace_123', ownerEmail: 'owner@example.com' };
+  const column = COLUMN_DEFINITIONS_MAIN.find((entry) => entry.id === 'agentId');
+  expect(column.cell(item)).toBe('owner@example.com');
+  expect(item.owner).toBe('googleworkspace_123');
+  expect(column.cell({ ...item, ownerEmail: null })).toBe('googleworkspace_123');
+});
+
 it('offers exactly the six requested columns in order', () => {
   expect(COLUMN_DEFINITIONS_MAIN.map((column) => column.header)).toEqual([
     'Meeting ID',

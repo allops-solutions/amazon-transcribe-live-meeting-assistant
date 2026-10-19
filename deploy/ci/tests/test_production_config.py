@@ -12,6 +12,21 @@ spec.loader.exec_module(config)
 
 
 class ProductionConfigTests(unittest.TestCase):
+    def test_owner_email_reuses_list_lambda_with_exact_pool_read_only_access(self):
+        resources = yaml.load((ROOT / 'lma-ai-stack/deployment/lma-ai-stack.yaml').read_text(),
+                              Loader=yaml.BaseLoader)['Resources']
+        function = resources['ListCallsGsiResolverFunction']['Properties']
+        self.assertEqual(function['Environment']['Variables']['USER_POOL_ID'], 'UserPoolId')
+        statements = function['Policies'][1]['Statement']
+        cognito = [item for item in statements if item.get('Action') == 'cognito-idp:AdminGetUser']
+        self.assertEqual(len(cognito), 1)
+        self.assertTrue(cognito[0]['Resource'].endswith(':userpool/${UserPoolId}'))
+        for logical in ('CallOwnerEmailResolver', 'VpOwnerEmailResolver'):
+            resolver = resources[logical]['Properties']
+            self.assertEqual(resolver['FieldName'], 'OwnerEmail')
+            self.assertEqual(resolver['MaxBatchSize'], '25')
+            self.assertEqual(resolver['DataSourceName'], 'ListCallsGsiDataSource.Name')
+
     def test_saved_ci_parameter_names_remain_supported_by_root_template(self):
         template = yaml.load((ROOT / 'lma-main.yaml').read_text(), Loader=yaml.BaseLoader)
         for environment in ('dev', 'prod'):

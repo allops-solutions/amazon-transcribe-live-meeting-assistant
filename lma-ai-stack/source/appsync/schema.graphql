@@ -34,6 +34,8 @@ input DeleteTranscriptSegmentInput {
 
 type Call implements DynamoDbBase @aws_cognito_user_pools
 @aws_iam {
+	# Display-only resolved email; Owner remains the stable authorization identity.
+	OwnerEmail: String
 	PK: ID!
 	SK: ID!
 	CreatedAt: AWSDateTime!
@@ -312,6 +314,7 @@ input SetZoomCredentialsInput {
 }
 
 type VirtualParticipant @aws_cognito_user_pools @aws_iam {
+	OwnerEmail: String
 	id: ID!
 	meetingName: String
 	meetingPlatform: String

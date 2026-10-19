@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Recognize the same signed-in owner's email, federated username and subject ID
+  consistently for VP browser access; other users still need explicit sharing or Admin.
+- Resolve federated meeting/VP owners to verified email labels using the existing
+  list resolver and deployment user pool, without changing ownership identifiers.
 - Save usable default sections before publishing a new summary profile to users;
   failed or empty profile writes no longer create selectable catalog entries.
 - VP creation and immediate/scheduled launches inherit the deployment video-recording

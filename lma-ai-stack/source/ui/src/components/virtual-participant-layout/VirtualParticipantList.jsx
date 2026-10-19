@@ -75,6 +75,7 @@ const listVirtualParticipants = `
       status
       owner
       Owner
+      OwnerEmail
       SharedWith
       createdAt
       updatedAt

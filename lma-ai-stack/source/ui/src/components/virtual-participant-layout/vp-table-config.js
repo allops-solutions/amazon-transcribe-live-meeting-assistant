@@ -153,7 +153,7 @@ export const COLUMN_DEFINITIONS_MAIN = [
   {
     id: 'owner',
     header: 'Owner Email',
-    cell: (item) => item.Owner || item.owner || '-',
+    cell: (item) => item.OwnerEmail || item.Owner || item.owner || '-',
     sortingField: 'Owner',
     width: 200,
   },

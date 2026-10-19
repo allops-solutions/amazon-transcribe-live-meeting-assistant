@@ -47,7 +47,7 @@ const ALL_COLUMN_DEFINITIONS = [
   {
     id: 'agentId',
     header: 'Owner Name',
-    cell: (item) => item.agentId,
+    cell: (item) => (item.agentId === item.owner && item.ownerEmail ? item.ownerEmail : item.agentId),
     sortingField: 'agentId',
   },
   {
@@ -68,7 +68,7 @@ const ALL_COLUMN_DEFINITIONS = [
   {
     id: 'owner',
     header: 'Owner Email',
-    cell: (item) => item.owner,
+    cell: (item) => item.ownerEmail || item.owner,
     sortingField: 'owner',
   },
   {

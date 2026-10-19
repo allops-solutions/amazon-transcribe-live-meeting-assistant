@@ -405,3 +405,23 @@ def test_caller_identity_precedence_includes_identity_username() -> None:
     assert caller_identity({"claims": {"cognito:username": "c@x"}, "username": "u@x"}) == "c@x"
     assert caller_identity({"claims": {}, "username": "u@x"}) == "u@x"
     assert caller_identity({}) == ""
+
+
+@pytest.mark.parametrize("stored_owner", ["bob@example.com", "googleworkspace_123", "sub-123"])
+def test_owner_access_accepts_same_signed_users_identity_aliases(stored_owner):
+    import logging
+    from vp_access import authorize_vp_access
+    identity = {"username": "googleworkspace_123", "claims": {
+        "email": "bob@example.com", "cognito:username": "googleworkspace_123", "sub": "sub-123"}}
+    item = {"owner": {"S": stored_owner}}
+    assert authorize_vp_access(_FakeDynamo(item), "vp-table", VP_ID, identity, logging.getLogger()) == item
+
+
+def test_identity_alias_matching_does_not_grant_another_users_vp():
+    import logging
+    from vp_access import authorize_vp_access
+    identity = {"username": "googleworkspace_bob", "claims": {
+        "email": "bob@example.com", "sub": "bob-sub"}}
+    with pytest.raises(Exception, match="Not authorized"):
+        authorize_vp_access(_FakeDynamo({"owner": {"S": "alice@example.com"}}),
+                            "vp-table", VP_ID, identity, logging.getLogger())

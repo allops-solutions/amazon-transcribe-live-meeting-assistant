@@ -4774,10 +4774,14 @@ Resources:
       Environment:
         Variables:
           EVENT_SOURCING_TABLE_NAME: !Ref EventSourcingTable
+          USER_POOL_ID: !Ref UserPoolId
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref EventSourcingTable
         - Statement:
+            - Effect: Allow
+              Action: cognito-idp:AdminGetUser
+              Resource: !Sub "arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${UserPoolId}"
             - Effect: Allow
               Action:
                 - dynamodb:Query
@@ -4838,6 +4842,46 @@ Resources:
       DataSourceName: !GetAtt ListCallsGsiDataSource.Name
       TypeName: Query
       FieldName: listCallsDateRange
+
+  CallOwnerEmailResolver:
+    Type: AWS::AppSync::Resolver
+    DependsOn: AppSyncSchema
+    Properties:
+      ApiId: !GetAtt AppSyncApiEncrypted.ApiId
+      DataSourceName: !GetAtt ListCallsGsiDataSource.Name
+      TypeName: Call
+      FieldName: OwnerEmail
+      MaxBatchSize: 25
+      RequestMappingTemplate: |
+        {
+          "version": "2018-05-29",
+          "operation": "BatchInvoke",
+          "payload": {
+            "info": {"fieldName": "OwnerEmail"},
+            "source": {"Owner": $util.toJson($ctx.source.Owner)}
+          }
+        }
+      ResponseMappingTemplate: "$util.toJson($ctx.result)"
+
+  VpOwnerEmailResolver:
+    Type: AWS::AppSync::Resolver
+    DependsOn: AppSyncSchema
+    Properties:
+      ApiId: !GetAtt AppSyncApiEncrypted.ApiId
+      DataSourceName: !GetAtt ListCallsGsiDataSource.Name
+      TypeName: VirtualParticipant
+      FieldName: OwnerEmail
+      MaxBatchSize: 25
+      RequestMappingTemplate: |
+        {
+          "version": "2018-05-29",
+          "operation": "BatchInvoke",
+          "payload": {
+            "info": {"fieldName": "OwnerEmail"},
+            "source": {"Owner": $util.toJson($ctx.source.Owner), "owner": $util.toJson($ctx.source.owner)}
+          }
+        }
+      ResponseMappingTemplate: "$util.toJson($ctx.result)"
 
   GetCallCountAppSyncResolver:
     Type: AWS::AppSync::Resolver

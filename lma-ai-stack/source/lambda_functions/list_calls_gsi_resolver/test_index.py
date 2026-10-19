@@ -63,6 +63,52 @@ def _load_module(name: str, path: Path):
 index = _load_module("list_calls_gsi_resolver_index", HERE / "index.py")
 
 
+def test_owner_email_is_display_only_and_uses_exact_pool(monkeypatch):
+    from unittest.mock import Mock
+    index._OWNER_EMAIL_CACHE.clear()
+    client = Mock()
+    client.admin_get_user.return_value = {"UserAttributes": [
+        {"Name": "email", "Value": "owner@example.com"},
+        {"Name": "email_verified", "Value": "true"}]}
+    monkeypatch.setenv("USER_POOL_ID", "us-east-1_test")
+    monkeypatch.setattr(index.boto3, "client", Mock(return_value=client))
+    source = {"Owner": "googleworkspace_123"}
+    batch = [{"info": {"fieldName": "OwnerEmail"}, "source": source}] * 2
+    assert index.handler(batch, None) == ["owner@example.com"] * 2
+    client.admin_get_user.assert_called_once_with(
+        UserPoolId="us-east-1_test", Username="googleworkspace_123")
+    assert source == {"Owner": "googleworkspace_123"}
+
+
+@pytest.mark.parametrize("verified", ["false", None])
+def test_owner_email_does_not_display_unverified_email(monkeypatch, verified):
+    from unittest.mock import Mock
+    index._OWNER_EMAIL_CACHE.clear()
+    attrs = [{"Name": "email", "Value": "owner@example.com"}]
+    if verified:
+        attrs.append({"Name": "email_verified", "Value": verified})
+    client = Mock()
+    client.admin_get_user.return_value = {"UserAttributes": attrs}
+    monkeypatch.setenv("USER_POOL_ID", "us-east-1_test")
+    monkeypatch.setattr(index.boto3, "client", Mock(return_value=client))
+    assert index.owner_email({"source": {"owner": "googleworkspace_123"}}) is None
+
+
+def test_owner_email_lookup_failure_does_not_break_meeting(monkeypatch):
+    from unittest.mock import Mock
+    index._OWNER_EMAIL_CACHE.clear()
+    client = Mock()
+    client.admin_get_user.side_effect = ClientError(
+        {"Error": {"Code": "UserNotFoundException", "Message": "not found"}}, "AdminGetUser")
+    monkeypatch.setenv("USER_POOL_ID", "us-east-1_test")
+    monkeypatch.setattr(index.boto3, "client", Mock(return_value=client))
+    assert index.owner_email({"source": {"Owner": "deleted-user"}}) is None
+    assert index.owner_email({"source": {"Owner": "owner@example.com"}}) == "owner@example.com"
+    assert index.owner_email({"source": {}}) is None
+    with pytest.raises(ValueError):
+        index.handler([{"info": {"fieldName": "listCallsDateRange"}}], None)
+
+
 # --------------------------------------------------------------------------
 # In-memory DynamoDB stand-ins
 # --------------------------------------------------------------------------

@@ -58,6 +58,14 @@ def authorize_vp_access(dynamodb, table_name: str, vp_id: str, identity: dict, l
         )
         raise Exception("Unauthenticated")
 
+    # Older rows store the federated username, newer OAuth rows may store sub,
+    # and UI launches may store email. All must match this same signed caller;
+    # choosing email first must not lock the owner out of their own browser.
+    claims = identity.get("claims", {}) or {}
+    caller_aliases = {value for value in (
+        caller, claims.get("email"), claims.get("cognito:username"),
+        claims.get("sub"), identity.get("username")) if isinstance(value, str) and value}
+
     vp = dynamodb.get_item(TableName=table_name, Key={"id": {"S": vp_id}}).get("Item")
     if not vp:
         raise Exception(f"Virtual Participant {vp_id} not found")
@@ -74,7 +82,7 @@ def authorize_vp_access(dynamodb, table_name: str, vp_id: str, identity: dict, l
     # Admins may view any VP, matching the subscription filter's group check.
     is_admin = "Admin" in caller_groups(identity)
 
-    if not is_admin and caller != owner and caller not in shared:
+    if not is_admin and owner not in caller_aliases and not caller_aliases.intersection(shared):
         logger.warning(
             "Caller %s is not authorized for VP %s (owner=%s shared=%s)",
             caller,
