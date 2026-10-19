@@ -112,11 +112,8 @@ install-node-dependencies: $(OUT_DIR)/$(PACKAGE_JSON)
 endif
 .PHONY: install-node-dependencies
 
-BINFMT_MULTIARCH := /proc/sys/fs/binfmt_misc/qemu-arm
-$(BINFMT_MULTIARCH): | $(OUT_DIR)
-	docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-
-install-docker-multiarch: $(BINFMT_MULTIARCH)
+install-docker-multiarch:
+	bash deployment/configure-docker-multiarch.sh
 .PHONY: install-docker-multiarch
 
 install: install-python-venv install-python-requirements install-node-dependencies
@@ -192,7 +189,7 @@ BUILD_SOURCES += $(LAMBDA_FUNCTIONS_JS_SRC_FILES)
 endif
 
 SAM_BUILD_TOML_FILE := $(SAM_BUILD_DIR)/build.toml
-$(SAM_BUILD_TOML_FILE): $(BUILD_SOURCES) $(BINFMT_MULTIARCH) | $(SAM_CMD)
+$(SAM_BUILD_TOML_FILE): $(BUILD_SOURCES) | $(SAM_CMD) install-docker-multiarch
 	@echo '[INFO] sam building config env: [$(CONFIG_ENV)]'
 	'$(SAM_CMD)' build \
 		--config-file '$(realpath $(SAMCONFIG_FILE))' \
@@ -294,17 +291,10 @@ $(PACKAGE_RELEASE_REPLACE_OUT_FILE): $(TEMPLATE_FILE) | $(OUT_DIR)
 
 PACKAGE_RELEASE_FILE_NAME := template-packaged-$(RELEASE_S3_BUCKET)-$(RELEASE_S3_PREFIX_SUB)-$(RELEASE_VERSION).yaml
 PACKAGE_RELEASE_OUT_FILE := $(OUT_DIR)/$(PACKAGE_RELEASE_FILE_NAME)
-$(PACKAGE_RELEASE_OUT_FILE): $(PACKAGE_RELEASE_REPLACE_OUT_FILE) | $(OUT_DIR)
+$(PACKAGE_RELEASE_OUT_FILE): $(PACKAGE_RELEASE_REPLACE_OUT_FILE) | $(OUT_DIR) install-docker-multiarch
 	@[ -z '$(RELEASE_S3_BUCKET_BASE)' ] && \
 	  echo '[ERROR] need to set env var: RELEASE_S3_BUCKET_BASE' && \
 	  exit 1 || true
-
-	@echo '[INFO] configuring docker multiarchitecture for sam cross platform build'
-	@if [ "$$(uname -s)" = "Linux" ]; then \
-		docker run --rm --privileged multiarch/qemu-user-static --reset -p yes; \
-	else \
-		echo '[INFO] Skipping QEMU setup on macOS (Docker Desktop handles x86_64 emulation)'; \
-	fi
 
 	@echo '[INFO] sam building template file for release $(RELEASE_VERSION)'
 	sam build \
