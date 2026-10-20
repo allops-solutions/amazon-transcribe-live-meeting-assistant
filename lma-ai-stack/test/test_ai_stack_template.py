@@ -253,6 +253,40 @@ def test_every_lambda_runtime_is_the_same_pinned_python(resources: dict):
     assert runtimes == {"python3.12"}, f"expected only python3.12, found {sorted(runtimes)}"
 
 
+def test_summary_crash_destination_cannot_generate_or_erase_summaries(resources: dict):
+    """Hard Lambda timeouts must release claims without replaying inference."""
+    worker = resources["AsyncTranscriptSummaryOrchestrator"]["Properties"]
+    assert worker["EventInvokeConfig"] == {
+        "MaximumRetryAttempts": 0,
+        "MaximumEventAgeInSeconds": 60,
+        "DestinationConfig": {"OnFailure": {
+            "Type": "Lambda", "Destination": {"Fn::GetAtt": "SummaryFailureRecovery.Arn"},
+        }},
+    }
+    recovery = resources["SummaryFailureRecovery"]["Properties"]
+    assert recovery["Handler"] == "lambda_function.failure_handler"
+    assert recovery["Timeout"] == 30
+    assert recovery["EventInvokeConfig"]["MaximumRetryAttempts"] == 2
+    assert "DestinationConfig" not in recovery["EventInvokeConfig"]
+    assert recovery["Environment"]["Variables"] == {
+        "EVENT_SOURCING_TABLE_NAME": {"Ref": "EventSourcingTable"},
+    }
+    role = resources["SummaryFailureRecoveryRole"]["Properties"]
+    statements = role["Policies"][0]["PolicyDocument"]["Statement"]
+    assert statements[0] == {
+        "Effect": "Allow", "Action": "dynamodb:UpdateItem",
+        "Resource": {"Fn::GetAtt": "EventSourcingTable.Arn"},
+    }
+    actions = {action for statement in statements
+               for action in ([statement["Action"]] if isinstance(statement["Action"], str)
+                              else statement["Action"])}
+    assert actions == {"dynamodb:UpdateItem", "kms:Decrypt", "kms:DescribeKey",
+                       "kms:Encrypt", "kms:GenerateDataKey"}
+    assert role["PermissionsBoundary"] == {
+        "Fn::If": ["HasPermissionsBoundary", {"Ref": "PermissionsBoundaryArn"}, {"Ref": "AWS::NoValue"}],
+    }
+
+
 # ── known debt, named ───────────────────────────────────────────────────────
 #
 # Each allowlist is the current exemption set, not a target. A new resource that

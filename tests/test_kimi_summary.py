@@ -65,11 +65,15 @@ class SummaryModelWiringTests(unittest.TestCase):
 class KimiConverseTests(unittest.TestCase):
     def setUp(self):
         self.client = Mock()
+        # Deadline-specific clients are constructed lazily, after import too.
+        clients = patch.object(boto3, "client", return_value=self.client)
+        clients.start()
+        self.addCleanup(clients.stop)
         env = {"BEDROCK_MODEL_ID": KIMI, "BEDROCK_FALLBACK_MODEL_ID": "fallback",
                "FETCH_TRANSCRIPT_LAMBDA_ARN": "fetch", "S3_BUCKET_NAME": "bucket",
                "S3_PREFIX": "transcripts", "LLM_PROMPT_TEMPLATE_TABLE_NAME": "templates",
                "AWS_REGION": "us-east-1", "SUMMARY_EFFORT": "medium", "SUMMARY_MAX_TOKENS": "4096"}
-        with patch.dict(os.environ, env), patch.object(boto3, "client", return_value=self.client):
+        with patch.dict(os.environ, env):
             self.module = runpy.run_path(str(ROOT / "lma-ai-stack/source/lambda_functions/bedrock_summary_lambda/index.py"))
 
     def response(self):

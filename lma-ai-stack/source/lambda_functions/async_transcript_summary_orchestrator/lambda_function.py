@@ -33,7 +33,7 @@ BOTO3_SESSION: Boto3Session = boto3.Session()
 # synchronous invoke that is merely slow just runs (and bills) it twice.
 CLIENT_CONFIG = BotoCoreConfig(
     read_timeout=int(getenv("BOTO_READ_TIMEOUT", "595")),
-    retries={"mode": "standard", "max_attempts": 1},
+    retries={"mode": "standard", "total_max_attempts": 1},
 )
 
 LAMBDA_CLIENT: LambdaClient = BOTO3_SESSION.client(
@@ -71,8 +71,26 @@ def mark_summary_failed(message: Dict[str, Any], error_code=None):
             LOGGER.info("Summary claim was already completed or replaced for %s", call_id)
             return
         LOGGER.exception("Could not mark summary failed for %s", call_id)
+        raise
     except Exception:
         LOGGER.exception("Could not mark summary failed for %s", call_id)
+        raise
+
+
+@LOGGER.inject_lambda_context
+def failure_handler(event, context: LambdaContext):
+    """Recover an exhausted/crashed async run without invoking any model.
+
+    Lambda sends this destination envelope even when the original handler was
+    killed by its hard timeout. Conditional writes cannot fail a newer request
+    or a run that already completed, and never modify the previous summary.
+    """
+    request = event.get("requestPayload")
+    condition = event.get("requestContext", {}).get("condition")
+    if not isinstance(request, dict) or condition not in ("RetriesExhausted", "EventAgeExceeded"):
+        LOGGER.warning("Ignoring an event that is not an exhausted summary invocation")
+        return
+    mark_summary_failed(request)
 
 
 def get_call_summary(message: Dict[str, Any]):

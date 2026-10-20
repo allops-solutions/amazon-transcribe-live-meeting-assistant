@@ -28,7 +28,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ReadTimeoutError
 
 MODEL_ID = "us.amazon.nova-pro-v1:0"
 FETCH_ARN = "arn:aws:lambda:us-east-1:123456789012:function:fetch-transcript"
@@ -161,6 +161,7 @@ def install(monkeypatch, bedrock=None, templates=None, custom=None, lambda_clien
     bedrock = bedrock if bedrock is not None else FakeBedrock()
     s3 = FakeS3Client()
     monkeypatch.setattr(index, "bedrock", bedrock)
+    monkeypatch.setattr(index, "bedrock_client", lambda _timeout: bedrock)
     monkeypatch.setattr(index, "dynamodb_client", FakeDynamoClient(templates, custom))
     monkeypatch.setattr(
         index, "lambda_client", lambda_client if lambda_client is not None else FakeLambdaClient()
@@ -223,6 +224,151 @@ def test_kimi_budget_does_not_change_other_models_and_can_be_configured(monkeypa
     assert index.build_inference_args(MODEL_ID)["inferenceConfig"]["maxTokens"] == 4096
     monkeypatch.setattr(index, "KIMI_SUMMARY_MAX_TOKENS", 8192)
     assert index.build_inference_args("global.moonshotai.kimi-k3")["inferenceConfig"]["maxTokens"] == 8192
+
+
+def budget_setup(monkeypatch):
+    """A deterministic clock and recorder; never sleep or call Bedrock."""
+    fake, s3 = install(monkeypatch)
+    clock, timeouts = [1000.0], []
+    monkeypatch.setattr(index.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(index.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    monkeypatch.setattr(index, "BEDROCK_FALLBACK_MODEL_ID", "fallback")
+
+    def client(timeout):
+        timeouts.append(timeout)
+        return fake
+
+    monkeypatch.setattr(index, "bedrock_client", client)
+    return fake, s3, clock, timeouts
+
+
+def test_primary_gets_300_seconds_then_fallback_once(monkeypatch):
+    fake, _, clock, timeouts = budget_setup(monkeypatch)
+
+    def converse(**kwargs):
+        if kwargs["modelId"] == index.BEDROCK_MODEL_ID:
+            clock[0] += 300
+            raise ReadTimeoutError(endpoint_url="https://example.invalid")
+        clock[0] += 42
+        return {"output": {"message": {"content": [{"text": "complete fallback summary"}]}},
+                "stopReason": "end_turn"}
+
+    fake.converse = Mock(side_effect=converse)
+    assert index.call_bedrock("prompt", deadline=1540) == "complete fallback summary"
+    assert [call.kwargs["modelId"] for call in fake.converse.call_args_list] == [MODEL_ID, "fallback"]
+    assert timeouts == [120]
+    assert clock[0] == 1342
+
+
+def test_both_model_timeouts_fail_without_export_or_model_retries(monkeypatch):
+    fake, s3, _, _ = budget_setup(monkeypatch)
+    fake.converse = Mock(side_effect=ReadTimeoutError(endpoint_url="https://example.invalid"))
+    result = index.handler({"CallId": CALL_ID, "Prompt": "{transcript}"}, None)
+    assert result["summary"] is None
+    assert "previous summary was kept" in result["error"]
+    assert fake.converse.call_count == 2
+    assert s3.objects == {}
+
+
+def test_no_fallback_means_one_timeout_attempt(monkeypatch):
+    fake, _, _, _ = budget_setup(monkeypatch)
+    monkeypatch.setattr(index, "BEDROCK_FALLBACK_MODEL_ID", "")
+    fake.converse = Mock(side_effect=ReadTimeoutError(endpoint_url="https://example.invalid"))
+    with pytest.raises(ReadTimeoutError):
+        index.call_bedrock("prompt")
+    assert fake.converse.call_count == 1
+
+
+def test_only_explicit_throttling_is_retried_and_only_once(monkeypatch):
+    fake, _, clock, timeouts = budget_setup(monkeypatch)
+    throttle = ClientError({"Error": {"Code": "ThrottlingException"}}, "Converse")
+    response = {"output": {"message": {"content": [{"text": "done"}]}}}
+    fake.converse = Mock(side_effect=[throttle, response])
+    assert index.call_bedrock("prompt") == "done"
+    assert fake.converse.call_count == 2
+    assert {call.kwargs["modelId"] for call in fake.converse.call_args_list} == {MODEL_ID}
+    assert clock[0] == 1001
+    assert timeouts == [299]
+
+
+def test_repeated_throttling_is_finite_for_both_models(monkeypatch):
+    fake, _, _, _ = budget_setup(monkeypatch)
+    fake.converse = Mock(side_effect=ClientError({"Error": {"Code": "ThrottlingException"}}, "Converse"))
+    with pytest.raises(ClientError):
+        index.call_bedrock("prompt")
+    assert [call.kwargs["modelId"] for call in fake.converse.call_args_list] == [
+        MODEL_ID, MODEL_ID, "fallback", "fallback",
+    ]
+
+
+def test_exhausted_deadline_starts_neither_model(monkeypatch):
+    fake, _, _, _ = budget_setup(monkeypatch)
+    fake.converse = Mock()
+    with pytest.raises(index.SummaryDeadlineError):
+        index.call_bedrock("prompt", deadline=1005)
+    fake.converse.assert_not_called()
+
+
+def test_later_sections_share_the_original_deadline(monkeypatch):
+    fake, _, clock, timeouts = budget_setup(monkeypatch)
+
+    def converse(**_kwargs):
+        clock[0] += 300 if fake.converse.call_count == 1 else 40
+        return {"output": {"message": {"content": [{"text": "done"}]}}}
+
+    fake.converse = Mock(side_effect=converse)
+    # A second section cannot acquire a fresh300s primary window.
+    index.generate_summary("T", '{"A":"a","B":"b"}', deadline=1540)
+    assert fake.converse.call_count == 2
+    assert timeouts == [100]
+
+
+def test_dead_worker_budget_never_starts_another_section_or_exports(monkeypatch):
+    fake, s3, clock, _ = budget_setup(monkeypatch)
+
+    def converse(**_kwargs):
+        clock[0] = 1540
+        return {"output": {"message": {"content": [{"text": "first section"}]}}}
+
+    fake.converse = Mock(side_effect=converse)
+    result = index.handler({"CallId": CALL_ID, "Prompt": '{"A":"a","B":"b"}'}, None)
+    assert result["summary"] is None
+    assert fake.converse.call_count == 1
+    assert s3.objects == {}
+
+
+def test_deadline_uses_lambda_remaining_time_and_resets_per_invocation(monkeypatch):
+    _, _, clock, _ = budget_setup(monkeypatch)
+    context = Mock()
+    context.get_remaining_time_in_millis.return_value = 200000
+    assert index.generation_deadline(context) == 1170
+    clock[0] = 2000
+    assert index.generation_deadline() == 2540
+
+
+@pytest.mark.parametrize("timeout", [120, 17])
+def test_fallback_and_short_budget_clients_disable_sdk_retries(monkeypatch, timeout):
+    factory = Mock()
+    monkeypatch.setattr(index.boto3, "client", factory)
+    index.bedrock_client.__wrapped__(timeout)
+    config = factory.call_args.kwargs["config"]
+    assert config.read_timeout == timeout
+    assert config.connect_timeout == 5
+    assert config.retries == {"total_max_attempts": 1, "mode": "standard"}
+
+
+def test_response_after_overall_deadline_is_not_saved(monkeypatch):
+    fake, s3, clock, _ = budget_setup(monkeypatch)
+
+    def too_late(**_kwargs):
+        clock[0] += 600
+        return {"output": {"message": {"content": [{"text": "late response"}]}}}
+
+    fake.converse = Mock(side_effect=too_late)
+    result = index.handler({"CallId": CALL_ID, "Prompt": "{transcript}"}, None)
+    assert result["summary"] is None
+    assert fake.converse.call_count == 1
+    assert s3.objects == {}
 
 
 # --------------------------------------------------------------------------
@@ -417,16 +563,13 @@ def test_the_request_names_the_configured_model_and_a_deterministic_configuratio
     ]
 
 
-def test_the_bedrock_client_retries_throttled_requests_many_times() -> None:
-    """Summaries run in bursts at meeting end, so throttling is routine.
-
-    Adaptive mode with a high attempt ceiling is what keeps a throttled summary
-    from being replaced by the error string. botocore reports the ceiling as
-    total_max_attempts, one more than the configured retry count.
-    """
+def test_sdk_cannot_replay_an_ambiguous_read_timeout() -> None:
+    """Explicit throttling retry lives in application code, not the SDK."""
     retries = index.bedrock.meta.config.retries
-    assert retries["mode"] == "adaptive"
-    assert retries["total_max_attempts"] == 4
+    assert retries["mode"] == "standard"
+    assert retries["total_max_attempts"] == 1
+    assert index.bedrock.meta.config.read_timeout == 300
+    assert index.lambda_client.meta.config.retries["total_max_attempts"] == 1
 
 
 def test_the_bedrock_client_is_built_for_the_regions_runtime_endpoint() -> None:
