@@ -3,18 +3,18 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: Production deployment or disposable dev validation
+        description: Production deployment or isolated on-demand dev
         type: choice
         options: [production, dev]
         required: true
       confirmation:
-        description: Type DEPLOY LMA, or EXECUTE REVIEWED LMA CHANGE SET for production execution
+        description: DEPLOY LMA, EXECUTE REVIEWED LMA CHANGE SET, or DESTROY DEV followed by the full owner run ID
         type: string
         required: true
       operation:
-        description: Production uses prepare then execute after review; dev deploy remains a separate operation
+        description: Production prepare/execute; dev-create/update leave dev running; dev-destroy is separately confirmed
         type: choice
-        options: [preflight, prepare, execute, deploy]
+        options: [preflight, prepare, execute, deploy, dev-create, dev-update, dev-destroy]
         default: preflight
         required: true
       change_set_name:
@@ -27,9 +27,13 @@ on:
         type: boolean
         default: false
       dev_owner_run_id:
-        description: Optional full owning CI run ID to update a retained isolated dev stack; requires keep_dev
+        description: Original full owning run ID; required for dev-update/dev-destroy, empty for dev-create
         type: string
         default: ''
+      dev_preflight_only:
+        description: For dev-create/dev-update only, validate the exact target/configuration without building or deploying
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -39,10 +43,16 @@ jobs:
   checks:
     if: >-
       github.repository == 'allops-solutions/amazon-transcribe-live-meeting-assistant' &&
+      (!inputs.dev_preflight_only || (inputs.environment == 'dev' && (inputs.operation == 'dev-create' || inputs.operation == 'dev-update'))) &&
       ((inputs.operation == 'execute' && inputs.confirmation == 'EXECUTE REVIEWED LMA CHANGE SET') ||
-       (inputs.operation != 'execute' && inputs.confirmation == 'DEPLOY LMA')) &&
+       (inputs.operation == 'dev-destroy' && inputs.dev_owner_run_id != '' &&
+        inputs.confirmation == format('DESTROY DEV {0}', inputs.dev_owner_run_id)) ||
+       (inputs.operation != 'execute' && inputs.operation != 'dev-destroy' && inputs.confirmation == 'DEPLOY LMA')) &&
       ((inputs.operation == 'prepare' || inputs.operation == 'execute') && inputs.environment == 'production' ||
-       inputs.operation == 'preflight' || (inputs.operation == 'deploy' && inputs.environment == 'dev')) &&
+       inputs.operation == 'preflight' ||
+       (inputs.environment == 'dev' && (inputs.operation == 'deploy' ||
+        (inputs.operation == 'dev-create' && inputs.dev_owner_run_id == '') ||
+        ((inputs.operation == 'dev-update' || inputs.operation == 'dev-destroy') && inputs.dev_owner_run_id != '')))) &&
       (github.ref == 'refs/heads/allops-main' || (inputs.environment == 'dev' && startsWith(github.ref, 'refs/heads/feature/')))
     uses: ./.github/workflows/lma-checks.yml
   deploy:
@@ -62,7 +72,8 @@ jobs:
       LMA_CFN_ROLE_ARN: ${{ vars.LMA_CFN_ROLE_ARN }}
       LMA_APPLICATION_BOUNDARY_ARN: ${{ vars.LMA_APPLICATION_BOUNDARY_ARN }}
       TARGET_ENVIRONMENT: ${{ inputs.environment }}
-      LMA_KEEP_DEV: ${{ inputs.keep_dev && 'true' || 'false' }}
+      LMA_KEEP_DEV: ${{ (inputs.keep_dev || startsWith(inputs.operation, 'dev-')) && 'true' || 'false' }}
+      LMA_DEV_OPERATION: ${{ inputs.operation }}
       LMA_DEV_OWNER_RUN_ID: ${{ inputs.dev_owner_run_id }}
       LMA_CHANGE_SET_NAME: ${{ inputs.change_set_name }}
       LMA_CONFIRMATION: ${{ inputs.confirmation }}
@@ -77,11 +88,18 @@ jobs:
         with:
           node-version: '22.23.2'
       - name: Install repository CLI and build dependencies
+        if: inputs.operation != 'dev-destroy'
         run: |
           python -m venv .venv
           .venv/bin/pip install ./lib/lma_sdk ./lib/lma_cli_pkg virtualenv 'aws-sam-cli>=1.118,<2'
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
           docker info > /dev/null
+      - name: Install only the SDK for confirmed dev teardown
+        if: inputs.operation == 'dev-destroy'
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install boto3==1.43.108
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
       - name: Authenticate with short-lived deployment credentials
         id: aws
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -92,10 +110,15 @@ jobs:
           unset-current-credentials: true
           allowed-account-ids: ${{ inputs.environment == 'production' && '009853297978' || '135755363077' }}
       - name: Validate target and configuration before the expensive build
+        if: inputs.operation != 'dev-destroy'
         run: |
-          python deploy/ci/deploy.py preflight --environment "$TARGET_ENVIRONMENT" --run-id "$GITHUB_RUN_ID" --template-url "https://s3.us-east-1.amazonaws.com/$LMA_ARTIFACT_BUCKET/releases/$GITHUB_SHA/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/lma-main.yaml"
+          if [[ "$LMA_DEV_OPERATION" == dev-create || "$LMA_DEV_OPERATION" == dev-update ]]; then
+            python deploy/ci/deploy.py "$LMA_DEV_OPERATION" --preflight --environment "$TARGET_ENVIRONMENT" --run-id "$GITHUB_RUN_ID" --template-url "https://s3.us-east-1.amazonaws.com/$LMA_ARTIFACT_BUCKET/releases/$GITHUB_SHA/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/lma-main.yaml"
+          else
+            python deploy/ci/deploy.py preflight --environment "$TARGET_ENVIRONMENT" --run-id "$GITHUB_RUN_ID" --template-url "https://s3.us-east-1.amazonaws.com/$LMA_ARTIFACT_BUCKET/releases/$GITHUB_SHA/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/lma-main.yaml"
+          fi
       - name: Build and publish this exact commit privately
-        if: inputs.operation == 'prepare' || (inputs.operation == 'deploy' && inputs.environment == 'dev')
+        if: inputs.operation == 'prepare' || (!inputs.dev_preflight_only && inputs.environment == 'dev' && (inputs.operation == 'deploy' || inputs.operation == 'dev-create' || inputs.operation == 'dev-update'))
         run: |
           test -n "$LMA_ARTIFACT_BUCKET"
           test -n "$LMA_CONFIG_SECRET_ARN"
@@ -114,6 +137,13 @@ jobs:
         if: inputs.operation == 'deploy' && inputs.environment == 'dev'
         run: |
           python deploy/ci/deploy.py deploy --environment dev --run-id "$GITHUB_RUN_ID" --template-url "https://s3.us-east-1.amazonaws.com/$LMA_ARTIFACT_BUCKET/releases/$GITHUB_SHA/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/lma-main.yaml"
+      - name: Create or update on-demand dev and leave it running
+        if: ${{ !inputs.dev_preflight_only && inputs.environment == 'dev' && (inputs.operation == 'dev-create' || inputs.operation == 'dev-update') }}
+        run: |
+          python deploy/ci/deploy.py "$LMA_DEV_OPERATION" --environment dev --run-id "$GITHUB_RUN_ID" --template-url "https://s3.us-east-1.amazonaws.com/$LMA_ARTIFACT_BUCKET/releases/$GITHUB_SHA/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/lma-main.yaml"
+      - name: Destroy only the explicitly confirmed on-demand dev stack
+        if: inputs.environment == 'dev' && inputs.operation == 'dev-destroy'
+        run: python deploy/ci/deploy.py dev-destroy --environment dev --run-id "$GITHUB_RUN_ID"
       - name: Clean up only this run's temporary dev stack
         if: always() && inputs.operation == 'deploy' && inputs.environment == 'dev' && !inputs.keep_dev && !inputs.dev_owner_run_id && steps.aws.outcome == 'success'
         run: python deploy/ci/deploy.py cleanup --environment dev --run-id "$GITHUB_RUN_ID"

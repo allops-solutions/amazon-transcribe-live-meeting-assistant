@@ -19,7 +19,7 @@ Targets are fixed in `deploy/ci/deploy.py`:
 | Environment | AWS account | Stack | Cleanup |
 |---|---|---|---|
 | production | 009853297978 | LMA | Never automatic |
-| dev | 135755363077 | LMA-CI-&lt;workflow run ID&gt; | Run-owned temporary stack only |
+| dev | 135755363077 | LMA-CI-&lt;last six run-ID digits&gt; | Exact full-owner-tagged stack only |
 
 Region is `us-east-1`. Kimi remains the summary model. No runtime model migration
 or changes to scheduling behavior are part of this pipeline.
@@ -419,7 +419,8 @@ set if the source commit, configuration-secret version, root-stack revision,
 status, or nested-stack coverage has changed since preparation. A no-change
 result needs no execute run. Production no longer has a one-step deploy option.
 
-For a disposable dev run, choose `environment=dev`, `operation=deploy`, and type
+For on-demand dev, use the lifecycle operations below. The older disposable
+validation operation remains `environment=dev`, `operation=deploy`, confirmation
 `DEPLOY LMA`; feature branches remain dev-only. The default `operation=preflight`
 validates access/configuration without building or deploying. Checks must pass
 before any build or change-set operation. No separate environment reviewer is
@@ -438,13 +439,104 @@ after successful creation/update. CloudFormation parameters still exist in AWS:
 ensure sensitive application parameters use `NoEcho` and limit access to the
 service role/configuration secret.
 
-Dev runs create a new temporary stack and remove it after infrastructure validation,
-including failed deployments where ownership can be verified. They do not keep a
-stack around for manual meeting tests. Cleanup can fail or be interrupted by job
+Legacy `operation=deploy` dev runs create a new temporary stack and remove it after
+infrastructure validation unless `keep_dev=true`, including failed deployments
+where ownership can be verified. The new on-demand operations do not auto-clean up.
+Cleanup can fail or be interrupted by job
 cancellation/credential expiry; do not assume `always()` guarantees deletion.
 Inspect the exact `LMA-CI-<run ID>` stack and its tags before manually retrying
 cleanup. Artifact storage, retained logs, external document buckets/configuration
 and any resources with explicit retention policies are not automatically removed.
+
+## On-demand dev lifecycle
+
+Use **LMA deployment** in GitHub Actions. These operations use the existing dev
+CodeBuild runner, dev deployment/CloudFormation roles and dev-only configuration
+secret in account `135755363077`. They cannot target `LMA-Dev` or production.
+Production's prepare/review/execute process and branch restrictions are unchanged.
+
+1. **Create:** choose `allops-main`, or an approved `feature/<name>` branch, then
+   `environment=dev`, `operation=dev-create`, confirmation `DEPLOY LMA`.
+   Leave `dev_owner_run_id` empty. The workflow forces keep-running mode; the
+   historical `keep_dev` checkbox need not be changed. CI checks account,
+   configuration and target before building, deploys the selected commit, and
+   leaves the stack running even if deployment fails. Read the workflow summary:
+   save the **full owning workflow run ID** and `LMA-CI-<last six digits>` name.
+2. **Update:** choose the branch/commit to test, `environment=dev`,
+   `operation=dev-update`, confirmation `DEPLOY LMA`, and paste the original full
+   owning run ID into `dev_owner_run_id`. CI requires the same owner/lifecycle
+   tags and a healthy stack. It updates that stack, preserves its original owner,
+   leaves it running, and never automatically deletes it on failure.
+3. **Destroy, separately:** after testing/promotion, stop active test VPs, cancel
+   pending dev schedules, and disconnect test Quick bindings. Choose
+   `environment=dev`, `operation=dev-destroy`, original full `dev_owner_run_id`,
+   and type **`DESTROY DEV <full owning run ID>`**, replacing the placeholder.
+   The operation does not build/publish or read the configuration secret. It
+   validates the account, exact full ownership tags, on-demand marker,
+   disposable-data setting, stack ARN, approved service role, operation state
+   and absence of termination protection before deleting the stack by its ARN.
+   It will not disable termination protection or adopt an old retained stack.
+   Failed but quiescent on-demand deployments can also be explicitly destroyed.
+
+All dev operations share the deployment concurrency lock, so CI does not deploy
+and destroy dev concurrently. Do not mutate the same stack manually during a run.
+GitHub's dev environment must permit the selected maintained feature branch;
+repository writers able to deploy such a branch can run its code with **dev**
+deployment permissions and access to the dev configuration. Do not add feature
+branches to the production environment or run fork/PR code on the privileged runner.
+
+For a **read-only on-demand preflight**, select `dev-create` or `dev-update` with
+the same inputs and enable **`dev_preflight_only`**. CI runs checks and validates
+the exact target/configuration, but skips publishing and deployment. For create,
+the reported stack/run ID is prospective, not a created environment; a later real
+create dispatch gets a new owning run ID. This flag is rejected for production,
+legacy validation and destroy operations. The equivalent guarded CLI step is:
+
+```sh
+python deploy/ci/deploy.py dev-create --preflight --environment dev \
+  --run-id "$GITHUB_RUN_ID" --template-url "$THIS_RUN_PRIVATE_TEMPLATE_URL"
+```
+
+This requires the same GitHub/manual-dispatch context and dev environment
+variables as the workflow; it is not a laptop bypass. The workflow runs it
+automatically before every create/update build. The native workflow's plain
+`preflight` operation remains available for existing configuration/access checks.
+
+### Dev authentication and rebuild configuration
+
+Ahmed selected **password login** for rebuilt dev on 2026-10-20. The on-demand
+lane explicitly uses `EnableGoogleSso=false`, `SsoPoolMode=LEGACY` and
+`PasswordSignInEnabled=true`, without changing original dev or production.
+It does not need a new Google OAuth callback on each rebuild. The normal
+Cognito administrator setup still uses the configured dev `AdminEmail`; a new
+pool can send its normal administrator invitation. Do not assume old dev users,
+passwords, summary profiles or test data are automatically copied into a new stack.
+
+Keep `lma/ci/dev/parameters`, its existing Google secret entry, the dev artifact
+bucket, CI runner and roles. They are rebuild dependencies, not part of the
+disposable application. No production secrets are copied to dev, and passwords
+or OAuth secret values are never printed. `deploy/params/dev.json` stays unchanged;
+on-demand authentication/retention policy is applied in memory during deployment.
+
+### What teardown removes and what it does not
+
+New on-demand stacks are tagged `LmaCiLifecycle=on-demand` and deployed with
+`EnableDataRetentionOnDelete=false`. Running a stack and preserving its data
+through ordinary updates does not require keeping that data after an explicit
+destroy. **Treat on-demand dev data as disposable and export anything needed
+before destroy.** Older `keep_dev=true` validation stacks have different retention
+semantics and are intentionally rejected by these new update/destroy operations.
+
+CloudFormation deletion removes stack-managed resources according to the deployed
+template. Explicit `Retain` resources (for example some log groups and the VNC
+HMAC secret), replacement leftovers, external document buckets, configuration,
+release artifacts and the CI bootstrap are not purged. Nor does this operation
+call VP-stop/cancel APIs for you. A deleted root is not proof of zero remaining
+resources or charges. Inspect retained resources separately under the tracked
+AWS cleanup task; do not delete by a broad name prefix or sweep unrelated data.
+Original `LMA-Dev` retirement remains a separate approved inventory/cutover task,
+after this lifecycle has been verified. Local tests/preflight prove guards and
+configuration, not a real create/update/destroy cycle.
 
 ## What passing means
 
