@@ -60,6 +60,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Explicit on-demand dev create/update operations that leave a selected maintained
+  branch running, plus separately confirmed, full-owner-bound dev teardown.
+  New on-demand environments use password login and disposable-data policies;
+  production, original dev and older retained validation stacks cannot be targeted.
+
 - Conventional administrator-owned production provisioning role and mandatory
   application service boundary; preflight-only CI run defaults to no application
   writes. Custom launcher/resource-controller isolation remains unused.

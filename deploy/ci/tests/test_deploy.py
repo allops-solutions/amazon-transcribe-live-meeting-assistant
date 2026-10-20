@@ -64,7 +64,7 @@ class SafetyTests(unittest.TestCase):
                              Loader=yaml.BaseLoader)
         self.assertEqual(workflow['on']['workflow_dispatch']['inputs']['keep_dev']['default'], 'false')
         self.assertEqual(workflow['on']['workflow_dispatch']['inputs']['operation']['options'],
-                         ['preflight', 'prepare', 'execute', 'deploy'])
+                         ['preflight', 'prepare', 'execute', 'deploy', 'dev-create', 'dev-update', 'dev-destroy'])
         checks = str(workflow['jobs']['checks']['if'])
         self.assertIn('EXECUTE REVIEWED LMA CHANGE SET', checks)
         self.assertIn("inputs.environment == 'production'", checks)
@@ -148,7 +148,7 @@ class SafetyTests(unittest.TestCase):
                 deploy.validate_cloudformation_role(invalid, '009853297978')
 
     def run_main(self, action, environment, existing=None, run_id='123', change_set_override=None,
-                 capture_error=False):
+                 capture_error=False, confirmation=None, preflight=False):
         account = deploy.ACCOUNTS[environment]
         cfn = MagicMock()
         cfn.describe_stacks.return_value = {'Stacks': [existing]} if existing else {'Stacks': []}
@@ -156,6 +156,7 @@ class SafetyTests(unittest.TestCase):
         cfn.create_change_set.return_value = {'Id': 'created-change-set'}
         # Use a patched read helper for the not-found case; all service clients are mocks.
         session = MagicMock()
+        self.last_session = session
         session.client.return_value.get_caller_identity.return_value = {'Account': account}
         base = json.loads((ROOT / f"deploy/params/{'prod' if environment == 'production' else 'dev'}.json").read_text())
         overrides = {p['ParameterKey']: '' for p in base if 'TODO_' in p['ParameterValue'] or 'FILL_IN_FROM_SECRET_STORE' in p['ParameterValue']}
@@ -188,8 +189,8 @@ class SafetyTests(unittest.TestCase):
             'LMA_CONFIG_SECRET_ARN': f'arn:aws:secretsmanager:us-east-1:{account}:secret:test',
             'LMA_CFN_ROLE_ARN': f'arn:aws:iam::{account}:role/lma/isolation/LMA-CloudFormation',
             'LMA_APPLICATION_BOUNDARY_ARN': boundary,
-            'LMA_CONFIRMATION': 'EXECUTE REVIEWED LMA CHANGE SET' if action == 'execute' else 'DEPLOY LMA',
-        }), patch.object(deploy.boto3, 'Session', return_value=session), patch.object(deploy, 'describe_stack', return_value=existing), patch.object(deploy.sys, 'argv', ['deploy.py', action, '--environment', environment, '--run-id', run_id, '--template-url', url] + (['--change-set-name', 'lma-ci-100-1'] if action == 'execute' else [])):
+            'LMA_CONFIRMATION': confirmation if confirmation is not None else ('EXECUTE REVIEWED LMA CHANGE SET' if action == 'execute' else 'DEPLOY LMA'),
+        }), patch.object(deploy.boto3, 'Session', return_value=session), patch.object(deploy, 'describe_stack', return_value=existing), patch.object(deploy.sys, 'argv', ['deploy.py', action, '--environment', environment, '--run-id', run_id, '--template-url', url] + (['--change-set-name', 'lma-ci-100-1'] if action == 'execute' else []) + (['--preflight'] if preflight else [])):
             try:
                 deploy.main()
             except Exception as exc:
@@ -207,6 +208,208 @@ class SafetyTests(unittest.TestCase):
     def test_production_never_cleanup(self):
         with self.assertRaisesRegex(ValueError, 'Production cleanup'):
             self.run_main('cleanup', 'production')
+
+    def on_demand_stack(self, owner='123', status='CREATE_COMPLETE'):
+        return {
+            'StackId': f'arn:aws:cloudformation:us-east-1:135755363077:stack/{deploy.dev_stack_name(owner)}/uuid-123',
+            'StackStatus': status, 'EnableTerminationProtection': False,
+            'RoleARN': 'arn:aws:iam::135755363077:role/lma/isolation/LMA-CloudFormation',
+            'Parameters': [{'ParameterKey': 'EnableDataRetentionOnDelete', 'ParameterValue': 'false'}],
+            'Tags': [{'Key': 'LmaCiManaged', 'Value': 'true'}, {'Key': 'LmaCiRun', 'Value': owner},
+                     {'Key': 'LmaCiLifecycle', 'Value': 'on-demand'}],
+        }
+
+    def test_dev_create_leaves_stack_running_with_disposable_password_configuration(self):
+        with patch.dict(os.environ, {'LMA_KEEP_DEV': 'true', 'LMA_DEV_OWNER_RUN_ID': ''}):
+            cfn = self.run_main('dev-create', 'dev')
+        request = cfn.create_change_set.call_args.kwargs
+        params = {p['ParameterKey']: p['ParameterValue'] for p in request['Parameters']}
+        self.assertEqual(params['EnableDataRetentionOnDelete'], 'false')
+        self.assertEqual(params['EnableGoogleSso'], 'false')
+        self.assertEqual(params['SsoPoolMode'], 'LEGACY')
+        self.assertEqual(params['PasswordSignInEnabled'], 'true')
+        self.assertIn({'Key': 'LmaCiLifecycle', 'Value': 'on-demand'}, request['Tags'])
+        self.assertEqual(request['ChangeSetType'], 'CREATE')
+        cfn.execute_change_set.assert_called_once()
+        cfn.delete_stack.assert_not_called()
+
+    def test_dev_update_uses_original_full_owner_and_preserves_stack(self):
+        with patch.dict(os.environ, {'LMA_KEEP_DEV': 'true', 'LMA_DEV_OWNER_RUN_ID': '123'}):
+            cfn = self.run_main('dev-update', 'dev', self.on_demand_stack(), run_id='456')
+        request = cfn.create_change_set.call_args.kwargs
+        self.assertEqual(request['StackName'], 'LMA-CI-123')
+        self.assertEqual(request['ChangeSetType'], 'UPDATE')
+        self.assertIn({'Key': 'LmaCiRun', 'Value': '123'}, request['Tags'])
+        cfn.delete_stack.assert_not_called()
+
+    def test_dev_lifecycle_preflight_performs_no_mutations(self):
+        for action, owner, existing in [('dev-create', '', None),
+                                        ('dev-update', '123', self.on_demand_stack())]:
+            with self.subTest(action=action), patch.dict(os.environ, {
+                'LMA_KEEP_DEV': 'true', 'LMA_DEV_OWNER_RUN_ID': owner,
+            }):
+                cfn = self.run_main(action, 'dev', existing, run_id='456', preflight=True)
+                cfn.create_change_set.assert_not_called()
+                cfn.execute_change_set.assert_not_called()
+                cfn.delete_stack.assert_not_called()
+
+    def test_destroy_binds_confirmation_to_full_owner_and_uses_stack_arn(self):
+        stack = self.on_demand_stack()
+        with patch.dict(os.environ, {'LMA_KEEP_DEV': 'true', 'LMA_DEV_OWNER_RUN_ID': '123'}):
+            cfn = self.run_main('dev-destroy', 'dev', stack, run_id='456', confirmation='DESTROY DEV 123')
+        cfn.delete_stack.assert_called_once_with(StackName=stack['StackId'], RoleARN=stack['RoleARN'])
+        validate_parameters(cfn.delete_stack.call_args.kwargs, get_session().get_service_model(
+            'cloudformation').operation_model('DeleteStack').input_shape)
+        cfn.create_change_set.assert_not_called()
+        cfn.execute_change_set.assert_not_called()
+        self.assertNotIn('secretsmanager', [c.args[0] for c in self.last_session.client.call_args_list])
+
+    def test_destroy_missing_stack_is_safe_noop(self):
+        with patch.dict(os.environ, {'LMA_KEEP_DEV': 'true', 'LMA_DEV_OWNER_RUN_ID': '123'}):
+            cfn = self.run_main('dev-destroy', 'dev', run_id='456', confirmation='DESTROY DEV 123')
+        cfn.delete_stack.assert_not_called()
+
+    def test_invalid_lifecycle_intent_is_rejected_before_aws(self):
+        for action, environment, owner, confirmation, keep in [
+            ('dev-create', 'production', '', 'DEPLOY LMA', 'true'),
+            ('dev-update', 'production', '123', 'DEPLOY LMA', 'true'),
+            ('dev-destroy', 'production', '123', 'DESTROY DEV 123', 'true'),
+            ('dev-create', 'dev', '123', 'DEPLOY LMA', 'true'),
+            ('dev-update', 'dev', '', 'DEPLOY LMA', 'true'),
+            ('dev-destroy', 'dev', '', 'DESTROY DEV', 'true'),
+            ('dev-destroy', 'dev', '123', 'DEPLOY LMA', 'true'),
+            ('dev-destroy', 'dev', '123', 'DESTROY DEV 456', 'true'),
+            ('dev-create', 'dev', '', 'DEPLOY LMA', 'false'),
+            ('dev-destroy', 'dev', 'LMA-Dev', 'DESTROY DEV LMA-Dev', 'true'),
+        ]:
+            with self.subTest(action=action, environment=environment, owner=owner), patch.dict(os.environ, {
+                'LMA_KEEP_DEV': keep, 'LMA_DEV_OWNER_RUN_ID': owner,
+            }):
+                _, error = self.run_main(action, environment, confirmation=confirmation, capture_error=True)
+                self.assertIsInstance(error, ValueError)
+                self.last_session.client.assert_not_called()
+
+    def test_destroy_refuses_older_retained_protected_unowned_or_active_stacks(self):
+        for field, value in [
+            ('Tags', []), ('Parameters', []), ('EnableTerminationProtection', True),
+            ('StackStatus', 'UPDATE_IN_PROGRESS'), ('StackStatus', 'DELETE_IN_PROGRESS'),
+            ('RoleARN', 'arn:aws:iam::135755363077:role/Admin'),
+            ('StackId', 'arn:aws:cloudformation:us-east-1:009853297978:stack/LMA/uuid'),
+        ]:
+            stack = dict(self.on_demand_stack(), **{field: value})
+            with self.subTest(field=field, value=value), patch.dict(os.environ, {
+                'LMA_KEEP_DEV': 'true', 'LMA_DEV_OWNER_RUN_ID': '123',
+            }):
+                cfn, error = self.run_main('dev-destroy', 'dev', stack, run_id='456',
+                                           confirmation='DESTROY DEV 123', capture_error=True)
+                self.assertIsInstance(error, ValueError)
+                cfn.delete_stack.assert_not_called()
+
+    def test_destroy_rejects_same_suffix_wrong_full_owner(self):
+        owner = '100000000123'
+        stack = self.on_demand_stack(owner=owner)
+        with patch.dict(os.environ, {'LMA_KEEP_DEV': 'true', 'LMA_DEV_OWNER_RUN_ID': '200000000123'}):
+            cfn, error = self.run_main('dev-destroy', 'dev', stack, run_id='456',
+                                      confirmation='DESTROY DEV 200000000123', capture_error=True)
+        self.assertIsInstance(error, ValueError)
+        cfn.delete_stack.assert_not_called()
+
+    def test_on_demand_update_cannot_adopt_old_retained_validation_stack(self):
+        stack = self.on_demand_stack()
+        stack['Tags'] = stack['Tags'][:2]
+        with patch.dict(os.environ, {'LMA_KEEP_DEV': 'true', 'LMA_DEV_OWNER_RUN_ID': '123'}):
+            cfn, error = self.run_main('dev-update', 'dev', stack, run_id='456', capture_error=True)
+        self.assertIsInstance(error, ValueError)
+        cfn.create_change_set.assert_not_called()
+
+    def test_failed_on_demand_stack_requires_explicit_destroy_not_automatic_cleanup(self):
+        with patch.dict(os.environ, {'LMA_KEEP_DEV': 'true', 'LMA_DEV_OWNER_RUN_ID': '123'}):
+            cfn = self.run_main('dev-destroy', 'dev', self.on_demand_stack(status='ROLLBACK_COMPLETE'),
+                                run_id='456', confirmation='DESTROY DEV 123')
+        cfn.delete_stack.assert_called_once()
+
+    def test_workflow_lifecycle_operations_cannot_use_automatic_cleanup(self):
+        import yaml
+        workflow = yaml.load((ROOT / '.github/workflows/lma-deploy.yml').read_text(), Loader=yaml.BaseLoader)
+        job = workflow['jobs']['deploy']
+        cleanup = job['steps'][-1]
+        self.assertIn("inputs.operation == 'deploy'", cleanup['if'])
+        self.assertIn('startsWith(inputs.operation', job['env']['LMA_KEEP_DEV'])
+        destroy = next(s for s in job['steps'] if 'explicitly confirmed on-demand' in s.get('name', ''))
+        self.assertIn("inputs.environment == 'dev'", destroy['if'])
+        self.assertIn("inputs.operation == 'dev-destroy'", destroy['if'])
+        self.assertNotIn('lma publish', destroy['run'])
+        self.assertNotIn('template-url', destroy['run'])
+        self.assertIn("format('DESTROY DEV {0}', inputs.dev_owner_run_id)", workflow['jobs']['checks']['if'])
+        build = next(s for s in job['steps'] if 'Build and publish' in s.get('name', ''))
+        create = next(s for s in job['steps'] if 'Create or update on-demand' in s.get('name', ''))
+        self.assertIn('!inputs.dev_preflight_only', build['if'])
+        self.assertIn('!inputs.dev_preflight_only', create['if'])
+        self.assertEqual(workflow['on']['workflow_dispatch']['inputs']['dev_preflight_only']['default'], 'false')
+
+    def test_lifecycle_does_not_change_existing_dev_json(self):
+        base = json.loads((ROOT / 'deploy/params/dev.json').read_text())
+        before = json.dumps(base, sort_keys=True)
+        overrides = {p['ParameterKey']: '' for p in base
+                     if 'FILL_IN_FROM_SECRET_STORE' in p['ParameterValue']}
+        overrides.update(EnableGoogleSso='true', SsoPoolMode='ACTIVE', PasswordSignInEnabled='false')
+        with patch.dict(os.environ, {'LMA_KEEP_DEV': 'true'}):
+            params = {p['ParameterKey']: p['ParameterValue'] for p in
+                      deploy.merge_parameters(base, overrides, 'dev', disposable_dev=True)}
+        self.assertEqual(params['EnableGoogleSso'], 'false')
+        self.assertEqual(params['SsoPoolMode'], 'LEGACY')
+        self.assertEqual(params['PasswordSignInEnabled'], 'true')
+        self.assertEqual(params['EnableDataRetentionOnDelete'], 'false')
+        self.assertEqual(json.dumps(base, sort_keys=True), before)
+
+    def test_workflow_entry_guard_operation_matrix(self):
+        import re
+        from types import SimpleNamespace
+
+        import yaml
+
+        workflow = yaml.load((ROOT / '.github/workflows/lma-deploy.yml').read_text(), Loader=yaml.BaseLoader)
+        expression = workflow['jobs']['checks']['if'].replace('&&', ' and ').replace('||', ' or ')
+        expression = re.sub(r'!(?!=)', 'not ', expression)
+        expression = expression.replace('startsWith(', 'starts_with(').replace('format(', 'gha_format(')
+        expression = compile('(' + expression + ')', 'workflow-entry-guard', 'eval')
+
+        def allowed(environment, operation, owner='', confirmation='DEPLOY LMA', preflight=False,
+                    ref='refs/heads/allops-main', repository=deploy.REPOSITORY):
+            return eval(expression, {'__builtins__': {}}, {
+                'github': SimpleNamespace(repository=repository, ref=ref),
+                'inputs': SimpleNamespace(environment=environment, operation=operation,
+                                         dev_owner_run_id=owner, confirmation=confirmation,
+                                         dev_preflight_only=preflight),
+                'starts_with': lambda text, prefix: text.startswith(prefix),
+                'gha_format': lambda text, value: text.format(value),
+            })
+
+        for operation in ['prepare', 'preflight']:
+            self.assertTrue(allowed('production', operation))
+        self.assertTrue(allowed('production', 'execute', confirmation='EXECUTE REVIEWED LMA CHANGE SET'))
+        self.assertTrue(allowed('dev', 'deploy'))
+        self.assertTrue(allowed('dev', 'dev-create'))
+        self.assertTrue(allowed('dev', 'dev-update', owner='123'))
+        self.assertTrue(allowed('dev', 'dev-destroy', owner='123', confirmation='DESTROY DEV 123'))
+        self.assertTrue(allowed('dev', 'dev-create', preflight=True, ref='refs/heads/feature/example'))
+        self.assertTrue(allowed('dev', 'dev-update', owner='123', preflight=True))
+        for kwargs in [
+            dict(environment='production', operation='dev-create'),
+            dict(environment='production', operation='dev-update', owner='123'),
+            dict(environment='production', operation='dev-destroy', owner='123', confirmation='DESTROY DEV 123'),
+            dict(environment='dev', operation='dev-create', owner='123'),
+            dict(environment='dev', operation='dev-update'),
+            dict(environment='dev', operation='dev-destroy', owner='123'),
+            dict(environment='dev', operation='dev-destroy', owner='123', confirmation='DESTROY DEV 456'),
+            dict(environment='dev', operation='dev-destroy', owner='123', confirmation='DESTROY DEV 123', preflight=True),
+            dict(environment='production', operation='prepare', preflight=True),
+            dict(environment='production', operation='prepare', ref='refs/heads/feature/example'),
+            dict(environment='dev', operation='dev-create', ref='refs/heads/develop'),
+            dict(environment='dev', operation='dev-create', repository='attacker/fork'),
+        ]:
+            with self.subTest(**kwargs):
+                self.assertFalse(allowed(**kwargs))
 
     def test_owned_dev_cleanup(self):
         cfn = self.run_main('cleanup', 'dev', {'Tags': [{'Key': 'LmaCiManaged', 'Value': 'true'}, {'Key': 'LmaCiRun', 'Value': '123'}]})

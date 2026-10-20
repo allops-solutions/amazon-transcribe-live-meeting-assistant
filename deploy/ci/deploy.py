@@ -48,7 +48,7 @@ def check_context(environment, account, stack, run_id):
         raise ValueError("Deployment requires a manual workflow dispatch")
 
 
-def merge_parameters(base, overrides, environment):
+def merge_parameters(base, overrides, environment, disposable_dev=False):
     if not isinstance(overrides, dict) or not all(isinstance(v, str) for v in overrides.values()):
         raise ValueError("Configuration secret must be a JSON object of string parameter values")
     values = {p["ParameterKey"]: p["ParameterValue"] for p in base}
@@ -62,10 +62,18 @@ def merge_parameters(base, overrides, environment):
         raise ValueError("This release must keep the approved Kimi summary model")
     if values.get("ModelValidation") != "true":
         raise ValueError("Model validation must remain enabled")
-    # Only brand-new, run-owned temporary dev stacks are disposable.
+    if disposable_dev and environment != "dev":
+        raise ValueError("Disposable parameters are dev-only")
+    # Keeping compute running does not require retaining data after a separately
+    # confirmed destroy. Preserve historical validation-lane behavior separately.
     values["EnableDataRetentionOnDelete"] = "true" if (
-        environment == "production" or os.environ.get("LMA_KEEP_DEV") == "true"
+        environment == "production" or (
+            os.environ.get("LMA_KEEP_DEV") == "true" and not disposable_dev
+        )
     ) else "false"
+    if disposable_dev:
+        # User-approved rebuild policy; do not change original dev or dev.json.
+        values.update(EnableGoogleSso="false", SsoPoolMode="LEGACY", PasswordSignInEnabled="true")
     if environment == 'production':
         found = production_config_issues(
             [{'ParameterKey': key, 'ParameterValue': value} for key, value in values.items()], {})
@@ -99,9 +107,72 @@ def validate_retained_dev_update(stack, existing, owner_run):
         raise ValueError("Retained dev stack must be in a healthy complete state")
 
 
+def validate_dev_operation(action, environment, run_id, owner_run, preflight=False):
+    """Bind lifecycle intent and destructive confirmation before accessing AWS."""
+    if preflight and action not in {"dev-create", "dev-update"}:
+        raise ValueError("Lifecycle preflight requires dev-create or dev-update")
+    if not action.startswith("dev-"):
+        return
+    if environment != "dev" or os.environ.get("LMA_KEEP_DEV") != "true":
+        raise ValueError("On-demand lifecycle requires dev and keep_dev=true")
+    dev_stack_name(run_id)
+    if action == "dev-create" and owner_run:
+        raise ValueError("New dev creation cannot specify an existing owner")
+    if action in {"dev-update", "dev-destroy"} and not owner_run:
+        raise ValueError("Provide the original full owning workflow run ID")
+    if owner_run:
+        dev_stack_name(owner_run)
+    expected = f"DESTROY DEV {owner_run}" if action == "dev-destroy" else "DEPLOY LMA"
+    if os.environ.get("LMA_CONFIRMATION") != expected:
+        raise ValueError("Explicit operation-specific confirmation is required")
+
+
+def validate_on_demand_stack(stack, existing, owner_run):
+    """Never adopt an original dev or older retained validation environment."""
+    if not existing:
+        raise ValueError("On-demand stack does not exist")
+    tags = {t["Key"]: t["Value"] for t in existing.get("Tags", [])}
+    validate_cleanup(stack, tags, owner_run)
+    parameters = {
+        p["ParameterKey"]: p.get("ParameterValue")
+        for p in existing.get("Parameters", [])
+    }
+    if (
+        tags.get("LmaCiLifecycle") != "on-demand"
+        or parameters.get("EnableDataRetentionOnDelete") != "false"
+    ):
+        raise ValueError(
+            "Only explicitly disposable on-demand stacks can be managed here"
+        )
+    if existing.get("EnableTerminationProtection"):
+        raise ValueError("Termination-protected stacks require separate review")
+
+
+def describe_dev_target(stack, owner_run, planned=False):
+    """Record reusable identifiers, never stack outputs containing credentials."""
+    print("On-demand dev stack:", stack)
+    print("Full owning workflow run ID:", owner_run)
+    print("Destroy confirmation:", f"DESTROY DEV {owner_run}")
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if path:
+        with open(path, "a", encoding="utf-8") as summary:
+            title = (
+                "On-demand dev preflight (no deployment)"
+                if planned
+                else "On-demand dev"
+            )
+            summary.write(
+                f"\n### {title}\n\nStack: `{stack}`\n\n"
+                f"Owning run ID: `{owner_run}`\n\n"
+                f"Destroy confirmation: `DESTROY DEV {owner_run}`\n"
+            )
+
+
 def validate_application_boundary(parameters, account, environment):
     """Pin production's boundary independently of the editable configuration secret."""
-    if environment != "production" and not os.environ.get("LMA_APPLICATION_BOUNDARY_ARN"):
+    if environment != "production" and not os.environ.get(
+        "LMA_APPLICATION_BOUNDARY_ARN"
+    ):
         return
     approved = os.environ.get("LMA_APPLICATION_BOUNDARY_ARN", "")
     if not re.fullmatch(
@@ -141,13 +212,17 @@ def validate_cloudformation_role(role, account):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["preflight", "prepare", "execute", "deploy", "cleanup"])
+    parser.add_argument("action", choices=["preflight", "prepare", "execute", "deploy", "cleanup",
+                                          "dev-create", "dev-update", "dev-destroy"])
     parser.add_argument("--environment", choices=list(ACCOUNTS), required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--template-url")
     parser.add_argument("--change-set-name")
+    parser.add_argument("--preflight", action="store_true")
     args = parser.parse_args()
     owner_override = os.environ.get("LMA_DEV_OWNER_RUN_ID", "")
+    validate_dev_operation(args.action, args.environment, args.run_id, owner_override, args.preflight)
+    on_demand = args.action.startswith("dev-")
     owner_run = deployment_owner_run(args.environment, args.run_id, owner_override)
     if args.action == "prepare" and args.environment != "production":
         raise ValueError("Change-set preparation is only enabled for production")
@@ -157,6 +232,30 @@ def main():
     check_context(args.environment, account, stack, owner_run)
     cfn = session.client("cloudformation")
     existing = describe_stack(cfn, stack)
+    if args.action == "dev-destroy":
+        if not existing:
+            print("On-demand stack absent; nothing to destroy")
+            return
+        validate_on_demand_stack(stack, existing, owner_run)
+        if existing.get("StackStatus") not in {
+            "CREATE_COMPLETE", "UPDATE_COMPLETE", "ROLLBACK_COMPLETE", "CREATE_FAILED",
+            "UPDATE_ROLLBACK_COMPLETE", "DELETE_FAILED",
+        }:
+            raise ValueError("Refusing to destroy a stack with an active or unsupported operation")
+        role = os.environ["LMA_CFN_ROLE_ARN"]
+        validate_cloudformation_role(role, account)
+        stack_id = existing.get("StackId", "")
+        if (not re.fullmatch(rf"arn:aws:cloudformation:us-east-1:{account}:stack/{stack}/[A-Za-z0-9-]+", stack_id)
+                or existing.get("RoleARN") != role):
+            raise ValueError("Stack identity or service role differs from the approved target")
+        describe_dev_target(stack, owner_run)
+        cfn.delete_stack(StackName=stack_id, RoleARN=role)
+        cfn.get_waiter("stack_delete_complete").wait(
+            StackName=stack_id, WaiterConfig={"Delay": 30, "MaxAttempts": 240}
+        )
+        print("On-demand dev stack deleted. Explicit Retain resources, external buckets, "
+              "CI infrastructure and credentials are not purged. Review retained resources separately.")
+        return
     if args.action == "cleanup":
         if owner_override:
             raise ValueError("Retained dev updates never perform automatic cleanup")
@@ -171,6 +270,8 @@ def main():
         print("Temporary dev stack deleted; external configuration and artifact storage were not deleted")
         return
     if owner_override:
+        if on_demand:
+            validate_on_demand_stack(stack, existing, owner_run)
         validate_retained_dev_update(stack, existing, owner_run)
     elif args.environment == "dev" and existing:
         raise ValueError("Temporary dev deployment is create-only; existing stacks are not updated")
@@ -188,11 +289,13 @@ def main():
     secret = session.client("secretsmanager").get_secret_value(SecretId=secret_arn)
     overrides = json.loads(secret["SecretString"])
     base = json.loads(Path(f"deploy/params/{'prod' if args.environment == 'production' else 'dev'}.json").read_text())
-    parameters = merge_parameters(base, overrides, args.environment)
+    parameters = merge_parameters(base, overrides, args.environment, disposable_dev=on_demand)
     validate_application_boundary(parameters, account, args.environment)
     role = os.environ["LMA_CFN_ROLE_ARN"]
     validate_cloudformation_role(role, account)
-    if args.action == "preflight":
+    if args.action == "preflight" or args.preflight:
+        if on_demand:
+            describe_dev_target(stack, owner_run, planned=True)
         print("Target account, stack, configuration and release path validated; no AWS writes performed")
         return
     if args.action == "execute":
@@ -237,7 +340,8 @@ def main():
         Description=(f"LMA prepared release sha={os.environ['GITHUB_SHA']} "
                      f"configVersion={secret['VersionId']} stackId={stack_id} stackVersion={stack_version}"),
         Tags=[{"Key": "LmaCiManaged", "Value": "true"}, {"Key": "LmaCiRun", "Value": owner_run},
-              {"Key": "LmaSourceSha", "Value": os.environ["GITHUB_SHA"]}],
+              {"Key": "LmaSourceSha", "Value": os.environ["GITHUB_SHA"]}]
+             + ([{"Key": "LmaCiLifecycle", "Value": "on-demand"}] if on_demand else []),
     )
     change_id = response["Id"]
     try:
@@ -274,6 +378,8 @@ def main():
     if args.environment == "production":
         cfn.update_termination_protection(StackName=stack, EnableTerminationProtection=True)
     print("CloudFormation deployment completed:", stack)
+    if on_demand:
+        describe_dev_target(stack, owner_run)
 
 
 if __name__ == "__main__":
