@@ -1,9 +1,10 @@
 """Offline regression coverage for Kimi's summary-only model selection."""
+import io
 import json
 import os
-from pathlib import Path
 import runpy
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import boto3
@@ -23,6 +24,7 @@ class SummaryModelWiringTests(unittest.TestCase):
         self.assertEqual(env["BEDROCK_MODEL_ID"], expected)
         self.assertEqual(env["BEDROCK_FALLBACK_MODEL_ID"], {"Ref": "BedrockFallbackModelId"})
         self.assertEqual(env["KIMI_SUMMARY_MAX_TOKENS"], "16384")
+        self.assertEqual(env["KIMI_SUMMARY_EFFORT"], "medium")
         self.assertEqual(env["SUMMARY_MAX_TOKENS"], "4096")
         for resource, key in (("QueryKnowledgeBaseResolverFunction", "MODEL_ID"),
                               ("MCPServerAnalyticsFunction", "BEDROCK_MODEL_ID")):
@@ -62,7 +64,7 @@ class SummaryModelWiringTests(unittest.TestCase):
                          "global.anthropic.claude-sonnet-4-6")
 
 
-class KimiConverseTests(unittest.TestCase):
+class KimiNativeTests(unittest.TestCase):
     def setUp(self):
         self.client = Mock()
         # Deadline-specific clients are constructed lazily, after import too.
@@ -72,7 +74,8 @@ class KimiConverseTests(unittest.TestCase):
         env = {"BEDROCK_MODEL_ID": KIMI, "BEDROCK_FALLBACK_MODEL_ID": "fallback",
                "FETCH_TRANSCRIPT_LAMBDA_ARN": "fetch", "S3_BUCKET_NAME": "bucket",
                "S3_PREFIX": "transcripts", "LLM_PROMPT_TEMPLATE_TABLE_NAME": "templates",
-               "AWS_REGION": "us-east-1", "SUMMARY_EFFORT": "medium", "SUMMARY_MAX_TOKENS": "4096"}
+               "AWS_REGION": "us-east-1", "SUMMARY_EFFORT": "medium", "SUMMARY_MAX_TOKENS": "4096",
+               "KIMI_SUMMARY_EFFORT": "medium"}
         with patch.dict(os.environ, env):
             self.module = runpy.run_path(str(ROOT / "lma-ai-stack/source/lambda_functions/bedrock_summary_lambda/index.py"))
 
@@ -81,12 +84,24 @@ class KimiConverseTests(unittest.TestCase):
             {"reasoningContent": {"reasoningText": {"text": "internal"}}},
             {"text": "Meeting summary"}]}}, "usage": {"inputTokens": 20, "outputTokens": 5}}
 
+    def native_response(self):
+        return {"body": io.BytesIO(json.dumps({
+            "choices": [{"message": {"content": "Meeting summary", "reasoning_content": "private"},
+                         "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 5},
+        }).encode())}
+
     def test_single_turn_request_and_text_output(self):
-        self.client.converse.return_value = self.response()
+        self.client.invoke_model.return_value = self.native_response()
         self.assertEqual(self.module["call_bedrock"]("Transcript text"), "Meeting summary")
-        self.client.converse.assert_called_once_with(
-            modelId=KIMI, messages=[{"role": "user", "content": [{"text": "Transcript text"}]}],
-            inferenceConfig={"maxTokens": 16384})
+        request = self.client.invoke_model.call_args.kwargs
+        self.assertEqual(request["modelId"], KIMI)
+        self.assertEqual(json.loads(request["body"]), {
+            "messages": [{"role": "user", "content": "Transcript text"}],
+            "max_tokens": 16384, "reasoning_effort": "medium"})
+        self.assertEqual(request["contentType"], "application/json")
+        self.assertEqual(request["accept"], "application/json")
+        self.client.converse.assert_not_called()
 
     def test_haiku_fallback_omits_unsupported_adaptive_thinking(self):
         args = self.module["build_inference_args"](
@@ -99,10 +114,12 @@ class KimiConverseTests(unittest.TestCase):
         self.assertEqual(args["additionalModelRequestFields"]["thinking"]["type"], "adaptive")
 
     def test_existing_fallback_still_runs_after_primary_error(self):
-        self.client.converse.side_effect = [RuntimeError("Unavailable"), self.response()]
+        self.client.invoke_model.side_effect = RuntimeError("Unavailable")
+        self.client.converse.return_value = self.response()
         self.assertEqual(self.module["call_bedrock"]("Transcript"), "Meeting summary")
         self.assertEqual([call.kwargs["modelId"] for call in self.client.converse.call_args_list],
-                         [KIMI, "fallback"])
+                         ["fallback"])
+        self.client.invoke_model.assert_called_once()
 
 
 if __name__ == "__main__":

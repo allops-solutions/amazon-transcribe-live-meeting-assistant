@@ -18,9 +18,19 @@ to **global.moonshotai.kimi-k3** and preserve the other model parameters. Publis
 alone does not change deployed parameter values. Local CLI update parameter files
 must also include this new value if used; they are not modified automatically.
 
-The summary Lambda uses text-only, single-turn Converse requests without passing
-Claude/OpenAI-specific reasoning settings. Kimi has a 16,384-token per-section
-output budget; other providers retain 4,096. On-demand generation and the
+The summary Lambda uses text-only, single-turn **InvokeModel** requests for Kimi K3,
+with an explicit `reasoning_effort: "medium"` in the native JSON request body.
+`KIMI_SUMMARY_EFFORT` defaults to `medium` and is explicitly set in the stack;
+it is independent of other providers' `SUMMARY_EFFORT`. Invalid effort settings
+fail before inference rather than silently using the provider's maximum default.
+AWS documents that omitted Kimi effort defaults to `max`, and recommends using
+Responses, Chat Completions or InvokeModel to set effort rather than relying on
+Converse validation. Native requests use the existing boto3 client, IAM role and
+`bedrock:InvokeModel` permission: no new credentials, dependencies or permissions.
+Other providers, including the Haiku fallback, continue using Converse.
+Kimi retains its 16,384-token per-section output budget; other providers retain
+4,096. Medium effort is not a guarantee of completion or a separate hard
+reasoning-token cap. On-demand generation and the
 configured Haiku fallback remain enabled. A primary
 failure may still produce a summary through the fallback; inspect logs to establish
 which model actually generated it.
@@ -44,8 +54,13 @@ the same model deadline. Fallback is bounded the same way. A timed-out primary
 may still complete server-side and be billed even when fallback is used; never
 assume timeout means cancellation or zero usage.
 
-Output/context-limit termination fails immediately without fallback. Other
-failures try the configured fallback if time remains. If neither model succeeds,
+Output/context-limit termination now also tries the configured distinct fallback
+**once per failed section**, if time remains. A partial primary response is never
+used or exported. The fallback gets the same complete prompt and its own existing
+4,096-token limit; it does not continue or repair the partial primary text.
+If fallback fails or reaches its own limit, there is no further model switch or
+generation retry (apart from the explicit throttling rejection rule above).
+Other failures use the same bounded fallback path. If neither model succeeds,
 the orchestrator marks only the matching request FAILED and keeps the previous
 summary. It does not publish partial sections or automatically restart generation.
 
@@ -63,6 +78,15 @@ still permits a deliberate retry after an abandoned run, without auto-generating
 
 Deployment is required to activate code/configuration changes. Offline regression
 tests simulate timeouts and failures without live model requests or token costs.
+
+Usage logs contain only whitelisted model/API, stop reason, input/output/total,
+reasoning and cache token counts when provided, plus visible-text character counts.
+Missing provider counters stay `null`, never zero or inferred from text length.
+Non-reasoning output tokens are derived only when the provider supplies valid total
+output and reasoning counts. Prompt, transcript, generated summary and reasoning
+text are not printed by the summary worker. Implicit caching can make uncached
+input small: inspect cache counters too, not input tokens alone. These metrics are
+diagnostics, not an authoritative AWS billing report.
 
 AWS documents Converse support and global cross-region availability from us-east-1:
 https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-moonshot-ai-kimi-k3.html

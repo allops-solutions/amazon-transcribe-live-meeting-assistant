@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Send Kimi K3 summaries through Bedrock InvokeModel with explicit medium
+  reasoning effort instead of relying on the provider's maximum default.
+  Keep the 16,384-token cap and 300s primary timeout; allow one bounded
+  fallback on output/context exhaustion without saving partial responses.
+  Log whitelisted usage/reasoning/cache counts, not transcript or model text.
+
 - Bound summary inference to one shared nine-minute budget: primary model gets
   up to 300s and fallback up to 120s. Never replay an ambiguous model timeout or
   synchronous summary-worker invoke; retry explicit throttling only once within
@@ -18,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reject token/context-limited summary responses instead of saving truncated
   text; keep the prior summary and show actionable output-limit guidance.
   Increase Kimi's per-section output budget to 16,384 without changing other
-  providers' limits or automatically retrying capacity failures with another model.
+  providers' limits. Capacity failures now use the bounded fallback path above.
 
 - Recognize the same signed-in owner's email, federated username and subject ID
   consistently for VP browser access; other users still need explicit sharing or Admin.
