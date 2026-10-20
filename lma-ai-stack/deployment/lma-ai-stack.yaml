@@ -1870,9 +1870,9 @@ Resources:
           LLM_PROMPT_TEMPLATE_TABLE_NAME: !Ref LLMPromptTemplateTableName
           S3_BUCKET_NAME: !Ref S3BucketName
           S3_PREFIX: !Ref TranscriptFilePrefix
-      # 600 covers a 3-section profile on a long transcript with one hung call
-      # retried (see the orchestrator's BOTO_READ_TIMEOUT); anything longer is
-      # a stuck run that is better surfaced than waited for.
+      # Inference shares a 540s budget across all sections, reserving time for
+      # export/failure handling before this hard timeout. Primary:300s;
+      # fallback:120s. Ambiguous timeouts are never resubmitted.
       Timeout: 600
       MemorySize: 512
       Handler: index.handler
@@ -2155,11 +2155,8 @@ Resources:
             ]
           CALL_DATA_STREAM_NAME: !Ref CallDataStream
           EVENT_SOURCING_TABLE_NAME: !Ref EventSourcingTable
-          # This function waits synchronously for BedrockSummaryLambda, which
-          # may run up to its own 600s Timeout. Waiting must cover that in a
-          # SINGLE attempt: with read_timeout 300 and boto retries, a slow
-          # summary was re-invoked every 5 min while the first was still
-          # running and being billed (see the 2026-09-16/17 cost spike).
+          # One synchronous invoke only. The child budgets inference to 540s,
+          # leaving time to return/store failure before either hard timeout.
           BOTO_READ_TIMEOUT: 595
       Timeout: 600
       # Lambda's default for async invocations is 2 retries — each one re-ran
@@ -2167,6 +2164,12 @@ Resources:
       # the UI (Regenerate banner) and the user can retry deliberately.
       EventInvokeConfig:
         MaximumRetryAttempts: 0
+        # Do not let a queued request start hours after its UI claim expired.
+        MaximumEventAgeInSeconds: 60
+        DestinationConfig:
+          OnFailure:
+            Type: Lambda
+            Destination: !GetAtt SummaryFailureRecovery.Arn
       MemorySize: 128
       Handler: lambda_function.handler
       Layers:
@@ -2227,6 +2230,9 @@ Resources:
                 Action: dynamodb:UpdateItem
                 Resource: !GetAtt EventSourcingTable.Arn
               - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt SummaryFailureRecovery.Arn
+              - Effect: Allow
                 Action:
                   - kms:Decrypt
                   - kms:DescribeKey
@@ -2252,6 +2258,82 @@ Resources:
                     - !GetAtt BedrockSummaryLambda.Arn
                 - Ref: AWS::NoValue
 
+
+  # Timeout/crash recovery only: this function has no model-invocation rights.
+  SummaryFailureRecoveryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /${AWS::StackName}/lambda/SummaryFailureRecovery
+      RetentionInDays: !Ref CloudWatchLogsExpirationInDays
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+
+  SummaryFailureRecovery:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt SummaryFailureRecoveryRole.Arn
+      Runtime: python3.12
+      Handler: lambda_function.failure_handler
+      CodeUri: ../source/lambda_functions/async_transcript_summary_orchestrator
+      Description: Mark an abandoned summary request failed without regenerating or replacing its summary
+      Timeout: 30
+      MemorySize: 128
+      Tracing: Active
+      EventInvokeConfig:
+        MaximumRetryAttempts: 2
+      Layers:
+        - !Ref TranscriptEnrichmentPythonLayer
+      Environment:
+        Variables:
+          EVENT_SOURCING_TABLE_NAME: !Ref EventSourcingTable
+      LoggingConfig:
+        LogGroup: !Ref SummaryFailureRecoveryLogGroup
+    DependsOn:
+      - SummaryFailureRecoveryLogGroup
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: Recovery only updates DynamoDB through its managed API
+          - id: W92
+            reason: Recovery scales with failed requests and performs no model inference
+    # checkov:skip=CKV_AWS_116: "Recovery is idempotent and retries only status writes, never model calls"
+    # checkov:skip=CKV_AWS_117: "Recovery only uses the DynamoDB managed API"
+    # checkov:skip=CKV_AWS_115: "No reserved concurrency needed for conditional status writes"
+    # checkov:skip=CKV_AWS_173: "Only the non-sensitive state table name is configured"
+
+  SummaryFailureRecoveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: !If [HasPermissionsBoundary, /lma/application/, !Ref AWS::NoValue]
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AWSXRayDaemonWriteAccess
+      Policies:
+        - PolicyName: SummaryFailureStatusOnly
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: dynamodb:UpdateItem
+                Resource: !GetAtt EventSourcingTable.Arn
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                Resource: !Ref CustomerManagedEncryptionKeyArn
+                Condition:
+                  StringEquals:
+                    "kms:ViaService": !Sub dynamodb.${AWS::Region}.${AWS::URLSuffix}
 
   ##########################################################################
   # SNS Topic for Category Event Notifications

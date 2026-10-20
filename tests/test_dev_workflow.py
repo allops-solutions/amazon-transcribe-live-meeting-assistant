@@ -221,6 +221,7 @@ class SummaryFailureTests(unittest.TestCase):
         write = Mock()
         ns = functions("lma-ai-stack/source/lambda_functions/bedrock_summary_lambda/index.py",
                        {"handler"}, {"json": json,
+                           "generation_deadline": Mock(return_value=540),
                            "SummaryOutputLimitError": type("SummaryOutputLimitError", (ValueError,), {}),
                            "get_transcripts": Mock(return_value={
                            "transcript": "text", "metadata": {}}),

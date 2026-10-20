@@ -7,12 +7,15 @@
 
 import json
 import logging
+import math
 import os
 import re
 import time
+from functools import lru_cache
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 logger = logging.getLogger()
 logger.setLevel(logging.ERROR)
@@ -52,45 +55,56 @@ BEDROCK_ENDPOINT_URL = os.environ.get(
 )
 
 
-# Adaptive retry (not boto3's default "legacy" mode, which gives up after a
-# handful of fixed-delay attempts) — get_transcripts() below invokes
-# FetchTranscript synchronously, and on 2026-09-16 that invoke hit
-# TooManyRequestsException (account-wide concurrent-executions ceiling, not
-# a code bug — see LMA-HANDOFF.md) and gave up, producing "An error
-# occurred." for the whole summary. Matches the bedrock client's config below.
-lambda_client = boto3.client("lambda", config=Config(retries={"max_attempts": 5, "mode": "adaptive"}))
-dynamodb_client = boto3.client("dynamodb")
-# Root cause of the 2026-09-16 incident, confirmed via CloudTrail: this
-# client had no explicit read_timeout, so it used botocore's 60s default.
-# Adaptive thinking (see build_inference_args) can legitimately take longer
-# than that to produce a full response, especially under load. When it did,
-# boto3 didn't get an error back FROM Bedrock - it just gave up waiting and
-# silently fired a brand-new Converse call as a "retry", while the first one
-# kept running server-side and (per CloudTrail) completed and was billed
-# anyway. That day CloudTrail shows 89 successful, billed Converse calls
-# from this function - all with errorCode=None, i.e. never rejected or
-# throttled - against roughly 11 calls the application code actually
-# initiated. The gap is boto3 silently duplicating work that was already
-# succeeding, not Bedrock refusing it. With max_attempts previously 50, that
-# duplication could run for the vast majority of this function's 900s
-# Timeout with nothing between "Bedrock inference args" and either a
-# response or an exception - the function just sat there until Lambda's
-# hard timeout killed it mid-retry.
-#
-# read_timeout=120 gives a real, legitimately-slow response a fair chance to
-# come back instead of being abandoned and duplicated at 60s. max_attempts
-# dropped from 50 to 3 to match - a longer, fairer per-attempt window needs
-# fewer attempts, and 3x120s=360s per model (720s worst case across both the
-# primary and BEDROCK_FALLBACK_MODEL_ID) still leaves real headroom inside
-# the 900s function Timeout for generate_summary()'s multiple template
-# calls, with call_bedrock()'s own try/except now actually able to log a
-# real exception and reach the fallback model instead of never returning.
-bedrock = boto3.client(
-    service_name="bedrock-runtime",
-    region_name=BEDROCK_REGION,
-    endpoint_url=BEDROCK_ENDPOINT_URL,
-    config=Config(retries={"max_attempts": 3, "mode": "adaptive"}, read_timeout=120),
+# Transcript retrieval is bounded too; it must not exhaust the model deadline.
+lambda_client = boto3.client(
+    "lambda",
+    config=Config(
+        retries={"total_max_attempts": 1, "mode": "standard"},
+        connect_timeout=5,
+        read_timeout=60,
+    ),
 )
+dynamodb_client = boto3.client("dynamodb")
+# A read timeout is ambiguous: Bedrock may still be generating/billing. Never
+# let the SDK resubmit it. Only an explicit throttling rejection is retried,
+# once, under the SAME model and invocation deadlines.
+PRIMARY_TIMEOUT_SECONDS = 300
+FALLBACK_TIMEOUT_SECONDS = 120
+GENERATION_BUDGET_SECONDS = 540
+FINALIZE_RESERVE_SECONDS = 30
+REQUEST_OVERHEAD_SECONDS = 10  # connect timeout + signing/response handling
+
+
+@lru_cache(maxsize=8)
+def bedrock_client(read_timeout):
+    """Reuse single-attempt clients with timeouts bounded by the current budget."""
+    return boto3.client(
+        service_name="bedrock-runtime",
+        region_name=BEDROCK_REGION,
+        endpoint_url=BEDROCK_ENDPOINT_URL,
+        config=Config(
+            retries={"total_max_attempts": 1, "mode": "standard"},
+            connect_timeout=5,
+            read_timeout=read_timeout,
+        ),
+    )
+
+
+bedrock = bedrock_client(PRIMARY_TIMEOUT_SECONDS)
+
+
+class SummaryDeadlineError(TimeoutError):
+    """There is no safe time left for another generation request."""
+
+
+def generation_deadline(context=None):
+    """Share one model budget across all sections, leaving time to save/fail."""
+    budget = GENERATION_BUDGET_SECONDS
+    if context is not None:
+        budget = min(
+            budget, context.get_remaining_time_in_millis() / 1000 - FINALIZE_RESERVE_SECONDS
+        )
+    return time.monotonic() + max(0, budget)
 
 
 def get_templates_from_dynamodb(prompt_override):
@@ -272,19 +286,42 @@ def build_inference_args(modelId):
     return args
 
 
-def _converse(modelId, prompt_data):
+def _converse(modelId, prompt_data, deadline=None, timeout_seconds=PRIMARY_TIMEOUT_SECONDS):
+    """One generation attempt; one extra request only for explicit throttling."""
     print("Bedrock request - ModelId", modelId)
     message = {"role": "user", "content": [{"text": prompt_data}]}
     args = build_inference_args(modelId)
     print("Bedrock inference args:", json.dumps(args))
-    # Elapsed time around the call, printed on both success and failure - the
-    # 2026-09-16 incident's silent 900s hangs had NOTHING logged between this
-    # call and the function's hard timeout, which is what made them so hard
-    # to diagnose. A large gap here (even without an exception) now points
-    # straight at boto3's retry loop instead of looking like nothing ran.
     started = time.monotonic()
+    deadline = min(
+        deadline if deadline is not None else float("inf"),
+        started + timeout_seconds + REQUEST_OVERHEAD_SECONDS,
+    )
     try:
-        response = bedrock.converse(modelId=modelId, messages=[message], **args)
+        for attempt in range(2):
+            remaining = deadline - time.monotonic() - REQUEST_OVERHEAD_SECONDS
+            if remaining < 1:
+                raise SummaryDeadlineError("Not enough time left for summary generation.")
+            read_timeout = min(timeout_seconds, math.ceil(remaining))
+            client = (
+                bedrock if read_timeout == PRIMARY_TIMEOUT_SECONDS else bedrock_client(read_timeout)
+            )
+            try:
+                response = client.converse(modelId=modelId, messages=[message], **args)
+                if time.monotonic() > deadline:
+                    raise SummaryDeadlineError(
+                        "Summary response arrived after the generation deadline."
+                    )
+                break
+            except ClientError as error:
+                code = error.response.get("Error", {}).get("Code")
+                if attempt or code not in ("ThrottlingException", "TooManyRequestsException"):
+                    raise
+                if deadline - time.monotonic() <= REQUEST_OVERHEAD_SECONDS + 2:
+                    raise SummaryDeadlineError(
+                        "No time left to retry a throttled request."
+                    ) from error
+                time.sleep(1)
     except Exception:
         print(f"Bedrock converse for {modelId} failed after {time.monotonic() - started:.1f}s")
         raise
@@ -303,35 +340,34 @@ def _converse(modelId, prompt_data):
     return generated_text
 
 
-def call_bedrock(prompt_data):
-    # boto3's adaptive retry (see the bedrock client config below) already
-    # exhausts its own retry budget for transient/throttling errors before
-    # raising — so an exception reaching here is a harder failure (model
-    # unavailable, access denied, validation error, region outage). One
-    # retry against a different model/provider covers exactly that case
-    # without masking a genuinely broken prompt (which would fail on the
-    # fallback too, and correctly still surface as an error).
+def call_bedrock(prompt_data, deadline=None):
+    """Try the primary, then fallback once, without replaying ambiguous failures."""
+    deadline = deadline if deadline is not None else generation_deadline()
+    has_fallback = BEDROCK_FALLBACK_MODEL_ID and BEDROCK_FALLBACK_MODEL_ID != BEDROCK_MODEL_ID
+    fallback_reserve = FALLBACK_TIMEOUT_SECONDS + REQUEST_OVERHEAD_SECONDS if has_fallback else 0
     try:
-        return _converse(BEDROCK_MODEL_ID, prompt_data)
+        return _converse(BEDROCK_MODEL_ID, prompt_data, deadline - fallback_reserve)
     except SummaryOutputLimitError:
         # Capacity exhaustion is not an outage. Do not bill another model call
         # or silently substitute a different provider for the same long prompt.
         raise
     except Exception as primary_error:
-        if not BEDROCK_FALLBACK_MODEL_ID or BEDROCK_FALLBACK_MODEL_ID == BEDROCK_MODEL_ID:
+        if not has_fallback:
             raise
         print(
             f"Primary model '{BEDROCK_MODEL_ID}' failed ({primary_error}); "
             f"retrying with fallback model '{BEDROCK_FALLBACK_MODEL_ID}'"
         )
         try:
-            return _converse(BEDROCK_FALLBACK_MODEL_ID, prompt_data)
+            return _converse(
+                BEDROCK_FALLBACK_MODEL_ID, prompt_data, deadline, FALLBACK_TIMEOUT_SECONDS
+            )
         except Exception as fallback_error:
             print(f"Fallback model '{BEDROCK_FALLBACK_MODEL_ID}' also failed: {fallback_error}")
             raise
 
 
-def generate_summary(transcript, prompt_override, profile_id=None, language=None):
+def generate_summary(transcript, prompt_override, profile_id=None, language=None, deadline=None):
     # Priority: an explicit ad-hoc Prompt override (existing behavior, e.g.
     # debug/manual invocation) > a named summary profile > the stack's
     # Default+Custom template merge (today's only behavior, unchanged when
@@ -349,7 +385,7 @@ def generate_summary(transcript, prompt_override, profile_id=None, language=None
         prompt = prompt.replace("{transcript}", transcript)
         prompt = apply_language(prompt, language)
         print("Prompt:", prompt)
-        response = call_bedrock(prompt)
+        response = call_bedrock(prompt, deadline) if deadline is not None else call_bedrock(prompt)
         if not isinstance(response, str) or not response.strip():
             raise ValueError("The model returned an empty summary section.")
         print("API Response:", response)
@@ -439,6 +475,7 @@ def handler(event, context):
     print("Received event: ", json.dumps(event))
     callId = event["CallId"]
     try:
+        deadline = generation_deadline(context)
         transcript_json = get_transcripts(callId)
         transcript = transcript_json["transcript"]
         metadata = transcript_json["metadata"]
@@ -456,7 +493,7 @@ def handler(event, context):
         # Language comes exclusively from the prompt, never a saved override.
         summary_profile = event.get("SummaryProfile") or None
         summary_language = None
-        summary = generate_summary(transcript, prompt_override, summary_profile, summary_language)
+        summary = generate_summary(transcript, prompt_override, summary_profile, summary_language, deadline)
         if not prompt_override:
             # Archive normal profile/default runs, not ad-hoc debug prompts.
             write_to_s3(callId, metadata, transcript, summary)
