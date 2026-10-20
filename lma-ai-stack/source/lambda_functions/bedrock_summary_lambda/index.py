@@ -3,7 +3,7 @@
 # See the LICENSE file in the project root for full license information.
 
 #
-# Generates text-only, single-turn summaries through Amazon Bedrock Converse.
+# Generates text-only summaries through Bedrock InvokeModel (Kimi) or Converse.
 
 import json
 import logging
@@ -34,6 +34,7 @@ SUMMARY_MAX_TOKENS = int(os.getenv("SUMMARY_MAX_TOKENS", "4096"))
 # Kimi uses part of the output budget for reasoning. Keep this separate so
 # fallback/other providers are not sent a larger, potentially unsupported limit.
 KIMI_SUMMARY_MAX_TOKENS = int(os.getenv("KIMI_SUMMARY_MAX_TOKENS", "16384"))
+KIMI_SUMMARY_EFFORT = os.getenv("KIMI_SUMMARY_EFFORT", "medium").strip().lower()
 # Adaptive-thinking effort for Anthropic models: off | low | medium | high | max.
 SUMMARY_EFFORT = os.getenv("SUMMARY_EFFORT", "medium").strip().lower()
 S3_BUCKET_NAME = os.environ["S3_BUCKET_NAME"]
@@ -112,7 +113,7 @@ def get_templates_from_dynamodb(prompt_override):
     prompt_template_str = None
 
     if prompt_override is not None:
-        print("Prompt Template String override:", prompt_override)
+        print("Using ad-hoc prompt override")
         prompt_template_str = prompt_override
         try:
             prompt_templates = json.loads(prompt_template_str)
@@ -136,8 +137,6 @@ def get_templates_from_dynamodb(prompt_override):
 
             defaultPromptTemplates = defaultPromptTemplatesResponse["Item"]
             customPromptTemplates = customPromptTemplatesResponse["Item"]
-            print("Default Prompt Template:", defaultPromptTemplates)
-            print("Custom Template:", customPromptTemplates)
 
             # Custom, when it has any sections, is the complete set — the same
             # rule named profiles follow, and what the Transcript Summary page
@@ -151,10 +150,10 @@ def get_templates_from_dynamodb(prompt_override):
             }
             if customSections:
                 mergedPromptTemplates = customSections
-                print("Using custom templates as the complete set:", mergedPromptTemplates)
+                print("Using custom templates as the complete set")
             else:
                 mergedPromptTemplates = defaultPromptTemplates
-                print("No custom templates — using defaults:", mergedPromptTemplates)
+                print("No custom templates — using defaults")
 
             for k in sorted(mergedPromptTemplates):
                 if k != "LLMPromptTemplateId" and k != "*Information*":
@@ -185,7 +184,9 @@ def get_profile_templates_from_dynamodb(profile_id):
         )
         item = response.get("Item")
         if not item:
-            raise ValueError(f"Summary profile '{profile_id}' no longer exists. Choose another profile.")
+            raise ValueError(
+                f"Summary profile '{profile_id}' no longer exists. Choose another profile."
+            )
 
         templates = []
         for k in sorted(item):
@@ -195,7 +196,7 @@ def get_profile_templates_from_dynamodb(profile_id):
             if prompt and prompt != "NONE":
                 prompt = prompt.replace("<br>", "\n")
                 index = k.find("#")
-                k_stripped = k[index + 1:]
+                k_stripped = k[index + 1 :]
                 templates.append({k_stripped: prompt})
         if not templates:
             raise ValueError("The selected summary profile has no sections.")
@@ -230,10 +231,9 @@ def get_transcripts(callId):
         InvocationType="RequestResponse",
         Payload=json.dumps(payload),
     )
-    print("Lambda response:", response)
     transcript_data = response["Payload"].read().decode()
     transcript_json = json.loads(transcript_data)
-    print("Transcript JSON:", transcript_json)
+    print("Fetched transcript characters:", len(transcript_json.get("transcript", "")))
     return transcript_json
 
 
@@ -256,7 +256,8 @@ def build_inference_args(modelId):
     Verified live per provider on 2026-09-15:
       Anthropic: thinking.type=adaptive + output_config.effort, temperature must be 1
       OpenAI:    reasoning_effort (low|medium|high)
-      Nova 2:    reasoningConfig.type=enabled + maxReasoningEffort (low|medium|high), temperature must be 0
+      Nova 2:    reasoningConfig.type=enabled + maxReasoningEffort (low|medium|high),
+                 temperature must be 0
     """
     inference_config = {
         "maxTokens": KIMI_SUMMARY_MAX_TOKENS if "moonshotai.kimi" in modelId else SUMMARY_MAX_TOKENS
@@ -276,22 +277,119 @@ def build_inference_args(modelId):
             "output_config": {"effort": effort},
         }
     elif "openai" in modelId:
-        args["additionalModelRequestFields"] = {"reasoning_effort": "high" if effort == "max" else effort}
+        args["additionalModelRequestFields"] = {
+            "reasoning_effort": "high" if effort == "max" else effort
+        }
     elif "nova-2" in modelId:
         args["additionalModelRequestFields"] = {
-            "reasoningConfig": {"type": "enabled", "maxReasoningEffort": "high" if effort == "max" else effort}
+            "reasoningConfig": {
+                "type": "enabled",
+                "maxReasoningEffort": "high" if effort == "max" else effort,
+            }
         }
-    # Other models (including Kimi K3): use plain single-turn Converse args,
-    # without Claude/OpenAI-specific reasoning fields or prior reasoning blocks.
+    # Kimi K3 bypasses Converse entirely so its native effort field is honored.
+    # Other providers receive only their own supported optional settings.
     return args
 
 
-def _converse(modelId, prompt_data, deadline=None, timeout_seconds=PRIMARY_TIMEOUT_SECONDS):
+def build_kimi_request(prompt_data):
+    """Use the native API's validated effort field, never an implicit max default."""
+    if KIMI_SUMMARY_EFFORT not in {"none", "low", "medium", "high", "xhigh", "max"}:
+        raise ValueError("Unsupported Kimi summary reasoning effort.")
+    return {
+        "messages": [{"role": "user", "content": prompt_data}],
+        "max_tokens": KIMI_SUMMARY_MAX_TOKENS,
+        "reasoning_effort": KIMI_SUMMARY_EFFORT,
+    }
+
+
+def invoke_kimi(client, model_id, request):
+    """Normalize a native Chat Completion without exposing its reasoning content."""
+    response = client.invoke_model(
+        modelId=model_id,
+        body=json.dumps(request),
+        contentType="application/json",
+        accept="application/json",
+    )
+    body = response["body"]
+    try:
+        result = json.loads(body.read())
+    finally:
+        body.close()
+    choice = result["choices"][0]
+    message = choice.get("message") or {}
+    text = message.get("content")
+    usage = result.get("usage") or {}
+    completion_details = usage.get("completion_tokens_details") or {}
+    prompt_details = usage.get("prompt_tokens_details") or {}
+    finish_reason = choice.get("finish_reason")
+    stop_reason = {
+        "stop": "end_turn",
+        "length": "max_tokens",
+        "model_context_window_exceeded": "model_context_window_exceeded",
+    }.get(finish_reason, "unexpected_finish")
+    # Unknown counts remain null; character lengths are not token estimates.
+    return {
+        "output": {"message": {"content": [{"text": text}] if isinstance(text, str) else []}},
+        "stopReason": stop_reason,
+        "usage": {
+            "inputTokens": usage.get("prompt_tokens"),
+            "outputTokens": usage.get("completion_tokens"),
+            "totalTokens": usage.get("total_tokens"),
+            "reasoningTokens": completion_details.get("reasoning_tokens"),
+            "cacheReadInputTokens": prompt_details.get("cached_tokens"),
+            "cacheWriteInputTokens": prompt_details.get("cache_write_tokens"),
+        },
+        "summaryTextCharacters": len(text) if isinstance(text, str) else 0,
+    }
+
+
+def log_usage(model_id, api, response):
+    """Log only whitelisted usage metadata, never model text or reasoning."""
+    usage = response.get("usage") or {}
+    counts = {
+        key: usage.get(key)
+        for key in (
+            "inputTokens",
+            "outputTokens",
+            "totalTokens",
+            "reasoningTokens",
+            "cacheReadInputTokens",
+            "cacheWriteInputTokens",
+        )
+    }
+    # Providers need not report reasoning separately. Do not invent that split.
+    output, reasoning = counts["outputTokens"], counts["reasoningTokens"]
+    counts["nonReasoningOutputTokens"] = (
+        output - reasoning
+        if type(output) is int and type(reasoning) is int and 0 <= reasoning <= output
+        else None
+    )
+    print(
+        "Bedrock usage:",
+        json.dumps(
+            {
+                "modelId": model_id,
+                "api": api,
+                "stopReason": response.get("stopReason"),
+                "summaryTextCharacters": response.get("summaryTextCharacters"),
+                **counts,
+            }
+        ),
+    )
+
+
+def _generate_section(modelId, prompt_data, deadline=None, timeout_seconds=PRIMARY_TIMEOUT_SECONDS):
     """One generation attempt; one extra request only for explicit throttling."""
-    print("Bedrock request - ModelId", modelId)
+    native_kimi = "moonshotai.kimi-k3" in modelId
+    api = "InvokeModel" if native_kimi else "Converse"
+    print("Bedrock request - ModelId", modelId, "API", api)
     message = {"role": "user", "content": [{"text": prompt_data}]}
-    args = build_inference_args(modelId)
-    print("Bedrock inference args:", json.dumps(args))
+    args = build_kimi_request(prompt_data) if native_kimi else build_inference_args(modelId)
+    print(
+        "Bedrock inference settings:",
+        json.dumps({k: v for k, v in args.items() if k != "messages"}),
+    )
     started = time.monotonic()
     deadline = min(
         deadline if deadline is not None else float("inf"),
@@ -307,7 +405,11 @@ def _converse(modelId, prompt_data, deadline=None, timeout_seconds=PRIMARY_TIMEO
                 bedrock if read_timeout == PRIMARY_TIMEOUT_SECONDS else bedrock_client(read_timeout)
             )
             try:
-                response = client.converse(modelId=modelId, messages=[message], **args)
+                response = (
+                    invoke_kimi(client, modelId, args)
+                    if native_kimi
+                    else client.converse(modelId=modelId, messages=[message], **args)
+                )
                 if time.monotonic() > deadline:
                     raise SummaryDeadlineError(
                         "Summary response arrived after the generation deadline."
@@ -323,20 +425,19 @@ def _converse(modelId, prompt_data, deadline=None, timeout_seconds=PRIMARY_TIMEO
                     ) from error
                 time.sleep(1)
     except Exception:
-        print(f"Bedrock converse for {modelId} failed after {time.monotonic() - started:.1f}s")
+        print(f"Bedrock {api} for {modelId} failed after {time.monotonic() - started:.1f}s")
         raise
-    print(f"Bedrock converse for {modelId} took {time.monotonic() - started:.1f}s")
-    usage = response.get("usage", {})
-    print(
-        f"Bedrock usage - input: {usage.get('inputTokens')} output: {usage.get('outputTokens')} "
-        f"stopReason: {response.get('stopReason')}"
-    )
+    print(f"Bedrock {api} for {modelId} took {time.monotonic() - started:.1f}s")
+    log_usage(modelId, api, response)
     if response.get("stopReason") in ("max_tokens", "model_context_window_exceeded"):
         # Check before extracting text: even a plausible, nonempty result is
         # incomplete, and must never replace a saved summary or KB export.
         raise SummaryOutputLimitError("Summary reached the model output/context limit.")
+    if native_kimi and response["stopReason"] != "end_turn":
+        raise ValueError("Kimi did not finish a summary normally.")
     generated_text = get_generated_text(response)
-    print("Bedrock response: ", json.dumps(generated_text))
+    if not isinstance(generated_text, str) or not generated_text.strip():
+        raise ValueError("The model returned an empty summary section.")
     return generated_text
 
 
@@ -346,24 +447,23 @@ def call_bedrock(prompt_data, deadline=None):
     has_fallback = BEDROCK_FALLBACK_MODEL_ID and BEDROCK_FALLBACK_MODEL_ID != BEDROCK_MODEL_ID
     fallback_reserve = FALLBACK_TIMEOUT_SECONDS + REQUEST_OVERHEAD_SECONDS if has_fallback else 0
     try:
-        return _converse(BEDROCK_MODEL_ID, prompt_data, deadline - fallback_reserve)
-    except SummaryOutputLimitError:
-        # Capacity exhaustion is not an outage. Do not bill another model call
-        # or silently substitute a different provider for the same long prompt.
-        raise
+        return _generate_section(BEDROCK_MODEL_ID, prompt_data, deadline - fallback_reserve)
     except Exception as primary_error:
         if not has_fallback:
             raise
         print(
-            f"Primary model '{BEDROCK_MODEL_ID}' failed ({primary_error}); "
+            f"Primary model '{BEDROCK_MODEL_ID}' failed ({type(primary_error).__name__}); "
             f"retrying with fallback model '{BEDROCK_FALLBACK_MODEL_ID}'"
         )
         try:
-            return _converse(
+            return _generate_section(
                 BEDROCK_FALLBACK_MODEL_ID, prompt_data, deadline, FALLBACK_TIMEOUT_SECONDS
             )
         except Exception as fallback_error:
-            print(f"Fallback model '{BEDROCK_FALLBACK_MODEL_ID}' also failed: {fallback_error}")
+            print(
+                f"Fallback model '{BEDROCK_FALLBACK_MODEL_ID}' also failed: "
+                f"{type(fallback_error).__name__}"
+            )
             raise
 
 
@@ -384,11 +484,11 @@ def generate_summary(transcript, prompt_override, profile_id=None, language=None
         prompt = item[key]
         prompt = prompt.replace("{transcript}", transcript)
         prompt = apply_language(prompt, language)
-        print("Prompt:", prompt)
+        print("Summary section:", key, "prompt characters:", len(prompt))
         response = call_bedrock(prompt, deadline) if deadline is not None else call_bedrock(prompt)
         if not isinstance(response, str) or not response.strip():
             raise ValueError("The model returned an empty summary section.")
-        print("API Response:", response)
+        print("Summary section characters:", len(response))
         result[key] = response
     if len(result.keys()) == 1:
         # there's only one summary in here, so let's return just that.
@@ -462,7 +562,7 @@ def write_to_s3(callId, metadata, transcript, summary):
     summary_file_key = f"{S3_PREFIX}{filename}-SUMMARY.txt"
     summary = format_summary(summary, metadata)
     kbMetadata = getKBMetadata(metadata)
-    print(f"KB Summary: {summary}")
+    print("KB summary characters:", len(summary))
     print(f"KB Metadata: {kbMetadata}")
     s3.put_object(Bucket=S3_BUCKET_NAME, Key=summary_file_key, Body=summary)
     print(f"Wrote summary to S3: s3://{S3_BUCKET_NAME}/{summary_file_key}")
@@ -472,7 +572,12 @@ def write_to_s3(callId, metadata, transcript, summary):
 
 
 def handler(event, context):
-    print("Received event: ", json.dumps(event))
+    print(
+        "Received summary request:",
+        json.dumps(
+            {key: event.get(key) for key in ("CallId", "SummaryProfile", "SummaryRequestedAt")}
+        ),
+    )
     callId = event["CallId"]
     try:
         deadline = generation_deadline(context)
@@ -493,7 +598,9 @@ def handler(event, context):
         # Language comes exclusively from the prompt, never a saved override.
         summary_profile = event.get("SummaryProfile") or None
         summary_language = None
-        summary = generate_summary(transcript, prompt_override, summary_profile, summary_language, deadline)
+        summary = generate_summary(
+            transcript, prompt_override, summary_profile, summary_language, deadline
+        )
         if not prompt_override:
             # Archive normal profile/default runs, not ad-hoc debug prompts.
             write_to_s3(callId, metadata, transcript, summary)
@@ -509,8 +616,11 @@ def handler(event, context):
     except Exception as e:
         print(e)
         # Never overwrite a previous summary with an error placeholder.
-        return {"summary": None, "error": "Summary generation failed. The previous summary was kept."}
-    print("Returning: ", json.dumps({"summary": summary}))
+        return {
+            "summary": None,
+            "error": "Summary generation failed. The previous summary was kept.",
+        }
+    print("Returning summary characters:", len(summary))
     return {"summary": summary}
 
 

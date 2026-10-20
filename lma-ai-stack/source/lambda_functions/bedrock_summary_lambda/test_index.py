@@ -177,7 +177,7 @@ def prompts_sent(bedrock):
 
 
 @pytest.mark.parametrize("stop_reason", ["max_tokens", "model_context_window_exceeded"])
-def test_truncated_output_is_not_exported_or_retried_with_another_model(monkeypatch, stop_reason):
+def test_both_models_truncated_output_is_not_exported_or_retried_again(monkeypatch, stop_reason):
     response = {
         "output": {"message": {"content": [{"text": "# Summary\nUnfinished heading"}]}},
         "stopReason": stop_reason,
@@ -192,7 +192,8 @@ def test_truncated_output_is_not_exported_or_retried_with_another_model(monkeypa
     assert result["errorCode"] == "OUTPUT_LIMIT"
     assert "more concise profile" in result["error"]
     assert "previous summary was kept" in result["error"]
-    assert len(fake.requests) == 1
+    assert len(fake.requests) == 2
+    assert [request["modelId"] for request in fake.requests] == [MODEL_ID, "another-model"]
     assert s3.objects == {}
 
 
@@ -226,12 +227,234 @@ def test_kimi_budget_does_not_change_other_models_and_can_be_configured(monkeypa
     assert index.build_inference_args("global.moonshotai.kimi-k3")["inferenceConfig"]["maxTokens"] == 8192
 
 
+KIMI_MODEL = "global.moonshotai.kimi-k3"
+
+
+def native_response(
+    text="complete summary", finish="stop", usage=None, reasoning="private reasoning"
+):
+    return {
+        "body": io.BytesIO(
+            json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {"content": text, "reasoning_content": reasoning},
+                            "finish_reason": finish,
+                        }
+                    ],
+                    "usage": usage,
+                }
+            ).encode()
+        )
+    }
+
+
+def native_setup(monkeypatch):
+    client = Mock()
+    install(monkeypatch, bedrock=client)
+    monkeypatch.setattr(index, "BEDROCK_MODEL_ID", KIMI_MODEL)
+    monkeypatch.setattr(index, "BEDROCK_FALLBACK_MODEL_ID", "fallback")
+    monkeypatch.setattr(index, "KIMI_SUMMARY_EFFORT", "medium")
+    client.converse.return_value = {
+        "output": {"message": {"content": [{"text": "fallback summary"}]}},
+        "stopReason": "end_turn",
+    }
+    return client
+
+
+@pytest.mark.parametrize("model", [KIMI_MODEL, "us.moonshotai.kimi-k3", "in.moonshotai.kimi-k3"])
+def test_native_kimi_sends_complete_transcript_and_explicit_medium(monkeypatch, model):
+    client = native_setup(monkeypatch)
+    monkeypatch.setattr(index, "BEDROCK_MODEL_ID", model)
+    client.invoke_model.return_value = native_response()
+    transcript = "Alice: decision approved. " * 4000
+    monkeypatch.setattr(index, "lambda_client", FakeLambdaClient(transcript=transcript))
+    result = index.handler({"CallId": CALL_ID, "Prompt": "Summarize: {transcript}"}, None)
+    assert result == {"summary": "complete summary"}
+    request = client.invoke_model.call_args.kwargs
+    assert request["modelId"] == model
+    assert request["contentType"] == request["accept"] == "application/json"
+    assert json.loads(request["body"]) == {
+        "messages": [{"role": "user", "content": "Summarize: " + transcript}],
+        "max_tokens": 16384,
+        "reasoning_effort": "medium",
+    }
+    # Also prove long inputs aren't clipped by the native adapter itself.
+    assert index.build_kimi_request(transcript)["messages"][0]["content"] == transcript
+    client.invoke_model.assert_called_once()
+    client.converse.assert_not_called()
+
+
+@pytest.mark.parametrize("effort", ["none", "low", "medium", "high", "xhigh", "max"])
+def test_native_kimi_effort_is_explicit_and_validated(monkeypatch, effort):
+    monkeypatch.setattr(index, "KIMI_SUMMARY_EFFORT", effort)
+    assert index.build_kimi_request("p")["reasoning_effort"] == effort
+
+
+@pytest.mark.parametrize("effort", ["", "minimal", "off", "typo"])
+def test_invalid_kimi_effort_never_silently_uses_provider_default(monkeypatch, effort):
+    client = native_setup(monkeypatch)
+    monkeypatch.setattr(index, "KIMI_SUMMARY_EFFORT", effort)
+    assert index.call_bedrock("p") == "fallback summary"
+    client.invoke_model.assert_not_called()
+    client.converse.assert_called_once()
+
+
+@pytest.mark.parametrize("finish", ["length", "model_context_window_exceeded"])
+def test_native_kimi_output_limit_uses_fallback_once_with_same_prompt(monkeypatch, finish):
+    client = native_setup(monkeypatch)
+    client.invoke_model.return_value = native_response("partial", finish)
+    assert index.call_bedrock("original prompt") == "fallback summary"
+    client.invoke_model.assert_called_once()
+    client.converse.assert_called_once_with(
+        modelId="fallback",
+        messages=[{"role": "user", "content": [{"text": "original prompt"}]}],
+        inferenceConfig={"maxTokens": 4096, "temperature": 0},
+    )
+
+
+def test_native_both_models_exhaust_budget_preserves_old_summary_and_no_exports(monkeypatch):
+    client = native_setup(monkeypatch)
+    client.invoke_model.return_value = native_response("partial", "length")
+    client.converse.return_value["stopReason"] = "max_tokens"
+    export = Mock()
+    monkeypatch.setattr(index, "write_to_s3", export)
+    result = index.handler({"CallId": CALL_ID, "Prompt": "{transcript}"}, None)
+    assert result["summary"] is None
+    assert result["errorCode"] == "OUTPUT_LIMIT"
+    assert "previous summary was kept" in result["error"]
+    client.invoke_model.assert_called_once()
+    client.converse.assert_called_once()
+    export.assert_not_called()
+
+
+def test_native_limit_exports_only_complete_fallback_summary(monkeypatch):
+    client = native_setup(monkeypatch)
+    client.invoke_model.return_value = native_response("partial primary", "length")
+    monkeypatch.setattr(
+        index,
+        "get_profile_templates_from_dynamodb",
+        lambda _profile: [{"Summary": "Summarize {transcript}"}],
+    )
+    export = Mock()
+    monkeypatch.setattr(index, "write_to_s3", export)
+    assert index.handler({"CallId": CALL_ID, "SummaryProfile": "summary-bs"}, None) == {
+        "summary": "fallback summary",
+    }
+    assert export.call_args.args == (CALL_ID, METADATA, TRANSCRIPT, "fallback summary")
+    client.invoke_model.assert_called_once()
+    client.converse.assert_called_once()
+
+
+@pytest.mark.parametrize("fallback", ["", KIMI_MODEL])
+def test_native_limit_without_distinct_fallback_is_one_call(monkeypatch, fallback):
+    client = native_setup(monkeypatch)
+    monkeypatch.setattr(index, "BEDROCK_FALLBACK_MODEL_ID", fallback)
+    client.invoke_model.return_value = native_response(None, "length")
+    with pytest.raises(index.SummaryOutputLimitError):
+        index.call_bedrock("p")
+    client.invoke_model.assert_called_once()
+    client.converse.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "text,finish",
+    [
+        (None, "stop"),
+        ("", "stop"),
+        ("  ", "stop"),
+        ("partial", "content_filter"),
+        ("partial", "tool_calls"),
+        ("partial", None),
+    ],
+)
+def test_native_empty_reasoning_only_or_abnormal_output_uses_fallback(monkeypatch, text, finish):
+    client = native_setup(monkeypatch)
+    client.invoke_model.return_value = native_response(text, finish)
+    assert index.call_bedrock("p") == "fallback summary"
+    client.invoke_model.assert_called_once()
+    client.converse.assert_called_once()
+
+
+def test_native_usage_logs_reasoning_cache_and_text_counts_without_content(monkeypatch, capsys):
+    client = native_setup(monkeypatch)
+    response = native_response(
+        "sensitive summary",
+        usage={
+            "prompt_tokens": 7,
+            "completion_tokens": 16384,
+            "total_tokens": 16391,
+            "completion_tokens_details": {"reasoning_tokens": 15000},
+            "prompt_tokens_details": {"cached_tokens": 11000, "cache_write_tokens": 0},
+            "untrusted_field": "sensitive provider content",
+        },
+    )
+    client.invoke_model.return_value = response
+    assert index.call_bedrock("sensitive transcript") == "sensitive summary"
+    assert response["body"].closed
+    logs = capsys.readouterr().out
+    usage = json.loads(
+        next(
+            line.split("Bedrock usage: ", 1)[1]
+            for line in logs.splitlines()
+            if line.startswith("Bedrock usage: ")
+        )
+    )
+    assert usage["reasoningTokens"] == 15000
+    assert usage["nonReasoningOutputTokens"] == 1384
+    assert usage["cacheReadInputTokens"] == 11000
+    assert usage["cacheWriteInputTokens"] == 0
+    assert usage["summaryTextCharacters"] == len("sensitive summary")
+    assert usage["inputTokens"] == 7
+    assert usage["api"] == "InvokeModel"
+    for secret in (
+        "sensitive summary",
+        "private reasoning",
+        "sensitive transcript",
+        "sensitive provider content",
+    ):
+        assert secret not in logs
+
+
+def test_native_missing_usage_does_not_invent_reasoning_or_cache_counts(monkeypatch, capsys):
+    client = native_setup(monkeypatch)
+    client.invoke_model.return_value = native_response()
+    index.call_bedrock("p")
+    logs = capsys.readouterr().out
+    usage = json.loads(
+        next(
+            line.split("Bedrock usage: ", 1)[1]
+            for line in logs.splitlines()
+            if line.startswith("Bedrock usage: ")
+        )
+    )
+    for key in (
+        "reasoningTokens",
+        "nonReasoningOutputTokens",
+        "cacheReadInputTokens",
+        "outputTokens",
+    ):
+        assert usage[key] is None
+
+
+def test_native_body_is_closed_even_if_response_is_malformed(monkeypatch):
+    client = native_setup(monkeypatch)
+    body = io.BytesIO(b"not json")
+    client.invoke_model.return_value = {"body": body}
+    assert index.call_bedrock("p") == "fallback summary"
+    assert body.closed
+    client.invoke_model.assert_called_once()
+
+
 def budget_setup(monkeypatch):
     """A deterministic clock and recorder; never sleep or call Bedrock."""
     fake, s3 = install(monkeypatch)
     clock, timeouts = [1000.0], []
     monkeypatch.setattr(index.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(index.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    monkeypatch.setattr(
+        index.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
     monkeypatch.setattr(index, "BEDROCK_FALLBACK_MODEL_ID", "fallback")
 
     def client(timeout):
@@ -250,14 +473,77 @@ def test_primary_gets_300_seconds_then_fallback_once(monkeypatch):
             clock[0] += 300
             raise ReadTimeoutError(endpoint_url="https://example.invalid")
         clock[0] += 42
-        return {"output": {"message": {"content": [{"text": "complete fallback summary"}]}},
-                "stopReason": "end_turn"}
+        return {
+            "output": {"message": {"content": [{"text": "complete fallback summary"}]}},
+            "stopReason": "end_turn",
+        }
 
     fake.converse = Mock(side_effect=converse)
     assert index.call_bedrock("prompt", deadline=1540) == "complete fallback summary"
-    assert [call.kwargs["modelId"] for call in fake.converse.call_args_list] == [MODEL_ID, "fallback"]
+    assert [call.kwargs["modelId"] for call in fake.converse.call_args_list] == [
+        MODEL_ID,
+        "fallback",
+    ]
     assert timeouts == [120]
     assert clock[0] == 1342
+
+
+def test_native_timeout_does_not_retry_kimi_and_keeps_fallback_budget(monkeypatch):
+    _, _, clock, timeouts = budget_setup(monkeypatch)
+    client = Mock()
+    monkeypatch.setattr(index, "BEDROCK_MODEL_ID", KIMI_MODEL)
+    monkeypatch.setattr(index, "bedrock", client)
+    monkeypatch.setattr(
+        index, "bedrock_client", lambda timeout: (timeouts.append(timeout), client)[1]
+    )
+
+    def timeout(**_kwargs):
+        clock[0] += 300
+        raise ReadTimeoutError(endpoint_url="https://example.invalid")
+
+    client.invoke_model.side_effect = timeout
+    client.converse.return_value = {
+        "output": {"message": {"content": [{"text": "fallback"}]}},
+        "stopReason": "end_turn",
+    }
+    assert index.call_bedrock("p", deadline=1540) == "fallback"
+    client.invoke_model.assert_called_once()
+    client.converse.assert_called_once()
+    assert timeouts == [120]
+
+
+def test_native_output_limit_with_no_remaining_budget_cannot_start_fallback(monkeypatch):
+    _, _, clock, _ = budget_setup(monkeypatch)
+    client = Mock()
+    monkeypatch.setattr(index, "BEDROCK_MODEL_ID", KIMI_MODEL)
+    monkeypatch.setattr(index, "bedrock", client)
+
+    def late_limit(**_kwargs):
+        clock[0] = 1540
+        return native_response("partial", "length")
+
+    client.invoke_model.side_effect = late_limit
+    with pytest.raises(index.SummaryDeadlineError):
+        index.call_bedrock("p", deadline=1540)
+    client.invoke_model.assert_called_once()
+    client.converse.assert_not_called()
+
+
+def test_native_throttling_retry_is_once_and_uses_same_deadline(monkeypatch):
+    _, _, clock, timeouts = budget_setup(monkeypatch)
+    client = Mock()
+    monkeypatch.setattr(index, "BEDROCK_MODEL_ID", KIMI_MODEL)
+    monkeypatch.setattr(index, "bedrock", client)
+    monkeypatch.setattr(
+        index, "bedrock_client", lambda timeout: (timeouts.append(timeout), client)[1]
+    )
+    throttle = ClientError({"Error": {"Code": "ThrottlingException"}}, "InvokeModel")
+    client.invoke_model.side_effect = [throttle, native_response()]
+    assert index.call_bedrock("p", deadline=1540) == "complete summary"
+    assert client.invoke_model.call_count == 2
+    client.converse.assert_not_called()
+    assert timeouts == [299]
+    assert clock[0] == 1001
 
 
 def test_both_model_timeouts_fail_without_export_or_model_retries(monkeypatch):
@@ -293,11 +579,16 @@ def test_only_explicit_throttling_is_retried_and_only_once(monkeypatch):
 
 def test_repeated_throttling_is_finite_for_both_models(monkeypatch):
     fake, _, _, _ = budget_setup(monkeypatch)
-    fake.converse = Mock(side_effect=ClientError({"Error": {"Code": "ThrottlingException"}}, "Converse"))
+    fake.converse = Mock(
+        side_effect=ClientError({"Error": {"Code": "ThrottlingException"}}, "Converse")
+    )
     with pytest.raises(ClientError):
         index.call_bedrock("prompt")
     assert [call.kwargs["modelId"] for call in fake.converse.call_args_list] == [
-        MODEL_ID, MODEL_ID, "fallback", "fallback",
+        MODEL_ID,
+        MODEL_ID,
+        "fallback",
+        "fallback",
     ]
 
 
