@@ -2857,7 +2857,7 @@ Resources:
 
   SSOCOGNITOSTACK:
     Condition: ShouldProvisionSsoPool
-    DeletionPolicy: Retain
+    DeletionPolicy: !If [ShouldRetainDataOnDelete, Retain, Delete]
     UpdateReplacePolicy: Retain
     Type: AWS::CloudFormation::Stack
     DependsOn:
@@ -3180,6 +3180,7 @@ Resources:
         CustomerManagedEncryptionKeyArn: !GetAtt CustomerManagedEncryptionKey.Arn
         LoggingBucketName: !Ref LoggingBucket
         PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
+        EnableDataRetentionOnDelete: !Ref EnableDataRetentionOnDelete
         VPC: !If
           - ShouldCreateVPC
           - !GetAtt VPCSTACK.Outputs.VPC
@@ -3307,6 +3308,7 @@ Resources:
         VPMaxInstances: !Ref VPMaxInstances
         CloudWatchLogsExpirationInDays: !Ref CloudWatchLogsExpirationInDays
         PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
+        EnableDataRetentionOnDelete: !Ref EnableDataRetentionOnDelete
         LogLevel: !Ref LogLevel
 
   BROWSEREXTENSIONSTACK:
