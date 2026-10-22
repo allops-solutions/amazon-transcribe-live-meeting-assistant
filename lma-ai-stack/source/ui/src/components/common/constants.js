@@ -38,7 +38,6 @@ export const LANGUAGE_CODES = [
   { value: 'ca', label: 'Catalan' },
   { value: 'zh', label: 'Chinese (Simplified)' },
   { value: 'zh-TW', label: 'Chinese (Traditional)' },
-  { value: 'hr', label: 'Croatian' },
   { value: 'cs', label: 'Czech' },
   { value: 'da', label: 'Danish' },
   { value: 'fa-AF', label: 'Dari' },

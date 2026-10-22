@@ -12,7 +12,6 @@ export const DEFAULT_TRANSCRIBE_LANGUAGE_MODE = 'identify-multiple-languages';
 export const TRANSCRIBE_LANGUAGE_MODE_OPTIONS = [
   { value: 'en-US', label: 'English only', description: 'Best accuracy for English-speaking calls.' },
   { value: 'bs-BA', label: 'Bosnian only', description: 'Best accuracy for Bosnian-heavy calls.' },
-  { value: 'hr-HR', label: 'Croatian only', description: 'Best accuracy for Croatian-heavy calls.' },
   {
     value: 'identify-language',
     label: 'Auto-detect (locks in early)',

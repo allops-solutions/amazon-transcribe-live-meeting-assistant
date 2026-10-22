@@ -470,7 +470,7 @@ Resources:
 
   AdminUser:
     Type: AWS::Cognito::UserPoolUser
-    DeletionPolicy: Retain
+    DeletionPolicy: !If [ShouldRetainDataOnDelete, Retain, Delete]
     UpdateReplacePolicy: Retain
     Condition: ShouldEnablePasswordSignIn
     DependsOn: CognitoUserPoolEmailDomainVerifyPermissionReady
@@ -503,7 +503,7 @@ Resources:
 
   AdminUserToGroupAttachment:
     Type: AWS::Cognito::UserPoolUserToGroupAttachment
-    DeletionPolicy: Retain
+    DeletionPolicy: !If [ShouldRetainDataOnDelete, Retain, Delete]
     UpdateReplacePolicy: Retain
     Condition: ShouldEnablePasswordSignIn
     Properties:

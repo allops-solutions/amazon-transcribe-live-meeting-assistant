@@ -23,10 +23,6 @@ VALID_LANGUAGE_MODES = {
     "bosnian only": "bs-BA",
     "bs-ba": "bs-BA",
     "bs": "bs-BA",
-    "croatian": "hr-HR",
-    "croatian only": "hr-HR",
-    "hr-hr": "hr-HR",
-    "hr": "hr-HR",
     "auto-detect": "identify-language",
     "auto-detect (locks in early)": "identify-language",
     "identify-language": "identify-language",
@@ -45,7 +41,7 @@ def _resolve_language_mode(meeting_language: Optional[str]) -> Optional[str]:
     if normalized not in VALID_LANGUAGE_MODES:
         raise ValueError(
             "Invalid meeting_language. Must be one of: English only, Bosnian only, "
-            "Croatian only, Auto-detect (locks in early), Auto-detect (mixed languages)"
+            "Auto-detect (locks in early), Auto-detect (mixed languages)"
         )
     return VALID_LANGUAGE_MODES[normalized]
 

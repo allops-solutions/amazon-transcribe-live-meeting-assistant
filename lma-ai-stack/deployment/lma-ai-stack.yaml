@@ -5554,7 +5554,7 @@ Resources:
   # against (a $16-20/month ALB), so not worth the same conditional wiring.
   VncHmacSecret:
     Type: AWS::SecretsManager::Secret
-    DeletionPolicy: Retain
+    DeletionPolicy: !If [ShouldRetainDataOnDelete, Retain, Delete]
     UpdateReplacePolicy: Retain
     Properties:
       Name: !If [HasPermissionsBoundary, !Sub '${AWS::StackName}-VncHmac', !Ref 'AWS::NoValue']
@@ -5787,7 +5787,7 @@ Resources:
   CalendarScheduleClaimsTable:
     Type: AWS::DynamoDB::Table
     Condition: ShouldEnableMCPServer
-    DeletionPolicy: Retain
+    DeletionPolicy: !If [ShouldRetainDataOnDelete, Retain, Delete]
     UpdateReplacePolicy: Retain
     Properties:
       BillingMode: PAY_PER_REQUEST
@@ -7647,7 +7647,7 @@ Resources:
     Type: AWS::Cognito::UserPoolClient
     Condition: ShouldEnableMCPServer
     DependsOn: CognitoWebCallbackReady
-    DeletionPolicy: Retain
+    DeletionPolicy: !If [ShouldRetainDataOnDelete, Retain, Delete]
     UpdateReplacePolicy: Retain
     Properties:
       ClientName: "LMA-MCPServer-ExternalApp-Client"

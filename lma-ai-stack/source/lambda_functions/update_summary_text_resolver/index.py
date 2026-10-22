@@ -64,11 +64,11 @@ def write_to_s3(call_id: str, call_item: Dict[str, Any], summary_text: str) -> N
     metadata = {
         "metadataAttributes": {
             "CallId": call_id,
-            "CreatedAt": call_item.get("CreatedAt", {}).get("S", ""),
+            "CreatedAt": call_item.get("CreatedAt", ""),
             "UpdatedAt": datetime.now(timezone.utc).isoformat(),
-            "Owner": call_item.get("Owner", {}).get("S", ""),
+            "Owner": call_item.get("Owner", ""),
             "TotalConversationDurationMillis": int(
-                call_item.get("TotalConversationDurationMillis", {}).get("N", "0")
+                call_item.get("TotalConversationDurationMillis", 0)
             ),
         }
     }
@@ -100,13 +100,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - best-effort; the KDS write below is what the UI depends on
         logger.error("Could not write edited summary to S3 for %s: %s", call_id, exc)
 
-    expires_after = call_item.get("ExpiresAfter", {}).get("N")
+    expires_after = call_item.get("ExpiresAfter")
     message = {
         "CallId": call_id,
         "EventType": "ADD_SUMMARY",
         "ExpiresAfter": (
             int(expires_after)
-            if expires_after
+            if expires_after is not None
             else int(datetime.now(timezone.utc).timestamp()) + DEFAULT_TTL_SECONDS
         ),
         "CallSummaryText": call_summary_text,

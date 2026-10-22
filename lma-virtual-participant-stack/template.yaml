@@ -10,6 +10,14 @@ Parameters:
     Type: String
     Description: LMA Stack Name
 
+  EnableDataRetentionOnDelete:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Retain stack data and logs when the stack is deleted.
+
   StrandsLambdaArn:
     Type: String
     Default: ""
@@ -615,6 +623,7 @@ Conditions:
   # model ARN in that region too, or the client is pointed somewhere IAM denies.
   HasCustomNovaSonicRegion: !Not [!Equals [!Ref AmazonNovaSonicRegion, ""]]
   HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
+  ShouldRetainDataOnDelete: !Equals [!Ref EnableDataRetentionOnDelete, "true"]
   HasStrandsLambdaArn: !Not [!Equals [!Ref StrandsLambdaArn, ""]]
   HasAsrLauncher: !Not [!Equals [!Ref AsrLauncherFunctionArn, ""]]
   # Empty under MICROVM, where the AI stack creates no VNC load balancer and so
@@ -2552,7 +2561,7 @@ Resources:
   VirtualParticipantTaskDefContainerLogGroup:
     Type: AWS::Logs::LogGroup
     UpdateReplacePolicy: Retain
-    DeletionPolicy: Retain
+    DeletionPolicy: !If [ShouldRetainDataOnDelete, Retain, Delete]
     Properties:
       LogGroupName:
         Fn::Sub: /${AWS::StackName}/fargate/VirtualParticipant
@@ -2643,7 +2652,7 @@ Resources:
 
   SchedulerStateMachineLogGroup:
     Type: "AWS::Logs::LogGroup"
-    DeletionPolicy: Retain
+    DeletionPolicy: !If [ShouldRetainDataOnDelete, Retain, Delete]
     UpdateReplacePolicy: Retain
     Properties:
       RetentionInDays: 7

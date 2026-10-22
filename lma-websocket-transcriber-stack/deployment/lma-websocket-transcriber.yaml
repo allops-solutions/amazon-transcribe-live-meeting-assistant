@@ -34,6 +34,14 @@ Parameters:
     Description: >
       Cognito User Pool ID
 
+  EnableDataRetentionOnDelete:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Retain stack data and logs when the stack is deleted.
+
   S3BucketName:
     Type: String
     Description: >
@@ -511,6 +519,7 @@ Metadata:
 
 Conditions:
   HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
+  ShouldRetainDataOnDelete: !Equals [!Ref EnableDataRetentionOnDelete, "true"]
   ShouldEnableContentRedaction: !And
     - !Equals [!Ref IsContentRedactionEnabled, "true"]
     - !Or
@@ -1417,7 +1426,7 @@ Resources:
   TranscriberWebsocketTaskDefWebsocketContainerLogGroup:
     Type: AWS::Logs::LogGroup
     UpdateReplacePolicy: Retain
-    DeletionPolicy: Retain
+    DeletionPolicy: !If [ShouldRetainDataOnDelete, Retain, Delete]
     Properties:
       LogGroupName:
         Fn::Sub: /${AWS::StackName}/fargate/TranscriberWebsocket
