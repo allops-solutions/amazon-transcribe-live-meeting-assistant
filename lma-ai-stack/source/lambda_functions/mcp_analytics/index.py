@@ -355,11 +355,11 @@ MCP_TOOLS = [
                     "type": "string",
                     "description": (
                         "Optional transcription language mode: 'English only', 'Bosnian only', "
-                        "'Croatian only', 'Auto-detect (locks in early)', or 'Auto-detect (mixed "
-                        "languages)'. Omit for the stack default (auto-detect, mixed languages) — "
-                        "best for calls that mix languages within the same sentence only if you "
-                        "don't know the dominant language in advance; prefer 'English only', "
-                        "'Bosnian only', or 'Croatian only' when you do, for much better accuracy."
+                        "'Auto-detect (locks in early)', or 'Auto-detect (mixed languages)'. "
+                        "Omit for the stack default (auto-detect, mixed languages) — best for "
+                        "calls that mix languages within the same sentence only if you don't know "
+                        "the dominant language in advance; prefer 'English only' or 'Bosnian only' "
+                        "when you do, for much better accuracy."
                     ),
                 },
             },
@@ -487,11 +487,11 @@ MCP_TOOLS = [
                     "type": "string",
                     "description": (
                         "Optional transcription language mode: 'English only', 'Bosnian only', "
-                        "'Croatian only', 'Auto-detect (locks in early)', or 'Auto-detect (mixed "
-                        "languages)'. Omit for the stack default (auto-detect, mixed languages) — "
-                        "best for calls that mix languages within the same sentence only if you "
-                        "don't know the dominant language in advance; prefer 'English only', "
-                        "'Bosnian only', or 'Croatian only' when you do, for much better accuracy."
+                        "'Auto-detect (locks in early)', or 'Auto-detect (mixed languages)'. "
+                        "Omit for the stack default (auto-detect, mixed languages) — best for "
+                        "calls that mix languages within the same sentence only if you don't know "
+                        "the dominant language in advance; prefer 'English only' or 'Bosnian only' "
+                        "when you do, for much better accuracy."
                     ),
                 },
                 "useStoredZoomCredentials": {

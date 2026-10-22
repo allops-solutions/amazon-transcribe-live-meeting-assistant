@@ -21,7 +21,7 @@ from tools.user_helper import has_zoom_credentials, resolve_user_sub
 logger = logging.getLogger()
 
 # Natural-language aliases -> the TRANSCRIBE_LANGUAGE_CODE values scribe.ts
-# already understands. Kept in sync with the UI's five-option picker
+# already understands. Kept in sync with the UI's language-mode picker
 # (VirtualParticipantList.jsx) and schedule_meeting.py.
 VALID_LANGUAGE_MODES = {
     "english": "en-US",
@@ -32,10 +32,6 @@ VALID_LANGUAGE_MODES = {
     "bosnian only": "bs-BA",
     "bs-ba": "bs-BA",
     "bs": "bs-BA",
-    "croatian": "hr-HR",
-    "croatian only": "hr-HR",
-    "hr-hr": "hr-HR",
-    "hr": "hr-HR",
     "auto-detect": "identify-language",
     "auto-detect (locks in early)": "identify-language",
     "identify-language": "identify-language",
@@ -54,7 +50,7 @@ def _resolve_language_mode(meeting_language: Optional[str]) -> Optional[str]:
     if normalized not in VALID_LANGUAGE_MODES:
         raise ValueError(
             "Invalid meeting_language. Must be one of: English only, Bosnian only, "
-            "Croatian only, Auto-detect (locks in early), Auto-detect (mixed languages)"
+            "Auto-detect (locks in early), Auto-detect (mixed languages)"
         )
     return VALID_LANGUAGE_MODES[normalized]
 
