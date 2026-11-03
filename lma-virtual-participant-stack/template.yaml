@@ -1419,6 +1419,10 @@ Resources:
                   - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/anthropic.claude-haiku-4-5*"
                   - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/anthropic.claude-haiku-4-5*"
                   - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*claude-haiku-4-5*"
+                  # DomResolverModelId allowed values (lma-main.yaml) include Sonnet 4.5 and 4.6.
+                  - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/anthropic.claude-sonnet-4-*"
+                  - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/anthropic.claude-sonnet-4-*"
+                  - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*claude-sonnet-4-*"
         - PolicyName: NovaSonicConfigAccess
           PolicyDocument:
             Version: 2012-10-17

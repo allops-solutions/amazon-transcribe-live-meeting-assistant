@@ -17,7 +17,7 @@
  * with the AI DOM-resolver fallback, since Meet's class names are obfuscated
  * and change often.
  */
-import { Page } from 'playwright-core';
+import { Page, ElementHandle } from 'playwright-core';
 import { gotoMeetingPage, MEETING_HOST_PATTERNS } from './meeting-navigation.js';
 import { details, matchesEndCommand, exitMessagesFor, ExitInfo, MeetingInitOptions } from './details.js';
 import { transcriptionService } from './scribe.js';
@@ -33,6 +33,20 @@ export function buildMeetUrl(meetingId: string): string {
     // Meeting codes look like abc-defg-hij; tolerate missing dashes / spaces.
     const code = raw.replace(/\s+/g, '');
     return `https://meet.google.com/${code}`;
+}
+
+/**
+ * True only when the URL is a Meet meeting room (meet.google.com/abc-defg-hij).
+ * A substring match is not enough: the Google sign-in URL carries the meeting
+ * link in its `continue=` parameter, so it would look like the meeting page.
+ */
+export function isMeetingRoomUrl(url: string): boolean {
+    try {
+        const u = new URL(url);
+        return u.protocol === 'https:' && u.hostname === 'meet.google.com' && /^\/[a-z]{3}-[a-z]{4}-[a-z]{3}\/?$/i.test(u.pathname);
+    } catch {
+        return false;
+    }
 }
 
 export default class GoogleMeet {
@@ -157,7 +171,7 @@ export default class GoogleMeet {
 
     private async waitForAdmission(page: Page): Promise<'admitted' | 'denied' | 'bounced' | 'timeout'> {
         console.log('Waiting to be admitted.');
-        const onMeetingRoute = () => /https:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i.test(page.url());
+        const onMeetingRoute = () => isMeetingRoomUrl(page.url());
         return Promise.race([
             page
                 .waitForSelector('button[aria-label="Leave call"], button[aria-label^="Leave call"], button[aria-label="Chat with everyone"]', {
@@ -207,7 +221,7 @@ export default class GoogleMeet {
         }
         const deadline = Date.now() + details.waitingTimeout;
         while (Date.now() < deadline) {
-            if (/https:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i.test(page.url())) {
+            if (isMeetingRoomUrl(page.url())) {
                 if (details.invite.virtualParticipantId) {
                     const { createStatusManager } = await import('./status-manager.js');
                     await createStatusManager(details.invite.virtualParticipantId).clearManualAction();
@@ -291,29 +305,91 @@ export default class GoogleMeet {
         );
 
         console.log('Clicking join button.');
-        const joinRes = await findElementWithFallback(
-            page,
-            [
-                'button:has-text("Ask to join")',
-                'button:has-text("Join now")',
-                'button:has-text("Join anyway")',
-                '[role="button"]:has-text("Ask to join")',
-                '[role="button"]:has-text("Join now")',
-            ],
-            {
-                intent: 'Google Meet pre-join primary button: "Ask to join" (guest) or "Join now"',
-                platform: 'GOOGLE_MEET',
-                step: 'meet.join.joinButton',
-            },
-            { maxRetries: 20, delayMs: 500 },
-        );
+        const joinSelectors = [
+            'button:has-text("Ask to join")',
+            'button:has-text("Join now")',
+            'button:has-text("Join anyway")',
+            '[role="button"]:has-text("Ask to join")',
+            '[role="button"]:has-text("Join now")',
+        ];
+        const joinOpts = {
+            intent: 'Google Meet pre-join primary button: "Ask to join" (guest) or "Join now"',
+            platform: 'GOOGLE_MEET' as const,
+            step: 'meet.join.joinButton',
+        };
+        const joinRes = await findElementWithFallback(page, joinSelectors, joinOpts, { maxRetries: 20, delayMs: 500 });
         if (!joinRes) {
             console.log('Could not locate Google Meet join button — aborting');
             return false;
         }
-        await joinRes.element.click();
+        await this.clickJoinWhenEnabled(page, joinSelectors, joinOpts, joinRes.element);
 
         return true;
+    }
+
+    /**
+     * Click the join button once Meet enables it. Meet keeps "Ask to join" disabled
+     * until its reCAPTCHA check passes and accepts the guest name. Wait for it,
+     * re-enter the name once if it stays disabled, and re-find the button when the
+     * element is replaced during a Meet re-render.
+     */
+    private async clickJoinWhenEnabled(
+        page: Page,
+        selectors: string[],
+        opts: { intent: string; platform: 'GOOGLE_MEET'; step: string },
+        first: ElementHandle<Element>,
+    ): Promise<void> {
+        let handle: ElementHandle<Element> | null = first;
+        let lastError: unknown = null;
+        let renamed = false;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                if (!handle) {
+                    const res = await findElementWithFallback(page, selectors, opts, { maxRetries: 10, delayMs: 500 });
+                    if (!res) break;
+                    handle = res.element;
+                }
+                const button = handle;
+                const deadline = Date.now() + 15_000;
+                while (Date.now() < deadline) {
+                    if (await button.isEnabled()) {
+                        await button.click();
+                        return;
+                    }
+                    await new Promise((r) => setTimeout(r, 500));
+                }
+                console.log(`Google Meet join button still disabled (attempt ${attempt}).`);
+                lastError = new Error('join button stayed disabled');
+                if (!renamed) {
+                    renamed = true;
+                    await this.reenterName(page);
+                }
+            } catch (error) {
+                lastError = error;
+                console.log(`Google Meet join button changed while clicking (attempt ${attempt}): ${(error as Error).message}`);
+            }
+            handle = null;
+            await new Promise((r) => setTimeout(r, 1000));
+        }
+        throw new Error(
+            `Google Meet join button never became clickable (${(lastError as Error | null)?.message ?? 'not found'}). ` +
+                'Meet did not accept the guest, which usually means it flagged the browser (reCAPTCHA).',
+        );
+    }
+
+    /** Re-type the bot's display name in the pre-join form, then Tab out so Meet's change handlers run. */
+    private async reenterName(page: Page): Promise<void> {
+        const name = await findElementWithFallback(
+            page,
+            ['input[aria-label="Your name"]', 'input[placeholder="Your name"]'],
+            { intent: 'Google Meet guest pre-join screen "Your name" text input (re-enter)', platform: 'GOOGLE_MEET', step: 'meet.join.name' },
+            { maxRetries: 3, delayMs: 300 },
+        );
+        if (!name) return;
+        await name.element.click();
+        await page.keyboard.press('ControlOrMeta+A');
+        await page.keyboard.type(details.scribeIdentity, { delay: 40 });
+        await page.keyboard.press('Tab');
     }
 
     public async initialize(page: Page, opts: MeetingInitOptions = {}): Promise<ExitInfo> {
@@ -326,7 +402,8 @@ export default class GoogleMeet {
 
         // ---- Pre-join -------------------------------------------------------
         if (!(await this.preJoin(page))) {
-            return { reason: 'unknown', trigger: 'pre-join:no-join-button' };
+            // Throw, not return: a returned exit is reported as a successful run.
+            throw new Error('Could not find the Google Meet join button on the pre-join screen.');
         }
 
         // ---- Admission --------------------------------------------------------
@@ -343,7 +420,7 @@ export default class GoogleMeet {
             if (signedIn) {
                 await this.dismissNags(page);
                 if (!(await this.preJoin(page))) {
-                    return { reason: 'unknown', trigger: 'pre-join:no-join-button-after-signin' };
+                    throw new Error('Could not find the Google Meet join button after Google sign-in.');
                 }
                 admitted = await this.waitForAdmission(page);
             }
@@ -514,7 +591,7 @@ export default class GoogleMeet {
                         return;
                     }
                     const currentUrl = page.url();
-                    if (currentUrl === 'about:blank' || !/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i.test(currentUrl)) {
+                    if (currentUrl === 'about:blank' || !isMeetingRoomUrl(currentUrl)) {
                         // Left the meeting route (e.g. back to meet.google.com/ landing).
                         const stillInCall = await page.$('button[aria-label^="Leave call"]');
                         if (!stillInCall) {
