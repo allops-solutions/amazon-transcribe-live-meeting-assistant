@@ -64,6 +64,10 @@ ARG CLOAKBROWSER_PIP_VERSION=0.5.10
 RUN pip install --no-cache-dir "cloakbrowser[geoip]==${CLOAKBROWSER_PIP_VERSION}" \
     && python -m cloakbrowser install \
     && python -m cloakbrowser info
+# The `aws` CLI is needed by entrypoint.sh to publish the VNC credential on the
+# VP record. Without it the live view has no password and never connects.
+RUN pip install --no-cache-dir awscli \
+    && aws --version
 
 COPY . /srv
 
