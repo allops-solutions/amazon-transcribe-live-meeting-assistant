@@ -49,6 +49,9 @@ export function isMeetingRoomUrl(url: string): boolean {
     }
 }
 
+/** Meet refused the guest before the pre-join form ("You can't join this video call"). Retried by reloading. */
+export class MeetRefusedError extends Error {}
+
 export default class GoogleMeet {
     private prevSender: string = '';
     private endRequested: Promise<ExitInfo>;
@@ -269,7 +272,7 @@ export default class GoogleMeet {
                 // has flagged the browser as automated. Check the link in a normal
                 // incognito window to tell the two apart.
                 console.log('Google Meet refused the guest join before the pre-join screen (policy or automation detection).');
-                throw new Error(
+                throw new MeetRefusedError(
                     'Google Meet refused the guest join ("You can\'t join this video call"): either the host\'s ' +
                     'Workspace policy blocks users not signed in to Google, or Meet flagged the browser as automated.',
                 );
@@ -392,6 +395,30 @@ export default class GoogleMeet {
         await page.keyboard.press('Tab');
     }
 
+    /**
+     * Pre-join with reloads. Meet's guest check can refuse one page load and accept
+     * the next, so a refusal reloads the meeting link up to four times (pauses of
+     * 4, 8, 15 and 20 s; cookies cleared from the second reload on). Other failures
+     * are not retried.
+     */
+    private async preJoinWithRefreshRetries(page: Page, url: string): Promise<boolean> {
+        const pauses = [4_000, 8_000, 15_000, 20_000];
+        for (let attempt = 0; ; attempt++) {
+            try {
+                return await this.preJoin(page);
+            } catch (error) {
+                if (!(error instanceof MeetRefusedError) || attempt >= pauses.length) throw error;
+            }
+            const reload = attempt + 1;
+            console.log(`Meet refused the guest join; reloading the meeting (retry ${reload} of ${pauses.length}).`);
+            await new Promise((r) => setTimeout(r, pauses[attempt]));
+            if (reload >= 2) {
+                await page.context().clearCookies();
+            }
+            await gotoMeetingPage(page, url, MEETING_HOST_PATTERNS.meet, 'meet-join-retry');
+        }
+    }
+
     public async initialize(page: Page, opts: MeetingInitOptions = {}): Promise<ExitInfo> {
         if (opts.prepareAvatar) await opts.prepareAvatar();
         startDialogWatchdog(page, { platform: 'GOOGLE_MEET' });
@@ -401,7 +428,7 @@ export default class GoogleMeet {
         await gotoMeetingPage(page, url, MEETING_HOST_PATTERNS.meet, 'meet-join');
 
         // ---- Pre-join -------------------------------------------------------
-        if (!(await this.preJoin(page))) {
+        if (!(await this.preJoinWithRefreshRetries(page, url))) {
             // Throw, not return: a returned exit is reported as a successful run.
             throw new Error('Could not find the Google Meet join button on the pre-join screen.');
         }
@@ -418,8 +445,10 @@ export default class GoogleMeet {
             console.log('Guest join was bounced by Meet (reCAPTCHA / IP reputation). Requesting one-time Google sign-in via VNC.');
             const signedIn = await this.requestGoogleSignIn(page, url);
             if (signedIn) {
+                // Reload the meeting after sign-in before joining, as a manual refresh does.
+                await gotoMeetingPage(page, url, MEETING_HOST_PATTERNS.meet, 'meet-join-after-signin');
                 await this.dismissNags(page);
-                if (!(await this.preJoin(page))) {
+                if (!(await this.preJoinWithRefreshRetries(page, url))) {
                     throw new Error('Could not find the Google Meet join button after Google sign-in.');
                 }
                 admitted = await this.waitForAdmission(page);
